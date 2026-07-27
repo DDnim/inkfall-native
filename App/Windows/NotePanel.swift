@@ -94,6 +94,8 @@ struct NotePanelView: View {
         VStack(spacing: 0) {
             titlebar
             Divider().overlay(paperOnInk.opacity(0.1))
+            switches
+            Divider().overlay(paperOnInk.opacity(0.1))
             content
             Divider().overlay(paperOnInk.opacity(0.1))
             recbar
@@ -129,6 +131,57 @@ struct NotePanelView: View {
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
+    }
+
+    // MARK: - 三个开关
+
+    /// 自动分段 / 区分人物 / 自动粘贴。
+    ///
+    /// 放在面板里而不是只留在设置页：这三件事是**逐场**决定的 —— 这次是会议就
+    /// 开区分人物，这次是往编辑器里口述就开自动粘贴。要为此翻一次设置窗口，
+    /// 就等于没有这个开关。它们写的仍然是同一份 `AppSettings`，
+    /// 和设置页里的那三行是同一个值。
+    private var switches: some View {
+        HStack(spacing: 6) {
+            chip("scissors", "自动分段",
+                 on: session.autoSegment,
+                 hint: "停顿约 1.3 秒自动切一段") { session.autoSegment = $0 }
+            chip("person.2.wave2", "区分人物",
+                 on: session.diarize,
+                 enabled: session.diarizationReady,
+                 hint: session.diarizationReady
+                     ? "给每段标注是谁在说" : "需要先在设置里下载分离模型") {
+                session.diarize = $0
+            }
+            chip("text.insert", "自动粘贴",
+                 on: session.autoPaste,
+                 hint: "每段转写完立刻插进起录时的那个窗口") { session.autoPaste = $0 }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+    }
+
+    private func chip(_ symbol: String, _ label: String, on: Bool,
+                      enabled: Bool = true, hint: String,
+                      set: @escaping (Bool) -> Void) -> some View {
+        Button { set(!on) } label: {
+            HStack(spacing: 3.5) {
+                Image(systemName: symbol).font(.system(size: 9))
+                Text(label).font(.system(size: 10, weight: on ? .semibold : .regular))
+            }
+            .foregroundStyle(!enabled ? paperOnInk.opacity(0.25)
+                             : on ? cinnabar : paperOnInk.opacity(0.5))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3.5)
+            .background(on ? cinnabar.opacity(0.16) : paperOnInk.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5)
+                .stroke(on ? cinnabar.opacity(0.45) : .clear, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .help(hint)
     }
 
     // MARK: - 正文
@@ -181,10 +234,24 @@ struct NotePanelView: View {
                 let view = editor.textView
                 view.backgroundColor = .clear
                 view.drawsBackground = false
-                // ⚠️ 光关掉 NSTextView 的背景不够：滚动视图自己还垫了一层
-                // NSVisualEffectView，在深墨面板上会透出一片浅色。
-                view.enclosingScrollView?.drawsBackground = false
-                view.enclosingScrollView?.backgroundColor = .clear
+                // ⚠️ 关掉 NSTextView 的背景**远远不够**，会得到一整片白。
+                // HighlightedTextEditor 的 ScrollableTextView 建出来就是
+                // `scrollView.drawsBackground = true` +
+                // `textView.backgroundColor = .textBackgroundColor`，
+                // 而后者在浅色外观下就是纯白。三层都要按掉：
+                // NSScrollView、它内部的 NSClipView、以及 NSTextView 自己。
+                //
+                // 另外**不要走 `view.enclosingScrollView`** —— introspect 拿到的
+                // `Internals` 本来就直接给了 scrollView，绕父视图链只是多一个
+                // 可能取到 nil 的环节，nil 了这几行会静默失效（白屏就是这么来的）。
+                let scroll = editor.scrollView
+                scroll?.drawsBackground = false
+                scroll?.backgroundColor = .clear
+                scroll?.contentView.drawsBackground = false
+                scroll?.contentView.backgroundColor = .clear
+                // 兜底：即使将来某一层又自己画背景，深色外观下也是深的，不是白的。
+                scroll?.appearance = NSAppearance(named: .darkAqua)
+                view.appearance = NSAppearance(named: .darkAqua)
                 view.insertionPointColor = NSColor(cinnabar)
                 view.textColor = NSColor(paperOnInk)
                 view.font = .systemFont(ofSize: 11.5)
