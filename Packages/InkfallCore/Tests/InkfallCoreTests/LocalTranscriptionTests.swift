@@ -150,3 +150,84 @@ final class VocabularyCorrectorTests: XCTestCase {
         XCTAssertEqual(s.transcriptionReplacements, ["洛因": "落音"])
     }
 }
+
+final class SpeakerTranscriptTests: XCTestCase {
+
+    private func seg(_ speaker: Int?, _ text: String) -> SpeakerTranscript.Segment {
+        .init(speaker: speaker, text: text)
+    }
+
+    func testMonologueGetsNoLabels() {
+        // 独白前面挂一排「说话人 1：」只是噪音，而按住说话绝大多数就是独白。
+        let out = SpeakerTranscript.compose([seg(0, "今天下午三点开会"), seg(0, "讨论一下预算")])
+        XCTAssertFalse(out.labeled)
+        XCTAssertEqual(out.speakerCount, 1)
+        XCTAssertEqual(out.text, "今天下午三点开会讨论一下预算")
+    }
+
+    func testTwoSpeakersGetLabelsStartingAtOne() {
+        let out = SpeakerTranscript.compose([
+            seg(0, "营收数据整理好了吗"), seg(1, "整理好了，下午发你"),
+        ])
+        XCTAssertTrue(out.labeled)
+        XCTAssertEqual(out.speakerCount, 2)
+        // 模型给的是 0-based，直接透出来会出现「说话人 0」，看着像 bug。
+        XCTAssertEqual(out.text, "说话人 1：营收数据整理好了吗\n说话人 2：整理好了，下午发你")
+    }
+
+    func testConsecutiveSegmentsFromOneSpeakerMerge() {
+        // 分离模型按声学边界切，一句话常被切成好几段。
+        let out = SpeakerTranscript.compose([
+            seg(0, "第一句"), seg(0, "还是我说的"), seg(1, "换我了"), seg(0, "又是我"),
+        ])
+        XCTAssertEqual(out.text,
+                       "说话人 1：第一句还是我说的\n说话人 2：换我了\n说话人 1：又是我")
+    }
+
+    func testEnglishSegmentsGetSpacesButChineseDoesNot() {
+        let english = SpeakerTranscript.compose([seg(0, "hello there"), seg(0, "how are you")])
+        XCTAssertEqual(english.text, "hello there how are you")
+        let chinese = SpeakerTranscript.compose([seg(0, "你好"), seg(0, "最近怎么样")])
+        XCTAssertEqual(chinese.text, "你好最近怎么样")
+    }
+
+    func testEmptyAndBlankSegmentsAreDropped() {
+        let out = SpeakerTranscript.compose([seg(0, "  "), seg(0, "有内容"), seg(1, "")])
+        XCTAssertFalse(out.labeled, "空片段不该把独白算成两个人")
+        XCTAssertEqual(out.text, "有内容")
+    }
+
+    func testNoSegmentsYieldsEmptyOutput() {
+        let out = SpeakerTranscript.compose([])
+        XCTAssertEqual(out.text, "")
+        XCTAssertEqual(out.speakerCount, 0)
+        XCTAssertFalse(out.labeled)
+    }
+
+    func testUnmatchedSpeakersDoNotCountAsDistinct() {
+        // 没匹配上说话人的片段不该把独白升格成多人。
+        let out = SpeakerTranscript.compose([seg(nil, "一段"), seg(0, "另一段")])
+        XCTAssertFalse(out.labeled)
+        XCTAssertEqual(out.speakerCount, 1)
+    }
+}
+
+final class BasicPolisherLineBreakTests: XCTestCase {
+
+    /// 中文多行文本的换行必须活下来。
+    /// 曾经用 `\s+` 删汉字旁的空白，把换行一起吃了 —— 说话人标签和分段笔记
+    /// 会被压成一整行。
+    func testNewlinesSurviveAroundChinese() {
+        let text = "第一段结束。\n第二段开始"
+        XCTAssertEqual(BasicPolisher.polish(text), "第一段结束。\n第二段开始。")
+    }
+
+    func testSpacesAroundChineseStillCollapse() {
+        XCTAssertEqual(BasicPolisher.polish("你好 世界"), "你好世界。")
+    }
+
+    func testSpeakerLabelsKeepTheirShape() {
+        let text = "说话人 1：营收整理好了吗\n说话人 2：好了"
+        XCTAssertTrue(BasicPolisher.polish(text).contains("\n"), "换行不能被吃掉")
+    }
+}

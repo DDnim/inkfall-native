@@ -53,8 +53,10 @@ public enum BasicPolisher {
         result = replace(#"[ \t]+"#, in: result, with: " ")
         result = replace(#" *\n *"#, in: result, with: "\n")
         // 填充词没了之后，紧挨汉字/中文标点的空白就是噪声。
-        result = replace(#"(?<=[\p{script=Han}，。！？、；：])\s+"#, in: result, with: "")
-        result = replace(#"\s+(?=[\p{script=Han}，。！？、；：])"#, in: result, with: "")
+        // ⚠️ 只吃空格与制表符，**不能用 `\s`** —— 那会连换行一起吃掉，
+        // 中文多行文本（说话人标签、分段笔记）会被压成一整行。
+        result = replace(#"(?<=[\p{script=Han}，。！？、；：])[ \t]+"#, in: result, with: "")
+        result = replace(#"[ \t]+(?=[\p{script=Han}，。！？、；：])"#, in: result, with: "")
 
         // 5. 合并被删除弄重复的标点。
         result = replace(#"([，。！？、；：,.!?;:])[，、,]+"#, in: result, with: "$1")

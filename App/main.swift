@@ -156,6 +156,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            LocalTranscriber.isDownloaded(model) {
             Task { [transcriber] in await transcriber.prewarm(modelID: modelID) }
         }
+        if store.settings.noteWantsSpeakerLabels {
+            Task { [transcriber] in await transcriber.prewarmDiarization() }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -381,17 +384,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 那就把同一段已知音频直接送进「转写 → 润色 → 三层插入」，
             // 至少让后半条链路是被真实驱动的。
             // （AUHAL 采集本身另有 `--record-test` 单独验证。）
-            if let data = try? Data(contentsOf: URL(fileURLWithPath: wav)) {
-                let ms = UInt64((Double(WAV.parse(data)?.dataRange.count ?? 0) / 32000.0) * 1000)
-                emit("补喂已知音频 \(data.count) 字节 / \(ms) ms")
-                DispatchQueue.main.async {
-                    AppDelegate.shared?.injectForTest(
-                        RecordedAudio(data: data, durationMs: ms))
-                }
-            }
-
-            // 等转写 + 粘贴走完。
-            Thread.sleep(forTimeInterval: 12)
+            // 等转写 + 粘贴走完。分离开着时要多给一档。
+            Thread.sleep(forTimeInterval: 20)
             NSWorkspace.shared.runningApplications
                 .first { $0.bundleIdentifier == "com.apple.TextEdit" }?.activate()
             Thread.sleep(forTimeInterval: 0.4)
@@ -405,13 +399,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.flush()
             exit(ok ? 0 : 1)
         }
-    }
-
-    /// 自测钩子：跳过麦克风，直接把一段已知音频送进转写与粘贴。
-    private func injectForTest(_ audio: RecordedAudio) {
-        pasteTarget = PasteTarget.current()
-        emit("粘贴目标：\(pasteTarget?.appName ?? "无")")
-        transcribeAndInsert(audio)
     }
 
     /// 粘贴自测：先测「目标已在前台」的零激活路径，再测跨 App 路径。
@@ -806,7 +793,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let modelID = store.settings.selectedLocalModelId
         let name = LocalModels.definition(id: modelID)?.name ?? modelID
         let target = pasteTarget
-        notch.show(state: .transcribing, message: "\(name) 转写中")
+        let diarizing = store.settings.noteWantsSpeakerLabels
+            && LocalTranscriber.isDiarizationDownloaded
+        notch.show(state: .transcribing,
+                   message: diarizing ? "\(name) 转写中 · 分辨说话人" : "\(name) 转写中")
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("inkfall-take-\(UUID().uuidString).wav")
@@ -823,9 +813,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             modelID: modelID,
             language: policy.requested(locked: sessionLanguage),
             replacements: store.settings.transcriptionReplacements,
-            // 按住说话是单人听写，不跑分离 —— 那会白白让延迟翻一倍。
-            // 落笔会话（多人会议）接上之后才传 `noteWantsSpeakerLabels`。
-            diarize: false)
+            // 「区分人物」是用户显式打开的 —— 开了就意味着这次录的是会议或访谈，
+            // 那多花的那点时间是他要的。关着时绝不跑，单人听写跑分离只是白等。
+            diarize: store.settings.noteWantsSpeakerLabels
+                && LocalTranscriber.isDiarizationDownloaded)
 
         Task { [transcriber] in
             defer { try? FileManager.default.removeItem(at: url) }
@@ -856,7 +847,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func deliver(_ result: LocalTranscriber.Result, into target: PasteTarget?) {
         // 规则润色（去口头禅、补标点）—— 纯本地，不需要联网。
-        let text = BasicPolisher.polish(result.text)
+        // 带说话人标签的结果原样放行：标签的排版是结构，不是待清理的噪声。
+        let text = result.labeled ? result.text : BasicPolisher.polish(result.text)
         guard !text.isEmpty else {
             flash(.cancelled, "没听清", seconds: 1.2)
             return
@@ -873,7 +865,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let route = MacAutomation.insert(text, into: target)
             DispatchQueue.main.async {
                 Log.write("paste: route=\(route.rawValue) target=\(target?.appName ?? "无")")
-                let landed = target.map { "已粘回 \($0.appName)" } ?? "已复制到剪贴板"
+                        let landed = target.map { "已粘回 \($0.appName)" } ?? "已复制到剪贴板"
                 AppDelegate.shared?.flash(
                     .success, route == .clipboardOnly ? "已复制到剪贴板" : landed, seconds: 1.6)
             }

@@ -29,6 +29,24 @@ final class ModelCatalog {
     private(set) var busy: String?
     private(set) var lastError: String?
 
+    /// 分离模型（Pyannote）。它跟 Whisper 完全独立 —— 一共 11 MB，
+    /// 所以单列一栏，而不是混进转写档位里让人以为要二选一。
+    private(set) var diarization = DiarizationState()
+
+    struct DiarizationState {
+        var downloaded = false
+        var bytes: Int64 = 0
+        var progress: Double?
+
+        var sizeText: String {
+            downloaded
+                ? ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+                : "~11 MB"
+        }
+    }
+
+    static let diarizationID = "speaker-diarization"
+
     private let store: SettingsStore
     private let transcriber: LocalTranscriber
 
@@ -43,6 +61,10 @@ final class ModelCatalog {
 
     /// 按磁盘现状重建。每次展开菜单/打开设置页都调 —— 缓存了就会骗人。
     func refresh() {
+        diarization = DiarizationState(
+            downloaded: LocalTranscriber.isDiarizationDownloaded,
+            bytes: LocalTranscriber.diarizationBytes,
+            progress: diarization.progress)
         entries = LocalModels.all.map { model in
             let downloaded = LocalTranscriber.isDownloaded(model)
             return Entry(model: model,
@@ -104,6 +126,61 @@ final class ModelCatalog {
             self.refresh()
         }
     }
+
+    // MARK: - 分离模型
+
+    func downloadDiarization() {
+        guard busy == nil else { return }
+        busy = Self.diarizationID
+        lastError = nil
+        diarization.progress = 0
+
+        Task { [transcriber] in
+            do {
+                try await LocalTranscriber.downloadDiarization { fraction in
+                    Task { @MainActor in self.diarization.progress = fraction }
+                }
+                self.busy = nil
+                self.diarization.progress = nil
+                self.refresh()
+                await transcriber.prewarmDiarization()
+            } catch {
+                self.busy = nil
+                self.diarization.progress = nil
+                self.lastError = error.localizedDescription
+                Log.write("diarize: 下载失败 \(error)")
+                self.refresh()
+            }
+        }
+    }
+
+    func deleteDiarization() {
+        guard busy == nil else { return }
+        Task { [transcriber] in
+            do {
+                try await transcriber.deleteDiarization()
+                Log.write("diarize: 已删除分离模型权重")
+            } catch {
+                self.lastError = error.localizedDescription
+            }
+            self.refresh()
+        }
+    }
+
+    /// 开关「区分人物」。开的时候权重还没下就顺手下 ——
+    /// 打开一个开关之后什么都没发生是最糟的反馈。
+    func setDiarizationEnabled(_ on: Bool) {
+        store.settings.noteSpeakerDiarizationEnabled = on
+        store.save()
+        guard on else { return }
+        if diarization.downloaded {
+            Task { [transcriber] in await transcriber.prewarmDiarization() }
+        } else {
+            downloadDiarization()
+        }
+    }
+
+    var diarizationEnabled: Bool { store.settings.noteSpeakerDiarizationEnabled }
 
     private func setProgress(_ id: String, _ fraction: Double) {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return }

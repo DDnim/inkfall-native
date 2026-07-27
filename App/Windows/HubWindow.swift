@@ -272,6 +272,13 @@ struct HubView: View {
                     modelRow(entry)
                 }
             }
+            group("区分人物") {
+                toggleRow("区分人物", "把「谁在说」贴进转写结果。适合会议与访谈；"
+                          + "一个人说话时不会加标签。开着会让每段多花一点时间",
+                          isOn: Binding(get: { model.models.diarizationEnabled },
+                                        set: { model.models.setDiarizationEnabled($0) }))
+                diarizationRow
+            }
             caption("权重按需下载到 App 容器（\(LocalTranscriber.modelRoot.lastPathComponent)/），"
                     + "不进安装包。推理运行时是编译进程序的，不需要另外装任何东西。"
                     + "空闲 5 分钟会把模型从内存卸掉。")
@@ -388,6 +395,39 @@ struct HubView: View {
             }
             Spacer(minLength: 6)
             Toggle("", isOn: isOn).labelsHidden().toggleStyle(.switch).controlSize(.small)
+        }
+        .padding(.horizontal, 11).padding(.vertical, 7)
+        .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+    }
+
+    /// 分离模型独立于转写档位 —— 单列一行，免得看成「和 Whisper 二选一」。
+    private var diarizationRow: some View {
+        let state = model.models.diarization
+        return HStack(alignment: .center, spacing: 9) {
+            Image(systemName: "person.2")
+                .foregroundStyle(state.downloaded ? Ink.teal : Ink.ink4)
+                .font(.system(size: 12))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Pyannote 说话人分离").font(.system(size: 12)).foregroundStyle(Ink.ink1)
+                if let progress = state.progress {
+                    Text("下载中 \(Int(progress * 100))%")
+                        .font(.system(size: 9.5)).foregroundStyle(Ink.ink4)
+                } else {
+                    Text((state.downloaded ? "已下载 · " : "未下载 · ") + state.sizeText
+                         + " · 与转写模型并行跑")
+                        .font(.system(size: 9.5)).foregroundStyle(Ink.ink4)
+                }
+            }
+            Spacer(minLength: 6)
+            if state.progress != nil {
+                ProgressView().controlSize(.small)
+            } else if state.downloaded {
+                Button("删除") { model.models.deleteDiarization() }.font(.system(size: 11))
+            } else {
+                Button("下载") { model.models.downloadDiarization() }
+                    .font(.system(size: 11))
+                    .disabled(model.models.busy != nil)
+            }
         }
         .padding(.horizontal, 11).padding(.vertical, 7)
         .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
