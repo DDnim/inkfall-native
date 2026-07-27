@@ -32,6 +32,16 @@ packages:
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit
     exactVersion: 1.0.0
+  # 笔记正文本来就是 markdown（spec/03：图片写成 ![alt](file)）。
+  # 渲染用 swift-markdown-ui —— 底层是 swift-cmark，真正的 CommonMark 解析，
+  # 不是正则糊出来的。编辑用 HighlightedTextEditor，NSTextView + markdown 高亮预设。
+  # 两个都是 MIT。
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/swift-markdown-ui
+    exactVersion: 2.4.1
+  HighlightedTextEditor:
+    url: https://github.com/kyle-n/HighlightedTextEditor
+    exactVersion: 2.1.2
 
 targets:
   InkfallNative:
@@ -51,6 +61,10 @@ targets:
       # Tauri 版用的 MOSS 只有 Python 实现，搬不过来。
       - package: WhisperKit
         product: SpeakerKit
+      - package: MarkdownUI
+        product: MarkdownUI
+      - package: HighlightedTextEditor
+        product: HighlightedTextEditor
     entitlements:
       path: App/Inkfall.entitlements
       # ⚠️ 必须在这里声明。XcodeGen 会**重写** entitlements 文件，

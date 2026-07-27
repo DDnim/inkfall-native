@@ -12,8 +12,9 @@ final class HubWindowController {
     private var window: NSWindow?
     private let model: HubModel
 
-    init(store: SettingsStore, permissions: PermissionCoordinator, models: ModelCatalog) {
-        model = HubModel(store: store, permissions: permissions, models: models)
+    init(store: SettingsStore, permissions: PermissionCoordinator,
+         models: ModelCatalog, notes: NoteStore) {
+        model = HubModel(store: store, permissions: permissions, models: models, notes: notes)
     }
 
     func show(page: HubModel.Page? = nil) {
@@ -80,11 +81,14 @@ final class HubModel {
     let store: SettingsStore
     let permissions: PermissionCoordinator
     let models: ModelCatalog
+    let notes: NoteStore
 
-    init(store: SettingsStore, permissions: PermissionCoordinator, models: ModelCatalog) {
+    init(store: SettingsStore, permissions: PermissionCoordinator,
+         models: ModelCatalog, notes: NoteStore) {
         self.store = store
         self.permissions = permissions
         self.models = models
+        self.notes = notes
     }
 
     var settings: AppSettings {
@@ -155,12 +159,11 @@ struct HubView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// 骨架阶段还没有真实笔记 —— 说清楚为什么空，而不是给一个沉默的白板。
     private var emptyHome: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("还没有笔记")
                 .font(.system(size: 14, weight: .medium)).foregroundStyle(Ink.ink2)
-            Text("录音与转写还没接上（里程碑 1）。接上之后，每一次听写与每一段落笔都会落在这里，最多保留 100 条。")
+            Text("按 ⌥Space 开始一段落笔录音 —— 说到停顿会自动切段，停下来之后正文可以直接编辑。每次开始录音都会新建一篇，最多保留 100 条。")
                 .font(.system(size: 11.5)).foregroundStyle(Ink.ink4)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -168,7 +171,16 @@ struct HubView: View {
         .padding(20)
     }
 
-    private var notes: [HistoryEntry] { [] }   // 里程碑 1 接上历史存储
+    /// 搜索按标题与正文一起匹配 —— 用户记得的往往是内容，不是自动生成的时间标题。
+    private var notes: [HistoryEntry] {
+        let all = model.notes.notes
+        let query = model.query.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return all }
+        return all.filter {
+            $0.title.localizedCaseInsensitiveContains(query)
+                || $0.finalText.localizedCaseInsensitiveContains(query)
+        }
+    }
 
     private func noteRow(_ note: HistoryEntry) -> some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -177,7 +189,10 @@ struct HubView: View {
                     .foregroundStyle(Ink.ink1)
                 Spacer()
             }
-            Text(note.displayText).font(.system(size: 11))
+            // 正文是 markdown，列表这一行只要个摘要 —— 把换行压成空格，
+            // 否则第一行是个标题井号就什么都看不出来。
+            Text(note.displayText.replacingOccurrences(of: "\n", with: " "))
+                .font(.system(size: 11))
                 .foregroundStyle(Ink.ink3).lineLimit(1)
         }
         .padding(.horizontal, 14).padding(.vertical, 9)
