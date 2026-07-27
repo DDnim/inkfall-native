@@ -1,0 +1,10 @@
+build/
+.build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+.DS_Store
+
+# XcodeGen 生成物。project.yml 是唯一真相源；克隆后跑 `xcodegen generate` 即可。
+# 提交它只会带来永无止境的 pbxproj 冲突。
+InkfallNative.xcodeproj/

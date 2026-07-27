@@ -1,0 +1,261 @@
+import Foundation
+
+public struct PostProcessingPresetModelConfig: Codable, Sendable, Equatable {
+    public var provider: CloudProvider
+    public var openaiModel: String
+    public var groqModel: String
+    public var geminiModel: String
+
+    public init(provider: CloudProvider, openaiModel: String,
+                groqModel: String, geminiModel: String) {
+        self.provider = provider
+        self.openaiModel = openaiModel
+        self.groqModel = groqModel
+        self.geminiModel = geminiModel
+    }
+
+    public static func `default`(for preset: PostProcessingPreset) -> Self {
+        let fast = preset.prefersFastModel
+        return .init(
+            provider: .openai,
+            openaiModel: fast ? "gpt-4o-mini" : "gpt-4.1",
+            groqModel: fast ? "openai/gpt-oss-20b" : "qwen/qwen3-32b",
+            geminiModel: fast ? "gemini-3.1-flash-lite-preview" : "gemini-3-flash-preview"
+        )
+    }
+}
+
+/// 全部设置。磁盘格式是 `settings.json`（camelCase key），**必须与现有数据兼容**。
+///
+/// ⚠️ 刻意不用合成的 `Codable`：Swift 默认的解码语义是「任一字段坏掉 → 整体失败」，
+/// 而这里要的是「任一字段缺失/类型错 → 只回落**那一个**字段」，
+/// 老配置（比如没有 `appLanguage` 的）才能完整加载而不丢用户其他设置。
+public struct AppSettings: Codable, Sendable, Equatable {
+
+    // 粘贴与输出
+    public var insertNewlineBetweenSegments = true
+    public var focusEditorAfterInsert = true
+    /// 每次自动粘贴后补一个换行。默认关 —— 行内听写不该凭空多一个换行。
+    public var pasteAppendNewline = false
+
+    // 账号与云
+    public var accountEmail = ""
+    public var websiteAuthBaseUrl = ""
+    public var accountWebsiteUrl = ""
+    public var groqProxyUrl = ""
+    public var groqProxyToken = ""
+
+    // 转写
+    public var transcriptionMode: TranscriptionMode = .groqProxy
+    public var openAiProviderEnabled = false
+    public var groqProviderEnabled = false
+    public var geminiProviderEnabled = false
+    public var selectedOpenAiModel = "gpt-4o-mini-transcribe"
+    public var selectedGroqModel = "whisper-large-v3-turbo"
+    public var selectedGeminiModel = "gemini-3.1-flash-lite-preview"
+    public var selectedLocalModelId = "whisper-tiny"
+    public var transcriptionLanguageMode: TranscriptionLanguageMode = .fixed
+    public var fixedTranscriptionLanguage: TranscriptionLanguage = .zh
+    public var preferredTranscriptionLanguages: [TranscriptionLanguage] = [.zh, .en, .ja]
+    public var autoLocalFallbackEnabled = true
+
+    // 加工
+    public var postProcessingEnabled = false
+    public var postProcessingProvider: CloudProvider = .openai
+    public var postProcessingPreset: PostProcessingPreset = .light
+    public var postProcessingPresetModels: [String: PostProcessingPresetModelConfig] = [:]
+    public var selectedOpenAiPostProcessModel = "gpt-4.1-mini"
+    public var selectedGroqPostProcessModel = "openai/gpt-oss-20b"
+    public var selectedGeminiPostProcessModel = "gemini-3.1-flash-lite-preview"
+    public var customPostProcessingPrompt = ""
+    public var processingMemoryContext = ""
+    public var recentContextEnabled = true
+
+    // 落笔
+    public var noteAutoSegment = true
+    public var noteAutoPaste = false
+    /// 落笔有**独立于全局听写**的 AI 开关与预设。
+    public var noteProcessingEnabled = true
+    public var noteProcessingPreset: PostProcessingPreset = .notes
+    public var noteRestoreOnLaunch = true
+    public var noteSpeakerDiarizationEnabled = false
+
+    // 其他
+    public var appLanguage: AppLanguage = .system
+    /// 截图要 Screen Recording 这个很宽的权限，所以默认关，
+    /// 关着时两个快捷键会**从监听器里摘掉**（按键原样透传给其他 App）。
+    public var screenshotFeatureEnabled = false
+    public var screenshotQuoteMarkerEnabled = true
+    public var micGainBoostEnabled = true
+    public var micGainBoostTargetPercent: UInt8 = 80
+    /// 本地集成 API：把笔记读写暴露给任何持 token 的本地进程，所以默认关。
+    public var integrationApiEnabled = false
+    public var hasCompletedOnboarding = false
+
+    public init() {
+        postProcessingPresetModels = Dictionary(
+            uniqueKeysWithValues: PostProcessingPreset.allCases.map {
+                ($0.rawValue, PostProcessingPresetModelConfig.default(for: $0))
+            })
+    }
+
+    // MARK: - 容错解码
+
+    private enum K: String, CodingKey {
+        case insertNewlineBetweenSegments, focusEditorAfterInsert, pasteAppendNewline
+        case accountEmail, websiteAuthBaseUrl, accountWebsiteUrl, groqProxyUrl, groqProxyToken
+        case transcriptionMode, openAiProviderEnabled, groqProviderEnabled, geminiProviderEnabled
+        case selectedOpenAiModel, selectedGroqModel, selectedGeminiModel, selectedLocalModelId
+        case transcriptionLanguageMode, fixedTranscriptionLanguage, preferredTranscriptionLanguages
+        case autoLocalFallbackEnabled
+        case postProcessingEnabled, postProcessingProvider, postProcessingPreset
+        case postProcessingPresetModels, selectedOpenAiPostProcessModel
+        case selectedGroqPostProcessModel, selectedGeminiPostProcessModel
+        case customPostProcessingPrompt, processingMemoryContext, recentContextEnabled
+        case noteAutoSegment, noteAutoPaste, noteProcessingEnabled, noteProcessingPreset
+        case noteRestoreOnLaunch, noteSpeakerDiarizationEnabled
+        case appLanguage, screenshotFeatureEnabled, screenshotQuoteMarkerEnabled
+        case micGainBoostEnabled, micGainBoostTargetPercent, integrationApiEnabled
+        case hasCompletedOnboarding
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init()
+        guard let c = try? decoder.container(keyedBy: K.self) else { return }
+        func f<T: Decodable>(_ key: K, _ fallback: T) -> T {
+            (try? c.decodeIfPresent(T.self, forKey: key)) ?? fallback
+        }
+
+        insertNewlineBetweenSegments = f(.insertNewlineBetweenSegments, insertNewlineBetweenSegments)
+        focusEditorAfterInsert = f(.focusEditorAfterInsert, focusEditorAfterInsert)
+        pasteAppendNewline = f(.pasteAppendNewline, pasteAppendNewline)
+
+        accountEmail = f(.accountEmail, accountEmail)
+        websiteAuthBaseUrl = f(.websiteAuthBaseUrl, websiteAuthBaseUrl)
+        accountWebsiteUrl = f(.accountWebsiteUrl, accountWebsiteUrl)
+        groqProxyUrl = f(.groqProxyUrl, groqProxyUrl)
+        groqProxyToken = f(.groqProxyToken, groqProxyToken)
+
+        transcriptionMode = f(.transcriptionMode, transcriptionMode)
+        openAiProviderEnabled = f(.openAiProviderEnabled, openAiProviderEnabled)
+        groqProviderEnabled = f(.groqProviderEnabled, groqProviderEnabled)
+        geminiProviderEnabled = f(.geminiProviderEnabled, geminiProviderEnabled)
+        selectedOpenAiModel = f(.selectedOpenAiModel, selectedOpenAiModel)
+        selectedGroqModel = f(.selectedGroqModel, selectedGroqModel)
+        selectedGeminiModel = f(.selectedGeminiModel, selectedGeminiModel)
+        selectedLocalModelId = f(.selectedLocalModelId, selectedLocalModelId)
+        transcriptionLanguageMode = f(.transcriptionLanguageMode, transcriptionLanguageMode)
+        fixedTranscriptionLanguage = f(.fixedTranscriptionLanguage, fixedTranscriptionLanguage)
+        preferredTranscriptionLanguages = f(.preferredTranscriptionLanguages,
+                                            preferredTranscriptionLanguages)
+        autoLocalFallbackEnabled = f(.autoLocalFallbackEnabled, autoLocalFallbackEnabled)
+
+        postProcessingEnabled = f(.postProcessingEnabled, postProcessingEnabled)
+        postProcessingProvider = f(.postProcessingProvider, postProcessingProvider)
+        postProcessingPreset = f(.postProcessingPreset, postProcessingPreset)
+        postProcessingPresetModels = f(.postProcessingPresetModels, postProcessingPresetModels)
+        selectedOpenAiPostProcessModel = f(.selectedOpenAiPostProcessModel,
+                                           selectedOpenAiPostProcessModel)
+        selectedGroqPostProcessModel = f(.selectedGroqPostProcessModel, selectedGroqPostProcessModel)
+        selectedGeminiPostProcessModel = f(.selectedGeminiPostProcessModel,
+                                           selectedGeminiPostProcessModel)
+        customPostProcessingPrompt = f(.customPostProcessingPrompt, customPostProcessingPrompt)
+        processingMemoryContext = f(.processingMemoryContext, processingMemoryContext)
+        recentContextEnabled = f(.recentContextEnabled, recentContextEnabled)
+
+        noteAutoSegment = f(.noteAutoSegment, noteAutoSegment)
+        noteAutoPaste = f(.noteAutoPaste, noteAutoPaste)
+        noteProcessingEnabled = f(.noteProcessingEnabled, noteProcessingEnabled)
+        noteProcessingPreset = f(.noteProcessingPreset, noteProcessingPreset)
+        noteRestoreOnLaunch = f(.noteRestoreOnLaunch, noteRestoreOnLaunch)
+        noteSpeakerDiarizationEnabled = f(.noteSpeakerDiarizationEnabled,
+                                          noteSpeakerDiarizationEnabled)
+
+        appLanguage = f(.appLanguage, appLanguage)
+        screenshotFeatureEnabled = f(.screenshotFeatureEnabled, screenshotFeatureEnabled)
+        screenshotQuoteMarkerEnabled = f(.screenshotQuoteMarkerEnabled, screenshotQuoteMarkerEnabled)
+        micGainBoostEnabled = f(.micGainBoostEnabled, micGainBoostEnabled)
+        micGainBoostTargetPercent = f(.micGainBoostTargetPercent, micGainBoostTargetPercent)
+        integrationApiEnabled = f(.integrationApiEnabled, integrationApiEnabled)
+
+        // ⚠️ 与其他字段相反：**缺失时默认 true**。
+        // 现有的 settings.json 没有这个 key 说明是老用户，不该再弹一次引导。
+        hasCompletedOnboarding = f(.hasCompletedOnboarding, true)
+    }
+
+    // MARK: - Sanitize
+
+    /// 把非法/过期的值收拾回合法状态。load 与 save 两侧都要跑。
+    public mutating func sanitize() {
+        if !ProviderModels.openAITranscription.contains(selectedOpenAiModel) {
+            selectedOpenAiModel = "gpt-4o-mini-transcribe"
+        }
+        if !ProviderModels.openAIPostProcess.contains(selectedOpenAiPostProcessModel) {
+            selectedOpenAiPostProcessModel = "gpt-4.1-mini"
+        }
+        if !ProviderModels.groqTranscription.contains(selectedGroqModel) {
+            selectedGroqModel = "whisper-large-v3-turbo"
+        }
+        if !ProviderModels.groqPostProcess.contains(selectedGroqPostProcessModel) {
+            selectedGroqPostProcessModel = "openai/gpt-oss-20b"
+        }
+        if !ProviderModels.gemini.contains(selectedGeminiModel) {
+            selectedGeminiModel = "gemini-3.1-flash-lite-preview"
+        }
+        if !ProviderModels.gemini.contains(selectedGeminiPostProcessModel) {
+            selectedGeminiPostProcessModel = "gemini-3.1-flash-lite-preview"
+        }
+        if preferredTranscriptionLanguages.isEmpty {
+            preferredTranscriptionLanguages = [.zh, .en, .ja]
+        }
+        // 迁移而不是清零：原生版换了推理运行时，模型 id 表也跟着变了，
+        // 直接回落默认会把用户选过的档位悄悄降级。
+        selectedLocalModelId = LocalModels.migrate(id: selectedLocalModelId)
+        processingMemoryContext = String(processingMemoryContext.prefix(8000))
+
+        for preset in PostProcessingPreset.allCases {
+            let d = PostProcessingPresetModelConfig.default(for: preset)
+            var cfg = postProcessingPresetModels[preset.rawValue] ?? d
+            if !ProviderModels.openAIPostProcess.contains(cfg.openaiModel) { cfg.openaiModel = d.openaiModel }
+            if !ProviderModels.groqPostProcess.contains(cfg.groqModel) { cfg.groqModel = d.groqModel }
+            if !ProviderModels.gemini.contains(cfg.geminiModel) { cfg.geminiModel = d.geminiModel }
+            postProcessingPresetModels[preset.rawValue] = cfg
+        }
+
+        // 一个操作者驱动整条流水线：加工供应商跟随转写供应商。
+        // local 是例外 —— 它没法加工，所以保留独立选择。
+        switch transcriptionMode {
+        case .openai: postProcessingProvider = .openai
+        case .groq, .groqProxy: postProcessingProvider = .groq
+        case .gemini: postProcessingProvider = .gemini
+        case .local: break
+        }
+    }
+
+    /// 落笔用的等效设置：把全局的加工开关/预设换成落笔自己的那一套，
+    /// 其余字段原样带过。这样共享的转写路径在 sink 是笔记面板时应用落笔的加工。
+    public func noteEffective() -> AppSettings {
+        var derived = self
+        derived.postProcessingEnabled = noteProcessingEnabled
+        derived.postProcessingPreset = noteProcessingPreset
+        return derived
+    }
+
+    /// 落笔的这一段要不要保留 MOSS 的说话人标签：开关开着**且**当前
+    /// 转写管线确实是本地 MOSS（唯一能产出标签的路径）。
+    /// 带标签的段会跳过 AI 加工，让标签原样活下来。
+    public var noteWantsSpeakerLabels: Bool {
+        noteSpeakerDiarizationEnabled
+            && transcriptionMode == .local
+            && selectedLocalModelId == LocalModels.mossID
+    }
+
+    /// 这份配置真正会调用的云供应商 —— 只碰（也只向 Keychain 索要）在用的
+    /// 那几个 key，而不是每个供应商都读一遍。
+    public var activeCloudProviders: Set<CloudProvider> {
+        var providers = Set<CloudProvider>()
+        if let t = transcriptionMode.cloudProviderForSelfTest { providers.insert(t) }
+        if postProcessingEnabled { providers.insert(postProcessingProvider) }
+        return providers
+    }
+}
