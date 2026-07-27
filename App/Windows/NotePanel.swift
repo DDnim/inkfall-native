@@ -1,4 +1,6 @@
 import AppKit
+import HighlightedTextEditor
+import MarkdownUI
 import SwiftUI
 import InkfallCore
 
@@ -19,7 +21,11 @@ final class InkfallNotePanel: NSPanel {
 final class NotePanelController {
 
     private var panel: InkfallNotePanel?
-    let model = NotePanelModel()
+    let session: NoteSessionController
+
+    init(session: NoteSessionController) {
+        self.session = session
+    }
 
     func toggle() {
         if panel?.isVisible == true { hide() } else { show() }
@@ -32,13 +38,16 @@ final class NotePanelController {
     }
 
     func hide() {
-        // 关闭面板要停掉笔记录音 —— 没有面板就没有笔记录音（隐私规则）。
-        // 录音器接上之后这里要真的停。
+        // 没有面板就没有笔记录音（隐私规则）：关面板必须真的把录音停掉，
+        // 停下来的这一段照常转写并落进笔记，不丢数据。
+        if session.isRecording { session.stop() }
         panel?.orderOut(nil)
     }
 
     var isVisible: Bool { panel?.isVisible ?? false }
     var debugFrame: NSRect? { panel?.frame }
+    /// 自测取证用：SwiftUI 的宿主视图，用来确认内容真的画出来了。
+    var debugContentView: NSView? { panel?.contentView }
 
     private func ensurePanel() {
         guard panel == nil else { return }
@@ -59,7 +68,7 @@ final class NotePanelController {
         p.isFloatingPanel = true
         p.minSize = NSSize(width: 300, height: 320)
 
-        let host = NSHostingView(rootView: NotePanelView(model: model))
+        let host = NSHostingView(rootView: NotePanelView(session: session))
         host.frame = p.contentView?.bounds ?? .zero
         host.autoresizingMask = [.width, .height]
         p.contentView = host
@@ -75,20 +84,8 @@ final class NotePanelController {
     }
 }
 
-@MainActor
-@Observable
-final class NotePanelModel {
-    var recording = false
-    var paused = false
-    var autoSegment = true
-    var autoPaste = false
-    var noteTitle = ""
-    var segments: [NoteSessionSegment] = []
-    var pasteTargetName: String?
-}
-
 struct NotePanelView: View {
-    @Bindable var model: NotePanelModel
+    @Bindable var session: NoteSessionController
 
     private let paperOnInk = Color(red: 0.945, green: 0.91, blue: 0.84)
     private let cinnabar = Color(red: 0.84, green: 0.35, blue: 0.29)
@@ -97,9 +94,8 @@ struct NotePanelView: View {
         VStack(spacing: 0) {
             titlebar
             Divider().overlay(paperOnInk.opacity(0.1))
-            body_
+            content
             Divider().overlay(paperOnInk.opacity(0.1))
-            pills
             recbar
         }
         .background(
@@ -109,129 +105,169 @@ struct NotePanelView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
+    // MARK: - 标题栏
+
     private var titlebar: some View {
         HStack(spacing: 8) {
-            icon("arrow.up.to.line")            // ⤒ 收进刘海
-            icon("ellipsis")
-            Text(model.noteTitle.isEmpty ? "落笔 · 笔记模式" : model.noteTitle)
+            Image(systemName: session.isRecording ? "waveform" : "square.and.pencil")
+                .font(.system(size: 10))
+                .foregroundStyle(session.isRecording ? cinnabar : paperOnInk.opacity(0.72))
+                .frame(width: 19, height: 19)
+                .background(session.isRecording ? cinnabar.opacity(0.24)
+                                                : paperOnInk.opacity(0.09),
+                            in: RoundedRectangle(cornerRadius: 5))
+            Text(session.title.isEmpty ? "落笔" : session.title)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(paperOnInk)
                 .lineLimit(1)
             Spacer(minLength: 4)
-            icon("pin.fill", on: true)
-            icon("xmark")
+            // 录音中是预览、停下来是编辑器 —— 所以这个标签说的是**当前**状态，
+            // 不是一个可切的开关。切换靠开始/停止录音。
+            Text(session.isRecording ? "预览" : "编辑")
+                .font(.system(size: 9.5))
+                .foregroundStyle(paperOnInk.opacity(0.5))
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
     }
 
-    private func icon(_ name: String, on: Bool = false) -> some View {
-        Image(systemName: name)
-            .font(.system(size: 10))
-            .foregroundStyle(on ? cinnabar : paperOnInk.opacity(0.72))
-            .frame(width: 19, height: 19)
-            .background(on ? cinnabar.opacity(0.24) : paperOnInk.opacity(0.09),
-                        in: RoundedRectangle(cornerRadius: 5))
+    // MARK: - 正文
+
+    @ViewBuilder
+    private var content: some View {
+        if session.isRecording {
+            preview
+        } else {
+            editor
+        }
     }
 
-    private var body_: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 7) {
-                if model.segments.isEmpty {
-                    // 空态是多行使用指引 —— 面板第一次打开时，用户还不知道
-                    // 「说话会自己落成一段」这件事。
-                    VStack(alignment: .leading, spacing: 5) {
-                        ForEach(emptyGuide, id: \.self) { line in
-                            Text(line)
-                                .font(.system(size: 11))
-                                .foregroundStyle(paperOnInk.opacity(0.42))
-                        }
+    /// 录音中：只读的 markdown 预览。正文是段落合成的，用户此刻不该编辑它 ——
+    /// 下一段随时会追加进来，光标会被挤走。
+    private var preview: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if session.body.isEmpty && session.inFlight == 0 {
+                        emptyGuide
+                    } else {
+                        Markdown(session.body)
+                            .markdownTheme(.inkDark)
+                            .textSelection(.enabled)
                     }
-                    .padding(.top, 8)
-                } else {
-                    ForEach(model.segments) { segment in
-                        segmentBlock(segment)
+                    if session.inFlight > 0 {
+                        Text("\(session.inFlight) 段转写中…")
+                            .font(.system(size: 10.5))
+                            .italic()
+                            .foregroundStyle(paperOnInk.opacity(0.42))
                     }
+                    Color.clear.frame(height: 1).id("bottom")
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(11)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(11)
+            // 新段落落进来就滚到底 —— 边说边看的时候不该还要自己拖。
+            .onChange(of: session.body) { _, _ in
+                withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
         }
         .frame(maxHeight: .infinity)
     }
 
-    private var emptyGuide: [String] {
-        ["按 ⌥Space 开始 / 停止录音（⌥, 也可以）",
-         "说话自然停顿约 1.3 秒自动切段",
-         "双击或 ⌘单击一段，插入到目标窗口",
-         "单击右⌥：粘贴所有新内容"]
+    /// 停下来之后：markdown 编辑器（正则高亮，NSTextView 底子）。
+    private var editor: some View {
+        HighlightedTextEditor(text: $session.draft, highlightRules: .markdown)
+            .introspect { editor in
+                let view = editor.textView
+                view.backgroundColor = .clear
+                view.drawsBackground = false
+                // ⚠️ 光关掉 NSTextView 的背景不够：滚动视图自己还垫了一层
+                // NSVisualEffectView，在深墨面板上会透出一片浅色。
+                view.enclosingScrollView?.drawsBackground = false
+                view.enclosingScrollView?.backgroundColor = .clear
+                view.insertionPointColor = NSColor(cinnabar)
+                view.textColor = NSColor(paperOnInk)
+                view.font = .systemFont(ofSize: 11.5)
+                view.textContainerInset = NSSize(width: 8, height: 9)
+            }
+            .onChange(of: session.draft) { _, _ in session.commitDraft() }
+            .frame(maxHeight: .infinity)
     }
 
-    private func segmentBlock(_ segment: NoteSessionSegment) -> some View {
-        HStack(alignment: .top, spacing: 0) {
-            Rectangle()
-                .fill(segment.pasted ? paperOnInk.opacity(0.2) : cinnabar.opacity(0.55))
-                .frame(width: 2)
-            Text(segment.status == .processing ? "转写中…" : segment.displayText)
-                .font(.system(size: 11))
-                .italic(segment.status == .processing)
-                .foregroundStyle(paperOnInk.opacity(segment.status == .processing ? 0.42 : 1))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+    private var emptyGuide: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(["按 ⌥Space 开始 / 停止录音（⌥, 也可以）",
+                     "说话自然停顿约 1.3 秒自动切一段",
+                     "停下来之后这里变成 markdown 编辑器",
+                     "每次开始录音都会新建一篇笔记"], id: \.self) { line in
+                Text(line)
+                    .font(.system(size: 11))
+                    .foregroundStyle(paperOnInk.opacity(0.42))
+            }
         }
-        .background(paperOnInk.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
-        // 已粘贴的降到 44% 透明但**不消失** —— 还能再次粘贴。
-        .opacity(segment.pasted ? 0.44 : 1)
-    }
-
-    /// 会话开关：按触碰频率分组，这四个是常改的，所以常驻。
-    private var pills: some View {
-        HStack(spacing: 5) {
-            pill("doc.on.clipboard", "自动粘贴", on: model.autoPaste)
-            pill("scissors", "自动断句", on: model.autoSegment)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 11)
         .padding(.top, 8)
     }
 
-    private func pill(_ symbol: String, _ label: String, on: Bool) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: symbol).font(.system(size: 9))
-            Text(label).font(.system(size: 9.5))
-        }
-        .foregroundStyle(on ? Color(red: 0.5, green: 0.82, blue: 0.75) : paperOnInk.opacity(0.6))
-        .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(on ? Color(red: 0.16, green: 0.5, blue: 0.45).opacity(0.3)
-                       : paperOnInk.opacity(0.07),
-                    in: Capsule())
-    }
+    // MARK: - 录音条
 
-    /// 录音条只在录音**或暂停**时出现（暂停保持在屏上但灰化、计时冻结）。
     private var recbar: some View {
         HStack(spacing: 8) {
-            Text(model.recording ? "00:00" : "--:--")
+            Text(session.isRecording ? timeText : "--:--")
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 .foregroundStyle(cinnabar)
             Spacer()
-            recButton("scissors")
-            recButton(model.paused ? "play.fill" : "pause.fill")
-            recButton("stop.fill", destructive: true)
+            if session.isRecording {
+                recButton("scissors") { session.flushNow() }
+                recButton("stop.fill", destructive: true) { session.stop() }
+            } else {
+                recButton("record.circle") { _ = session.start() }
+            }
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
-        .background(cinnabar.opacity(model.recording ? 0.08 : 0.0))
-        .opacity(model.recording || model.paused ? 1 : 0.45)
+        .background(cinnabar.opacity(session.isRecording ? 0.08 : 0.0))
     }
 
-    private func recButton(_ symbol: String, destructive: Bool = false) -> some View {
-        Image(systemName: symbol)
-            .font(.system(size: 9))
-            .foregroundStyle(destructive ? Color(red: 0.94, green: 0.65, blue: 0.61) : paperOnInk)
-            .frame(width: 22, height: 22)
-            .background(destructive ? Color(red: 0.7, green: 0.23, blue: 0.18).opacity(0.4)
-                                    : paperOnInk.opacity(0.1),
-                        in: RoundedRectangle(cornerRadius: 6))
+    private var timeText: String {
+        String(format: "%02d:%02d", session.elapsedSeconds / 60, session.elapsedSeconds % 60)
+    }
+
+    private func recButton(_ symbol: String, destructive: Bool = false,
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 9))
+                .foregroundStyle(destructive ? Color(red: 0.94, green: 0.65, blue: 0.61)
+                                             : paperOnInk)
+                .frame(width: 22, height: 22)
+                .background(destructive ? Color(red: 0.7, green: 0.23, blue: 0.18).opacity(0.4)
+                                        : paperOnInk.opacity(0.1),
+                            in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+extension MarkdownUI.Theme {
+    /// 面板是深墨底，`.basic` 与 `.gitHub` 都是给浅底做的，所以从 `.basic`
+    /// 派生并只覆盖颜色与字号。
+    ///
+    /// ⚠️ 不碰 `.heading1 { }` 这类 block-style 闭包 —— 它们要求返回
+    /// `some View`，而 `View` 的修饰符是 MainActor 隔离的，Swift 6 的严格并发
+    /// 不让把结果交给一个 nonisolated 闭包。标题的相对字号 `.basic` 已经有了。
+    static var inkDark: MarkdownUI.Theme {
+        let paper = Color(red: 0.945, green: 0.91, blue: 0.84)
+        return MarkdownUI.Theme.basic
+            .text {
+                ForegroundColor(paper)
+                FontSize(11.5)
+            }
+            .code {
+                FontFamilyVariant(.monospaced)
+                FontSize(10.5)
+                ForegroundColor(Color(red: 0.5, green: 0.82, blue: 0.75))
+            }
+            .link { ForegroundColor(Color(red: 0.84, green: 0.35, blue: 0.29)) }
+            .strong { FontWeight(.semibold) }
     }
 }

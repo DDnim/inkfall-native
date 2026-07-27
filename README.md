@@ -27,8 +27,10 @@
 | 区分人物（Pyannote，11 MB，与转写并行跑） | ✅ 开关 + 模型管理 |
 | 模型管理（切换 / 下载 / 删除 / 磁盘占用 / 空闲卸载） | ✅ 托盘子菜单 + 设置页 |
 | 三层插入（零激活 / AX 零焦点 / 切换回落） | ✅ |
-| 云端转写与降级 · 九个加工预设 · 切段与粘贴队列 | ⬜ |
-| **贾维斯** · **笔记编辑器** | ⬜ 本轮刻意不做 |
+| 落笔：连续录音 + 自动切段 + 按序落正文 + 落盘 | ✅ |
+| 笔记面板：录音时 markdown 预览 / 停下后 markdown 编辑器 | ✅ |
+| 云端转写与降级 · 九个加工预设 | ⬜ |
+| 落笔的合并 / 暂停 / 融合进刘海 · **贾维斯** | ⬜ |
 
 实测（M4 MacBook Air，Whisper Large v3 Turbo）：11 秒中文音频，模型常驻内存时
 转写 **0.70 s**；冷启动含 CoreML 编译 7.4 s，所以启动时会预热已下载的模型，
@@ -116,6 +118,19 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 
 > 本机 `xcode-select` 指向 CommandLineTools，所以要显式给 `DEVELOPER_DIR`。
 > 这样不改动系统全局设置。
+
+## 落笔（笔记模式）
+
+⌥Space 开始一段连续录音：说到停顿约 1.3 秒自动切一段，每段独立转写，
+按**说话顺序**落进正文（第 3 段先转完也得等第 2 段 —— `OrderedPasteQueue`）。
+再按 ⌥Space 停止，停下来时还在飞的段照常转写补进正文，绝不丢数据。
+
+- **录音中**是只读的 markdown 预览（[swift-markdown-ui](https://github.com/gonzalezreal/swift-markdown-ui)，
+  底层 swift-cmark）。此刻不该可编辑 —— 下一段随时追加进来会把光标挤走。
+- **停下来**变成 markdown 编辑器（[HighlightedTextEditor](https://github.com/kyle-n/HighlightedTextEditor)，
+  NSTextView + 正则高亮）。
+- 每次开始录音都**新建一篇**笔记，本轮不做合并。笔记落在 `history.json`
+  （名字沿用 Tauri 版，产品上它已经是「笔记」），最多 100 条。
 
 ## 已定的两个方向
 

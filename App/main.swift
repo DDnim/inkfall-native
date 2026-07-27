@@ -17,10 +17,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = SettingsStore()
     private let recorder = AudioRecorder()
     private let notch = NotchOverlayController()
-    private let notePanel = NotePanelController()
+    private let noteStore = NoteStore()
+    private lazy var noteSession = NoteSessionController(
+        recorder: recorder, transcriber: transcriber, store: store, notes: noteStore)
+    private lazy var notePanel = NotePanelController(session: noteSession)
     private lazy var models = ModelCatalog(store: store, transcriber: transcriber)
     private lazy var hub = HubWindowController(store: store, permissions: permissions,
-                                               models: models)
+                                               models: models, notes: noteStore)
 
     private let transcriber = LocalTranscriber()
 
@@ -80,6 +83,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // 落笔自测：开一段真实的连续录音，外放喂话，看自动切段、按序落正文、
+        // 落盘成一篇笔记这几件事是不是真的发生了。
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--note-test") {
+            runNoteTest(wav: ProcessInfo.processInfo.arguments[safe: index + 1] ?? "")
+            return
+        }
+
         // 模型下载自测：走 ModelCatalog 的完整流程（两个界面共用的状态机）。
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--model-download-test") {
             runModelDownloadTest(id: ProcessInfo.processInfo.arguments[safe: index + 1] ?? "")
@@ -125,13 +135,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hub.show(page: .operators)
             notePanel.show()
             notch.show(state: .recording, message: "停顿自动切段 · ⌥. 手动切")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
                 guard let self else { return }
                 selfTest = true
+                // AX 读自己的窗口树要求 App 处在激活态，否则 kAXWindows 返回空数组。
+                NSApp.activate(ignoringOtherApps: true)
+                Thread.sleep(forTimeInterval: 0.6)
                 emit(self.debugGeometry())
                 // 窗口截图受 TCC 限制，但本进程有辅助功能授权 —— 可以走 AX
                 // 把自己渲染出来的文字读回来，这是唯一能证明「页面真的画出来了」
                 // 而不只是「构建通过」的通道。
+                // AX 自读窗口树在本机时灵时不灵（返回空数组），截图又被 TCC 挡着。
+                // NSView 树是第三条路：SwiftUI 真的画出东西了，这里就有对应的
+                // 宿主视图与文本视图；画不出来就是一层空壳。
+                emit("落笔面板视图树：")
+                for line in Self.viewTree(notePanel.debugContentView) { emit("  \(line)") }
                 emit("合并窗文字：")
                 for line in Self.axTexts(pid: getpid()) { emit("  \(line)") }
                 Log.flush()
@@ -580,6 +598,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         event.post(tap: .cghidEventTap)
     }
 
+    private func runNoteTest(wav: String) {
+        selfTest = true
+        guard recorder.microphoneAuthorized else {
+            emit("麦克风未授权")
+            Log.flush()
+            exit(1)
+        }
+        notePanel.show()
+        guard noteSession.start() else {
+            emit("起录失败")
+            Log.flush()
+            exit(1)
+        }
+        emit("会话开始 noteID=\(noteSession.noteID ?? "?") 模式=\(noteSession.mode)")
+
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let player = Process()
+            player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+            player.arguments = [wav]
+            try? player.run()
+            player.waitUntilExit()
+            Thread.sleep(forTimeInterval: 2.0)   // 让尾段的停顿把最后一刀切出来
+
+            DispatchQueue.main.async { [self] in
+                emit("停止前：段数=\(noteSession.segments.count) 在飞=\(noteSession.inFlight)")
+                // 录音中的面板走 markdown 预览 —— 这是唯一能看到它真的画出来了
+                // 的时机（截图被 TCC 挡着，AX 自读窗口树在本机不可靠）。
+                emit("录音中的面板视图树：")
+                for line in Self.viewTree(notePanel.debugContentView) { emit("  \(line)") }
+                noteSession.stop()
+                waitForNote(ticks: 0)
+            }
+        }
+    }
+
+    private func waitForNote(ticks: Int) {
+        // 在飞的段停下来之后还要转完 —— 这正是「绝不丢数据」那条要验的。
+        if noteSession.inFlight > 0, ticks < 60 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
+                waitForNote(ticks: ticks + 1)
+            }
+            return
+        }
+        emit("停止后：模式=\(noteSession.mode) 段数=\(noteSession.segments.count)")
+        for segment in noteSession.segments {
+            emit("  段 \(segment.id) [\(segment.status.rawValue)] \(segment.displayText)")
+        }
+        emit("草稿正文：\(noteSession.draft)")
+        let saved = noteStore.notes.first
+        emit("落盘笔记：id=\(saved?.id ?? "无") 标题=\(saved?.title ?? "-")")
+        emit("落盘正文：\(saved?.finalText ?? "")")
+        let ok = noteSession.segments.count >= 1
+            && !(saved?.finalText.isEmpty ?? true)
+            && saved?.id == noteSession.noteID
+        emit(ok ? "✅ 落笔：连续录音 → 自动切段 → 按序落正文 → 落盘 通"
+                : "❌ 落笔链路不完整")
+        Log.flush()
+        exit(ok ? 0 : 1)
+    }
+
     private func runModelDownloadTest(id: String) {
         selfTest = true
         guard let model = LocalModels.definition(id: id) else {
@@ -617,6 +695,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
             pollDownload(id: id, model: model, ticks: ticks + 1)
         }
+    }
+
+    /// 打印 NSView 树。只保留有实际尺寸的节点，并把 NSTextView 的内容摘出来 ——
+    /// 那是「编辑器真的活着」最直接的证据。
+    private static func viewTree(_ root: NSView?, depth: Int = 0) -> [String] {
+        guard let root, depth < 12 else { return [] }
+        var out: [String] = []
+        let size = root.frame.size
+        var line = String(repeating: "  ", count: depth)
+            + "\(type(of: root)) \(Int(size.width))×\(Int(size.height))"
+        if let text = root as? NSTextView {
+            line += " ← 文本 \(text.string.count) 字"
+        }
+        out.append(line)
+        for child in root.subviews where child.frame.width > 1 && child.frame.height > 1 {
+            out += viewTree(child, depth: depth + 1)
+        }
+        return out
     }
 
     /// 走 AX 把本进程窗口里的可见文字全读出来。
@@ -717,7 +813,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             endHold()
 
         case .cancelRecordingPressed:
-            if recorder.isRecording {
+            if noteSession.isRecording {
+                // 落笔用**优雅停止**：在飞的段照常转写保存，绝不丢数据。
+                noteSession.stop()
+            } else if recorder.isRecording {
                 recorder.cancel()
                 stopLevelTicker()
                 flash(.cancelled, "已取消", seconds: 1.2)
@@ -726,11 +825,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
         case .flushSegmentPressed:
-            // Fn 推杆用户的常见情形：松开 Fn 去按组合键时录音其实已经停了。
-            if !recorder.isRecording { flash(.cancelled, "未在录音", seconds: 1.2) }
+            if noteSession.isRecording {
+                noteSession.flushNow()
+            } else if !recorder.isRecording {
+                // Fn 推杆用户的常见情形：松开 Fn 去按组合键时录音其实已经停了。
+                flash(.cancelled, "未在录音", seconds: 1.2)
+            }
 
         case .noteModePressed:
-            notePanel.toggle()
+            // ⌥Space 是「开始/停止落笔录音」，不是「显示/隐藏面板」——
+            // 面板只是这件事的可视化。
+            if noteSession.isRecording {
+                noteSession.stop()
+            } else {
+                notePanel.show()
+                guard noteSession.start() else {
+                    flash(.error, "麦克风未授权", seconds: 2.0)
+                    return
+                }
+            }
             hotkeys?.noteTogglesActive = notePanel.isVisible
 
         case .historyPickerPressed:
@@ -744,6 +857,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func beginHold() {
         guard !recorder.isRecording else { return }
+        // 落笔正在录音时，右⌥ 按住不另起一段 —— 一个麦克风不能同时喂两条管线。
+        guard !noteSession.isRecording else { return }
         guard recorder.microphoneAuthorized else {
             flash(.error, "麦克风未授权", seconds: 2.0)
             return
