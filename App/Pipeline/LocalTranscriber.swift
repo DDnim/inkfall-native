@@ -1,5 +1,6 @@
 import Foundation
 import InkfallCore
+import ArgmaxCore
 import SpeakerKit
 import WhisperKit
 
@@ -27,6 +28,9 @@ actor LocalTranscriber {
         let elapsed: TimeInterval
         /// 说话人数量；未开分离时为 nil。
         let speakerCount: Int?
+        /// 文本里真的带了说话人标签。带标签的结果**不能再过润色** ——
+        /// 「说话人 1：」里那个空格紧跟汉字，规则润色会把它删掉。
+        var labeled = false
     }
 
     enum Failure: LocalizedError {
@@ -170,12 +174,21 @@ actor LocalTranscriber {
 
         let results = try await kit.transcribe(audioArray: samples, decodeOptions: options)
 
-        if request.diarize, let labeled = try? await self.labeled(results, samples: samples) {
-            let corrected = VocabularyCorrector(replacements: request.replacements)
-                .apply(labeled.text)
-            return Result(text: corrected, language: results.first?.language,
-                          elapsed: Date().timeIntervalSince(started),
-                          speakerCount: labeled.speakerCount)
+        if request.diarize {
+            // 分离失败不该让整段听写跟着丢 —— 回落到不带标签的纯文本。
+            do {
+                let labeled = try await self.labeled(results, samples: samples)
+                let corrected = VocabularyCorrector(replacements: request.replacements)
+                    .apply(labeled.text)
+                return Result(text: corrected, language: results.first?.language,
+                              elapsed: Date().timeIntervalSince(started),
+                              speakerCount: labeled.speakerCount,
+                              labeled: labeled.labeled)
+            } catch let failure as Failure {
+                throw failure
+            } catch {
+                Log.write("diarize: 失败，回落无标签文本 \(error)")
+            }
         }
 
         let raw = results.map(\.text).joined(separator: " ")
@@ -195,11 +208,10 @@ actor LocalTranscriber {
 
     // MARK: - 说话人分离
 
-    /// 跑 Pyannote 并把说话人贴回转写段。
-    ///
-    /// ⚠️ **只有一个说话人时不加标签** —— 独白前面挂一排「说话人 1：」只是噪音。
+    /// 跑 Pyannote 并把说话人贴回转写段。格式化交给 Core 的
+    /// `SpeakerTranscript`（可测），这里只负责把 SpeakerKit 的类型翻译过去。
     private func labeled(_ results: [TranscriptionResult],
-                         samples: [Float]) async throws -> (text: String, speakerCount: Int) {
+                         samples: [Float]) async throws -> SpeakerTranscript.Output {
         let speaker = try await self.speakerKit()
         let diarization = try await speaker.diarize(audioArray: samples)
         let grouped = diarization.addSpeakerInfo(to: results)
@@ -208,31 +220,60 @@ actor LocalTranscriber {
         Log.write("diarize: pyannote=\(diarization.speakerCount) 段=\(diarization.segments.count)"
                   + " 贴回后=\(grouped.flatMap { $0 }.count)")
 
-        let lines = grouped.flatMap { $0 }
-            .map { (id: $0.speaker.speakerId, text: $0.text.trimmingCharacters(in: .whitespaces)) }
-            .filter { !$0.text.isEmpty }
-        let distinct = Set(lines.compactMap(\.id))
-
-        guard distinct.count > 1 else {
-            let text = lines.map(\.text).joined(separator: " ")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !HallucinationFilter.isHallucination(text) else { throw Failure.noSpeech(text) }
-            return (text, max(distinct.count, 1))
+        let segments = grouped.flatMap { $0 }
+            .map { SpeakerTranscript.Segment(speaker: $0.speaker.speakerId, text: $0.text) }
+        let output = SpeakerTranscript.compose(segments)
+        guard !HallucinationFilter.isHallucination(output.text) else {
+            throw Failure.noSpeech(output.text)
         }
+        return output
+    }
 
-        // 连续同一人的段合并，否则一句话会被切成好几行。
-        var merged: [(id: Int?, text: String)] = []
-        for line in lines {
-            if let last = merged.last, last.id == line.id {
-                merged[merged.count - 1].text += line.text
-            } else {
-                merged.append(line)
-            }
+    /// 分离模型的下载与体积。它跟 Whisper 完全独立 —— 一共 11 MB，
+    /// 比任何一个转写档位便宜两个数量级。
+    static var diarizationRoot: URL {
+        modelRoot.appendingPathComponent("models/argmaxinc/speakerkit-coreml")
+    }
+
+    nonisolated static var isDiarizationDownloaded: Bool {
+        let files = (try? FileManager.default.contentsOfDirectory(
+            atPath: diarizationRoot.path)) ?? []
+        return files.contains("speaker_embedder") && files.contains("speaker_segmenter")
+    }
+
+    nonisolated static var diarizationBytes: Int64 {
+        isDiarizationDownloaded ? directorySize(diarizationRoot) : 0
+    }
+
+    static func downloadDiarization(progress: @escaping @Sendable (Double) -> Void) async throws {
+        try FileManager.default.createDirectory(at: modelRoot, withIntermediateDirectories: true)
+        let kit = try await SpeakerKit(
+            PyannoteConfig(downloadBase: modelRoot.path, download: false,
+                           verbose: false, logLevel: .none))
+        // SpeakerKitDiarizer 同时满足 Diarizer 和 ModelManager 两个协议，
+        // 两边都有 downloadModels(progressCallback:) —— 直接调会歧义，
+        // 必须显式指定走哪一个。
+        if let manager = kit.diarizer as? ModelManager {
+            try await manager.downloadModels(progressCallback: { progress($0.fractionCompleted) })
+        } else {
+            try await kit.ensureModelsLoaded()
         }
-        let text = merged
-            .map { "说话人 \(($0.id ?? 0) + 1)：\($0.text)" }
-            .joined(separator: "\n")
-        return (text, distinct.count)
+        progress(1)
+    }
+
+    func deleteDiarization() throws {
+        let speaker = diarizer
+        diarizer = nil
+        Task { await speaker?.unloadModels() }
+        if FileManager.default.fileExists(atPath: Self.diarizationRoot.path) {
+            try FileManager.default.removeItem(at: Self.diarizationRoot)
+        }
+    }
+
+    /// 预热分离模型，避免开着「区分人物」时第一段多等几秒。
+    func prewarmDiarization() async {
+        guard Self.isDiarizationDownloaded else { return }
+        _ = try? await speakerKit()
     }
 
     private func speakerKit() async throws -> SpeakerKit {
