@@ -63,6 +63,15 @@ final class NoteSessionController {
     /// onChange 分不清「程序赋值」和「用户敲键」。
     private var lastSyncedDraft = ""
 
+    /// 起录那一刻的前台窗口，自动粘贴往这里落。
+    /// **必须在起录时抓**：等段落转完再看前台是谁，用户多半已经切走了。
+    /// 面板是非激活的 NSPanel，所以它自己永远不会变成目标。
+    private var pasteTarget: PasteTarget?
+
+    /// 自动粘贴的**串行**队列。插入路径里全是 `Thread.sleep`（等剪贴板、等激活），
+    /// 放主线程会把面板冻住；而并发插入会把段落顺序搅乱 —— 顺序正是落笔的全部意义。
+    private let pasteQueue = DispatchQueue(label: "app.inkfall.note-paste", qos: .userInitiated)
+
 
     /// 已录秒数。**只在整秒变化时才写** —— tick 是 30 Hz，每次都写会让整个
     /// 面板一秒重绘三十次。
@@ -70,6 +79,32 @@ final class NoteSessionController {
 
     /// 还在转写中的段数，面板用它显示「N 段转写中」。
     var inFlight: Int { segments.filter { $0.status == .processing }.count }
+
+    // MARK: - 三个开关
+
+    // 真值都住在 `AppSettings` 里，这里只是让面板能读能写同一份值 ——
+    // 面板和设置页翻的是同一个开关，不是两份会漂移的副本。
+    // （`SettingsStore` 现在是 @Observable，所以这些 computed 读出来会被
+    // SwiftUI 的观察追踪到，翻完立刻重绘。）
+
+    var autoSegment: Bool {
+        get { store.settings.noteAutoSegment }
+        set { store.settings.noteAutoSegment = newValue; store.save() }
+    }
+
+    var autoPaste: Bool {
+        get { store.settings.noteAutoPaste }
+        set { store.settings.noteAutoPaste = newValue; store.save() }
+    }
+
+    var diarize: Bool {
+        get { store.settings.noteSpeakerDiarizationEnabled }
+        set { store.settings.noteSpeakerDiarizationEnabled = newValue; store.save() }
+    }
+
+    /// 分离模型下载了没有。没下就只能把「区分人物」置灰 —— 让用户翻一个
+    /// 翻了也不会生效的开关，比不给这个开关更糟。
+    var diarizationReady: Bool { LocalTranscriber.isDiarizationDownloaded }
 
     /// 单段硬上限。说了三分钟没停顿的人是存在的，不切就会一直攒着，
     /// 转写延迟和失败代价都随时长线性上涨。
@@ -110,6 +145,7 @@ final class NoteSessionController {
         segmenter.reset()
         sessionLanguage = nil
         nextSegmentID = 0
+        pasteTarget = PasteTarget.current()
         noteID = UUID().uuidString.uppercased()
         title = HistoryEntry.defaultTitle(HistoryEntry.nowMs())
         mode = .recording
@@ -177,7 +213,15 @@ final class NoteSessionController {
     }
 
     private func tick() {
-        guard isRecording, recorder.isRecording else { return }
+        guard isRecording else { return }
+        // 录音器在会话之外被停掉了。面板绝不能继续显示「录音中」而实际
+        // 一个采样都没在收 —— 那正是「录音状态锁不住、录完 0 段」的样子。
+        // 早年这条 guard 是静默 `return`，于是计时器停在原地、界面继续骗人。
+        guard recorder.isRecording else {
+            Log.write("note: 录音器已被外部停止，会话自愈收尾")
+            stop()
+            return
+        }
         let now = CFAbsoluteTimeGetCurrent()
         let delta = now - lastTick
         lastTick = now
@@ -285,9 +329,31 @@ final class NoteSessionController {
             } else {
                 segments.append(ready)
             }
+            autoPasteIfNeeded(id: ready.id)
         }
         syncDraft()
         persist()
+    }
+
+    /// 自动粘贴：段落一落进正文就同时插进起录时的那个窗口。
+    ///
+    /// 在 `drain()` 里做而不是在 `finish()` 里，是为了白拿队列的顺序保证 ——
+    /// 第 3 段先转完也不会先粘出去。`pasted` 标记防重复：`drain` 对同一个 id
+    /// 只会走一次，但会话恢复之类的路径将来可能再喂一遍。
+    private func autoPasteIfNeeded(id: UInt64) {
+        guard autoPaste else { return }
+        guard let index = segments.firstIndex(where: { $0.id == id }),
+              segments[index].status == .done, !segments[index].pasted else { return }
+        let text = segments[index].displayText
+        guard !text.isEmpty else { return }
+        segments[index].pasted = true
+
+        let target = pasteTarget
+        pasteQueue.async {
+            let route = MacAutomation.insert(text, into: target)
+            Log.write("note: 自动粘贴 段\(id) route=\(route.rawValue) "
+                + "→ \(target?.appName ?? "剪贴板") \(text.count) 字")
+        }
     }
 
     // MARK: - 落盘

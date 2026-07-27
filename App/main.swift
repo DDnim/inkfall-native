@@ -29,6 +29,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 录音**开始那一刻**的前台窗口。等转写回来再看前台是谁，就粘到别人窗口里了。
     private var pasteTarget: PasteTarget?
+
+    /// 这一次「按住说话」是不是真的占着录音器。
+    ///
+    /// ⚠️ 没有这个标记就会丢掉整场长录。⌥Space / ⌥. / ⌥[ 里的那个 ⌥
+    /// **就是推杆键本身**：按下它，matcher 立刻发 `.overlayHoldPressed`，
+    /// `beginHold()` 已经起录；随后 Space 才到，落笔会话接管同一个录音器；
+    /// 最后松开 ⌥ 发 `.overlayHoldReleased` —— 无条件的 `endHold()` 就把
+    /// 落笔的录音器停了。面板还显示「录音中」，实际一个采样都没在收，
+    /// 停下来永远是 0 段。
+    private var holdOwnsRecorder = false
     private var modelDownloading = false
 
     /// 会话内语言锁定：第一段检测到什么，后面就跟着它走。
@@ -125,6 +135,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 单测覆盖不到 tap 本身，而真机按键又没法在这里取证 —— 只能自己发事件。
         if ProcessInfo.processInfo.arguments.contains("--hotkey-selftest") {
             runHotkeySelfTest()
+            return
+        }
+
+        // ⌥Space 起长录的回归自测：右⌥ 的按下会先起一次「按住说话」，
+        // 松开时不能把落笔的录音器一并停掉。
+        if ProcessInfo.processInfo.arguments.contains("--note-hotkey-test") {
+            runNoteHotkeyTest()
             return
         }
 
@@ -585,6 +602,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// ⌥Space 起长录的回归自测。
+    ///
+    /// 盯的是这个：右⌥ 按下时 matcher 必然先发一次 `.overlayHoldPressed`，
+    /// `beginHold()` 已经起录；Space 随后才到。松开右⌥ 的
+    /// `.overlayHoldReleased` 曾经无条件 `endHold()`，把落笔会话的录音器
+    /// 停掉 —— 面板显示「录音中」，实际一个采样都没收，停下来永远 0 段。
+    /// 所以断言的是**松开右⌥ 若干秒之后录音器还活着、计时还在走**。
+    private func runNoteHotkeyTest() {
+        selfTest = true
+        guard AXIsProcessTrusted() else {
+            emit("未授权辅助功能")
+            Log.flush()
+            exit(1)
+        }
+        startHotkeys()
+        emit("tap 已启用 —— 合成 ⌥Space")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [self] in
+            emit("→ 右⌥ 按下")
+            Self.postRightOption(down: true)
+        }
+        // 人手按 ⌥Space，⌥ 与 Space 之间必然隔着几十到几百毫秒。
+        // 这段迟滞正是 bug 的窗口，不能压缩掉。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
+            emit("按住 ⌥ 中：推杆录音=\(recorder.isRecording)")
+            emit("→ Space 敲一下")
+            Self.postSpace(down: true)
+            Self.postSpace(down: false)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { [self] in
+            emit("会话已开：落笔录音=\(noteSession.isRecording) 录音器=\(recorder.isRecording)")
+            emit("→ 右⌥ 松开")
+            Self.postRightOption(down: false)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.5) { [self] in
+            let held = noteSession.isRecording && recorder.isRecording
+            emit("松开 4 秒后：落笔录音=\(noteSession.isRecording) "
+                 + "录音器=\(recorder.isRecording) 计时=\(noteSession.elapsedSeconds)s "
+                 + String(format: "本段已录=%.2fs", recorder.takeDurationSeconds))
+            emit("收到事件：\(selfTestEvents.map(String.init(describing:)).joined(separator: " → "))")
+            // 计时器还在走 = tick 没被 recorder 掉线卡住。
+            let ticking = noteSession.elapsedSeconds >= 3
+            emit(held && ticking ? "✅ 长录锁得住" : "❌ 录音状态没锁住")
+            noteSession.cancel()
+            Log.flush()
+            exit(held && ticking ? 0 : 1)
+        }
+    }
+
+    private static func postSpace(down: Bool) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let event = CGEvent(keyboardEventSource: source,
+                                  virtualKey: 49, keyDown: down) else { return }
+        // 右⌥ 还按着，所以 alternate 位（共享位 + 设备位）必须带上，
+        // 否则 matcher 眼里这就是一个裸 Space。
+        event.flags = CGEventFlags(rawValue: 0x80000 | 0x40)
+        event.post(tap: .cghidEventTap)
+    }
+
     /// 合成一个右 ⌥ 的 flagsChanged。修饰键没有 keyDown/keyUp 事件，
     /// 只能造一个键盘事件再改成 flagsChanged。
     private static func postRightOption(down: Bool) {
@@ -705,8 +781,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let size = root.frame.size
         var line = String(repeating: "  ", count: depth)
             + "\(type(of: root)) \(Int(size.width))×\(Int(size.height))"
+        // 背景取证。白屏这类问题看视图树的形状永远看不出来 —— 形状是对的，
+        // 是某一层在画浅色。所以把 drawsBackground / backgroundColor 打出来。
+        func describe(_ color: NSColor?) -> String {
+            guard let rgb = color?.usingColorSpace(.deviceRGB) else { return "?" }
+            if rgb.alphaComponent < 0.01 { return "clear" }
+            return String(format: "rgba(%.2f,%.2f,%.2f,%.2f)",
+                          rgb.redComponent, rgb.greenComponent,
+                          rgb.blueComponent, rgb.alphaComponent)
+        }
         if let text = root as? NSTextView {
             line += " ← 文本 \(text.string.count) 字"
+                + " draws=\(text.drawsBackground) bg=\(describe(text.backgroundColor))"
+        }
+        if let scroll = root as? NSScrollView {
+            line += " ← draws=\(scroll.drawsBackground) bg=\(describe(scroll.backgroundColor))"
+        }
+        if let clip = root as? NSClipView {
+            line += " ← draws=\(clip.drawsBackground) bg=\(describe(clip.backgroundColor))"
         }
         out.append(line)
         for child in root.subviews where child.frame.width > 1 && child.frame.height > 1 {
@@ -813,6 +905,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             endHold()
 
         case .cancelRecordingPressed:
+            abortSpuriousHold()
             if noteSession.isRecording {
                 // 落笔用**优雅停止**：在飞的段照常转写保存，绝不丢数据。
                 noteSession.stop()
@@ -825,6 +918,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
         case .flushSegmentPressed:
+            abortSpuriousHold()
             if noteSession.isRecording {
                 noteSession.flushNow()
             } else if !recorder.isRecording {
@@ -833,6 +927,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
         case .noteModePressed:
+            // ⌥ 按下的那一刻已经起了一截「按住说话」，那是组合键的副产物
+            // 而不是说话内容。先把它丢掉，再接管录音器。
+            abortSpuriousHold()
             // ⌥Space 是「开始/停止落笔录音」，不是「显示/隐藏面板」——
             // 面板只是这件事的可视化。
             if noteSession.isRecording {
@@ -847,12 +944,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hotkeys?.noteTogglesActive = notePanel.isVisible
 
         case .historyPickerPressed:
+            abortSpuriousHold()
             hub.show(page: .home)
+
+        // 落笔的三个开关：右⌥ + S / P / V。面板开着的时候才生效
+        // （`noteTogglesActive` 已经在 noteModePressed 里跟着面板走）。
+        case .noteAutoSegToggle:
+            abortSpuriousHold()
+            noteSession.autoSegment.toggle()
+            flash(.success, noteSession.autoSegment ? "自动分段 开" : "自动分段 关", seconds: 1.2)
+
+        case .noteAutoPasteToggle:
+            abortSpuriousHold()
+            noteSession.autoPaste.toggle()
+            flash(.success, noteSession.autoPaste ? "自动粘贴 开" : "自动粘贴 关", seconds: 1.2)
+
+        case .noteDiarizeToggle:
+            abortSpuriousHold()
+            guard noteSession.diarizationReady else {
+                flash(.error, "分离模型未下载", seconds: 2.0)
+                return
+            }
+            noteSession.diarize.toggle()
+            flash(.success, noteSession.diarize ? "区分人物 开" : "区分人物 关", seconds: 1.2)
 
         default:
             // 其余事件的消费端（转写、加工、粘贴、贾维斯）尚未接入。
             Log.write("hotkey: \(event) —— 消费端未接入")
         }
+    }
+
+    /// 右⌥ 组合键被识别出来了：⌥ 按下时起的那截录音是组合键的副产物，不是说话。
+    /// 丢掉它，并让随后的 `.overlayHoldReleased` 变成空操作。
+    ///
+    /// 不这么做的话，每按一次 ⌥Space / ⌥. / ⌥[ 都会附带转写并粘贴一小段噪声 ——
+    /// 现在只是因为那截通常短到被 `RecordingSubmissionPolicy` 丢掉才没被发现。
+    private func abortSpuriousHold() {
+        guard holdOwnsRecorder else { return }
+        holdOwnsRecorder = false
+        guard recorder.isRecording else { return }
+        recorder.cancel()
+        stopLevelTicker()
+        notch.hide()
+        Log.write("hotkey: 右⌥ 组合键 —— 丢弃推杆按下时起的那截录音")
     }
 
     private func beginHold() {
@@ -873,6 +1007,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             flash(.error, "录音启动失败", seconds: 2.0)
             return
         }
+        holdOwnsRecorder = true
         // 必须在起录时抓，不能等转写回来 —— 那时用户多半已经切走了。
         pasteTarget = PasteTarget.current()
         hideTimer?.invalidate()
@@ -881,6 +1016,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func endHold() {
+        // 只收自己起的那次录音。落笔会话接管之后这里必须是空操作 ——
+        // 见 `holdOwnsRecorder` 的说明。
+        guard holdOwnsRecorder else { return }
+        holdOwnsRecorder = false
         guard recorder.isRecording else { return }
         stopLevelTicker()
         guard let audio = try? recorder.stop() else {
@@ -1120,7 +1259,10 @@ extension AppDelegate: NSMenuDelegate {
 /// ⚠️ 这一版**读**现有 Tauri 版的 `app.inkfall.desktop/settings.json`（验证容错
 /// 解码确实原地兼容），但**写**进自己的 `app.inkfall.native/` —— 骨架阶段绝不
 /// 碰在用的数据。两边正式合流要等录音与笔记接上之后。
+/// @Observable：面板上的三个开关直接读写 `store.settings`，不是副本。
+/// 没有它，翻开关不会触发重绘 —— 值变了，界面还是旧的。
 @MainActor
+@Observable
 final class SettingsStore {
     var settings: AppSettings
     /// 快捷键单独一个文件（与现有磁盘布局一致，不塞进 settings.json）。
