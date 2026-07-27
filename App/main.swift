@@ -18,7 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let recorder = AudioRecorder()
     private let notch = NotchOverlayController()
     private let notePanel = NotePanelController()
-    private lazy var hub = HubWindowController(store: store, permissions: permissions)
+    private lazy var models = ModelCatalog(store: store, transcriber: transcriber)
+    private lazy var hub = HubWindowController(store: store, permissions: permissions,
+                                               models: models)
 
     private let transcriber = LocalTranscriber()
 
@@ -78,6 +80,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // 模型下载自测：走 ModelCatalog 的完整流程（两个界面共用的状态机）。
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--model-download-test") {
+            runModelDownloadTest(id: ProcessInfo.processInfo.arguments[safe: index + 1] ?? "")
+            return
+        }
+
+        // 菜单自测：把托盘菜单（含模型子菜单）的实际结构打出来。
+        // 菜单渲染没法截图取证，只能让它自己报自己的结构。
+        if ProcessInfo.processInfo.arguments.contains("--menu-dump") {
+            selfTest = true
+            emit("托盘菜单：")
+            for item in statusItem?.menu?.items ?? [] {
+                emit("  \(item.isSeparatorItem ? "──────" : item.title)")
+                for sub in item.submenu?.items ?? [] {
+                    let mark = sub.state == .on ? "●" : (sub.isSeparatorItem ? " " : "○")
+                    emit("    \(mark) \(sub.isSeparatorItem ? "──────" : sub.title)"
+                         + (sub.isEnabled ? "" : "（不可用）"))
+                }
+            }
+            Log.flush()
+            exit(0)
+        }
+
         // 粘贴自测：往当前前台窗口插一段带标记的文字，再用 AX 读回来核对。
         // 三层插入里哪一层生效、有没有真的落进目标 App，只能这样取证。
         if ProcessInfo.processInfo.arguments.contains("--paste-test") {
@@ -100,9 +125,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hub.show(page: .operators)
             notePanel.show()
             notch.show(state: .recording, message: "停顿自动切段 · ⌥. 手动切")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
                 guard let self else { return }
-                FileHandle.standardError.write(Data((self.debugGeometry() + "\n").utf8))
+                selfTest = true
+                emit(self.debugGeometry())
+                // 窗口截图受 TCC 限制，但本进程有辅助功能授权 —— 可以走 AX
+                // 把自己渲染出来的文字读回来，这是唯一能证明「页面真的画出来了」
+                // 而不只是「构建通过」的通道。
+                emit("合并窗文字：")
+                for line in Self.axTexts(pid: getpid()) { emit("  \(line)") }
+                Log.flush()
+                exit(0)
             }
             return
         }
@@ -171,25 +204,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildModelMenu() -> NSMenu {
         let menu = NSMenu()
         menu.delegate = self
-        let selected = store.settings.selectedLocalModelId
-        for model in LocalModels.all {
-            let downloaded = LocalTranscriber.isDownloaded(model)
-            let size = downloaded
-                ? ByteCountFormatter.string(fromByteCount: LocalTranscriber.diskBytes(model),
-                                            countStyle: .file)
-                : model.sizeLabel
-            let suffix = downloaded ? "已下载 \(size)" : "未下载 \(size)"
-            let item = NSMenuItem(title: "\(model.name) · \(suffix)",
+        // ⚠️ 必须关掉自动启用：开着时 AppKit 只按「target 响应得了 action 吗」
+        // 决定可用性，我们手动设的 isEnabled 会被忽略。
+        menu.autoenablesItems = false
+        models.refresh()
+        for entry in models.entries {
+            let suffix = entry.downloaded ? "已下载 \(entry.sizeText)"
+                                          : "未下载 \(entry.sizeText)"
+            let item = NSMenuItem(title: "\(entry.model.name) · \(suffix)",
                                   action: #selector(selectModel(_:)), keyEquivalent: "")
-            item.representedObject = model.id
-            item.state = model.id == selected ? .on : .off
+            item.representedObject = entry.id
+            item.state = entry.id == models.selectedID ? .on : .off
             item.target = self
             menu.addItem(item)
         }
         menu.addItem(.separator())
 
-        let current = LocalModels.definition(id: selected)
-        let downloaded = current.map(LocalTranscriber.isDownloaded) ?? false
+        let downloaded = models.selected?.downloaded ?? false
         let download = NSMenuItem(
             title: downloaded ? "重新下载当前模型" : "下载当前模型",
             action: #selector(downloadLocalModel), keyEquivalent: "")
@@ -210,45 +241,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func selectModel(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String,
-              id != store.settings.selectedLocalModelId else { return }
-        store.settings.selectedLocalModelId = id
-        store.save()
-        let name = LocalModels.definition(id: id)?.name ?? id
-        Log.write("model: 切换到 \(id)")
-
-        // 换模型必须把旧的卸掉，否则 1.5 GB 的 turbo 会和新模型一起赖在内存里。
-        Task { [transcriber] in
-            await transcriber.unload()
-            guard let model = LocalModels.definition(id: id),
-                  LocalTranscriber.isDownloaded(model) else {
-                await MainActor.run {
-                    AppDelegate.shared?.flash(.cancelled, "\(name)：还没下载", seconds: 2.0)
-                }
-                return
-            }
-            await MainActor.run {
-                AppDelegate.shared?.flash(.success, "已切到 \(name)", seconds: 1.4)
-            }
-            await transcriber.prewarm(modelID: id)
-        }
+        guard let id = sender.representedObject as? String, id != models.selectedID,
+              let model = LocalModels.definition(id: id) else { return }
+        models.select(id)
+        flash(models.selected?.downloaded == true ? .success : .cancelled,
+              models.selected?.downloaded == true
+                  ? "已切到 \(model.name)" : "\(model.name)：还没下载",
+              seconds: 1.6)
     }
 
     @objc private func deleteLocalModel() {
-        let id = store.settings.selectedLocalModelId
-        guard let model = LocalModels.definition(id: id) else { return }
-        Task { [transcriber] in
-            do {
-                try await transcriber.delete(model)
-                await MainActor.run {
-                    AppDelegate.shared?.flash(.success, "已删除 \(model.name) 的权重", seconds: 1.6)
-                }
-            } catch {
-                await MainActor.run {
-                    AppDelegate.shared?.flash(.error, Self.short(error), seconds: 2.5)
-                }
-            }
-        }
+        guard let entry = models.selected else { return }
+        models.delete(entry.id)
+        flash(.success, "已删除 \(entry.model.name) 的权重", seconds: 1.6)
     }
 
     @objc private func revealModelFolder() {
@@ -586,6 +591,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ? CGEventFlags(rawValue: HotkeyMask.alternate | HotkeyMask.rightOptionDevice)
             : CGEventFlags(rawValue: 0)
         event.post(tap: .cghidEventTap)
+    }
+
+    private func runModelDownloadTest(id: String) {
+        selfTest = true
+        guard let model = LocalModels.definition(id: id) else {
+            emit("未知模型 \(id)")
+            Log.flush()
+            exit(1)
+        }
+        // 先删干净，否则测的是「已经下过」而不是下载本身。
+        models.delete(id)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+            emit("起始状态：已下载=\(models.entries.first { $0.id == id }?.downloaded ?? true)")
+            models.download(id)
+            emit("busy=\(models.busy ?? "无")")
+            pollDownload(id: id, model: model, ticks: 0)
+        }
+    }
+
+    private func pollDownload(id: String, model: LocalModelDefinition, ticks: Int) {
+        guard ticks < 120 else {
+            emit("❌ 超时")
+            Log.flush()
+            exit(1)
+        }
+        let entry = models.entries.first { $0.id == id }
+        if let progress = entry?.progress {
+            if ticks % 4 == 0 { emit(String(format: "进度 %.0f%%", progress * 100)) }
+        } else if models.busy == nil, ticks > 0 {
+            let done = entry?.downloaded ?? false
+            emit("完成：已下载=\(done) 体积=\(entry?.sizeText ?? "?") "
+                 + "错误=\(models.lastError ?? "无")")
+            emit(done ? "✅ 模型下载流程通" : "❌ 下载后状态没刷新成已下载")
+            Log.flush()
+            exit(done ? 0 : 1)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+            pollDownload(id: id, model: model, ticks: ticks + 1)
+        }
+    }
+
+    /// 走 AX 把本进程窗口里的可见文字全读出来。
+    private static func axTexts(pid: pid_t) -> [String] {
+        var out: [String] = []
+        func walk(_ element: AXUIElement, depth: Int) {
+            guard depth < 24 else { return }
+            func string(_ attribute: String) -> String? {
+                var value: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(
+                    element, attribute as CFString, &value) == .success,
+                    let text = value as? String,
+                    !text.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+                return text
+            }
+            let role = string(kAXRoleAttribute) ?? "?"
+            let labels = [string(kAXValueAttribute), string(kAXTitleAttribute),
+                          string(kAXDescriptionAttribute)].compactMap { $0 }
+            if !labels.isEmpty {
+                // 按钮之类的交互元件单独标出来 —— 只看文本读不出「能不能点」。
+                let prefix = role == "AXButton" ? "[按钮] " : ""
+                out.append(prefix + labels.joined(separator: " | "))
+            }
+            var children: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                element, kAXChildrenAttribute as CFString, &children) == .success,
+                let list = children as? [AXUIElement] else { return }
+            for child in list { walk(child, depth: depth + 1) }
+        }
+        var windows: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            AXUIElementCreateApplication(pid),
+            kAXWindowsAttribute as CFString, &windows) == .success,
+            let list = windows as? [AXUIElement] else { return ["（读不到窗口）"] }
+        for window in list { walk(window, depth: 0) }
+        return out
     }
 
     /// 供外部验证脚本读取的窗口几何（截图被 TCC 挡住，只能这样取证）。
