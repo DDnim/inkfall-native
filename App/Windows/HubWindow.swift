@@ -12,13 +12,15 @@ final class HubWindowController {
     private var window: NSWindow?
     private let model: HubModel
 
-    init(store: SettingsStore, permissions: PermissionCoordinator) {
-        model = HubModel(store: store, permissions: permissions)
+    init(store: SettingsStore, permissions: PermissionCoordinator, models: ModelCatalog) {
+        model = HubModel(store: store, permissions: permissions, models: models)
     }
 
     func show(page: HubModel.Page? = nil) {
         ensureWindow()
         if let page { model.selection = page }
+        // 权重可能被用户在访达里删掉了 —— 每次打开都按磁盘现状重来。
+        model.models.refresh()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
@@ -77,10 +79,12 @@ final class HubModel {
     var query = ""
     let store: SettingsStore
     let permissions: PermissionCoordinator
+    let models: ModelCatalog
 
-    init(store: SettingsStore, permissions: PermissionCoordinator) {
+    init(store: SettingsStore, permissions: PermissionCoordinator, models: ModelCatalog) {
         self.store = store
         self.permissions = permissions
+        self.models = models
     }
 
     var settings: AppSettings {
@@ -260,9 +264,17 @@ struct HubView: View {
                 HStack(spacing: 6) {
                     sourceCard("落音云", "推荐 · 无需 key", on: model.settings.transcriptionMode == .groqProxy)
                     sourceCard("自定义", "BYOK", on: [.openai, .groq, .gemini].contains(model.settings.transcriptionMode))
-                    sourceCard("本地", "离线 · MLX", on: model.settings.transcriptionMode == .local)
+                    sourceCard("本地", "离线 · CoreML", on: model.settings.transcriptionMode == .local)
                 }
             }
+            group("本地模型") {
+                ForEach(model.models.entries) { entry in
+                    modelRow(entry)
+                }
+            }
+            caption("权重按需下载到 App 容器（\(LocalTranscriber.modelRoot.lastPathComponent)/），"
+                    + "不进安装包。推理运行时是编译进程序的，不需要另外装任何东西。"
+                    + "空闲 5 分钟会把模型从内存卸掉。")
             group("加工") {
                 toggleRow("AI 加工", "转写后再过一遍大模型",
                           isOn: Binding(get: { model.settings.postProcessingEnabled },
@@ -379,6 +391,43 @@ struct HubView: View {
         }
         .padding(.horizontal, 11).padding(.vertical, 7)
         .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+    }
+
+    /// 一行本地模型：勾选态、体积/下载进度、下载或删除。
+    private func modelRow(_ entry: ModelCatalog.Entry) -> some View {
+        let isSelected = entry.id == model.models.selectedID
+        return HStack(alignment: .center, spacing: 9) {
+            Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                .foregroundStyle(isSelected ? Ink.cinnabar : Ink.ink4)
+                .font(.system(size: 12))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.model.name).font(.system(size: 12)).foregroundStyle(Ink.ink1)
+                if let progress = entry.progress {
+                    Text("下载中 \(Int(progress * 100))%")
+                        .font(.system(size: 9.5)).foregroundStyle(Ink.ink4)
+                } else {
+                    Text(entry.downloaded ? "已下载 · \(entry.sizeText)"
+                                          : "未下载 · \(entry.sizeText)")
+                        .font(.system(size: 9.5)).foregroundStyle(Ink.ink4)
+                }
+            }
+            Spacer(minLength: 6)
+            if entry.progress != nil {
+                ProgressView().controlSize(.small)
+            } else if entry.downloaded {
+                Button("删除") { model.models.delete(entry.id) }
+                    .font(.system(size: 11))
+            } else {
+                Button("下载") { model.models.download(entry.id) }
+                    .font(.system(size: 11))
+                    .disabled(model.models.busy != nil)
+            }
+        }
+        .padding(.horizontal, 11).padding(.vertical, 7)
+        .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+        .contentShape(Rectangle())
+        // 整行可点 —— 只有那个小圆点能点是设置页里最烦人的交互之一。
+        .onTapGesture { model.models.select(entry.id) }
     }
 
     private func sourceCard(_ title: String, _ subtitle: String, on: Bool) -> some View {
