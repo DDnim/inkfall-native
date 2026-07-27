@@ -1,0 +1,72 @@
+name: InkfallNative
+options:
+  bundleIdPrefix: app.inkfall
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  minimumXcodeGenVersion: "2.38"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    # ⚠️ 固定签名身份。ad-hoc 签名每次构建 CDHash 都变，辅助功能授权会随之失效
+    # —— 每改一行代码都要重新授权一次，没法开发。
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "Inkfall Dev Signing"
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: YES
+    # Xcode 26 默认把 Debug 构建拆成「瘦启动器 + Inkfall.debug.dylib」。
+    # 自签名身份没有 Team ID，dyld 会因为两者 Team ID 不一致而拒绝加载
+    # （Library not loaded: @rpath/Inkfall.debug.dylib）。关掉即可。
+    ENABLE_DEBUG_DYLIB: NO
+
+packages:
+  InkfallCore:
+    path: Packages/InkfallCore
+  # 本地转写运行时。纯 Swift + CoreML/ANE，**随 App 一起编译进二进制** ——
+  # 用户不再需要自建 `~/.venvs/inkfall-mlx`（spec/05 §3 明确要求换掉这条路）。
+  # 模型权重仍然按需下载到 App 容器，不进包体。
+  #
+  # 为什么不是 MLX Swift 或 whisper.cpp：前者没有 Whisper 实现，
+  # 后者已经不再提供 Package.swift，两条路都要自己搓构建系统。
+  WhisperKit:
+    url: https://github.com/argmaxinc/WhisperKit
+    exactVersion: 1.0.0
+
+targets:
+  InkfallNative:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+        excludes:
+          - Info.plist
+          - Inkfall.entitlements
+    dependencies:
+      - package: InkfallCore
+        product: InkfallCore
+      - package: WhisperKit
+        product: WhisperKit
+    entitlements:
+      path: App/Inkfall.entitlements
+      # ⚠️ 必须在这里声明。XcodeGen 会**重写** entitlements 文件，
+      # 手写在文件里的键会被静默清空 —— 而少了这一条，签名构建的麦克风
+      # 采集会被 macOS 直接拒绝，且不弹任何 TCC 提示（spec/10 A17）。
+      properties:
+        com.apple.security.device.audio-input: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.inkfall.native
+        PRODUCT_NAME: Inkfall
+        INFOPLIST_FILE: App/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+
+schemes:
+  InkfallNative:
+    build:
+      targets:
+        InkfallNative: all
+    run:
+      config: Debug
