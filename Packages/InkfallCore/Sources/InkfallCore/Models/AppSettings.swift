@@ -58,6 +58,13 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var fixedTranscriptionLanguage: TranscriptionLanguage = .zh
     public var preferredTranscriptionLanguages: [TranscriptionLanguage] = [.zh, .en, .ja]
     public var autoLocalFallbackEnabled = true
+    /// 专有名词表。作为 prompt 发给**云端**转写（OpenAI / Groq 都支持）。
+    /// ⚠️ 本地路径不用它 —— WhisperKit 带 promptTokens 时第二次转写起一律返回空。
+    public var transcriptionVocabulary: [String] = ["落音", "Inkfall"]
+    /// 听错的形态 → 正确写法。本地路径靠它纠专有名词（见 `VocabularyCorrector`）。
+    public var transcriptionReplacements: [String: String] = [
+        "洛因": "落音", "诺音": "落音", "落因": "落音", "inkfull": "Inkfall",
+    ]
 
     // 加工
     public var postProcessingEnabled = false
@@ -107,7 +114,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case transcriptionMode, openAiProviderEnabled, groqProviderEnabled, geminiProviderEnabled
         case selectedOpenAiModel, selectedGroqModel, selectedGeminiModel, selectedLocalModelId
         case transcriptionLanguageMode, fixedTranscriptionLanguage, preferredTranscriptionLanguages
-        case autoLocalFallbackEnabled
+        case autoLocalFallbackEnabled, transcriptionVocabulary
+        case transcriptionReplacements
         case postProcessingEnabled, postProcessingProvider, postProcessingPreset
         case postProcessingPresetModels, selectedOpenAiPostProcessModel
         case selectedGroqPostProcessModel, selectedGeminiPostProcessModel
@@ -149,6 +157,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         preferredTranscriptionLanguages = f(.preferredTranscriptionLanguages,
                                             preferredTranscriptionLanguages)
         autoLocalFallbackEnabled = f(.autoLocalFallbackEnabled, autoLocalFallbackEnabled)
+        transcriptionVocabulary = f(.transcriptionVocabulary, transcriptionVocabulary)
+        transcriptionReplacements = f(.transcriptionReplacements, transcriptionReplacements)
 
         postProcessingEnabled = f(.postProcessingEnabled, postProcessingEnabled)
         postProcessingProvider = f(.postProcessingProvider, postProcessingProvider)
@@ -212,6 +222,17 @@ public struct AppSettings: Codable, Sendable, Equatable {
         // 直接回落默认会把用户选过的档位悄悄降级。
         selectedLocalModelId = LocalModels.migrate(id: selectedLocalModelId)
         processingMemoryContext = String(processingMemoryContext.prefix(8000))
+        // 提示词会占解码上下文，词表必须有上限；顺带去空去重。
+        var seenVocabulary = Set<String>()
+        transcriptionVocabulary = transcriptionVocabulary
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seenVocabulary.insert($0).inserted }
+            .prefix(32)
+            .map { String($0.prefix(40)) }
+        // 空键会把整段文本炸成逐字插入；自反规则纯属浪费。
+        transcriptionReplacements = transcriptionReplacements.filter {
+            !$0.key.trimmingCharacters(in: .whitespaces).isEmpty && $0.key != $0.value
+        }
 
         for preset in PostProcessingPreset.allCases {
             let d = PostProcessingPresetModelConfig.default(for: preset)
@@ -241,13 +262,14 @@ public struct AppSettings: Codable, Sendable, Equatable {
         return derived
     }
 
-    /// 落笔的这一段要不要保留 MOSS 的说话人标签：开关开着**且**当前
-    /// 转写管线确实是本地 MOSS（唯一能产出标签的路径）。
+    /// 落笔的这一段要不要带说话人标签：开关开着**且**走的是本地管线。
+    ///
+    /// 原生版把分离拆成了独立能力（Pyannote CoreML），不再绑死在某一个模型上 ——
+    /// Tauri 版必须选 MOSS 才有标签，那个模型只有 Python 实现，搬不过来。
+    /// 云端路径仍然出不了标签，所以还是要求 local。
     /// 带标签的段会跳过 AI 加工，让标签原样活下来。
     public var noteWantsSpeakerLabels: Bool {
-        noteSpeakerDiarizationEnabled
-            && transcriptionMode == .local
-            && selectedLocalModelId == LocalModels.mossID
+        noteSpeakerDiarizationEnabled && transcriptionMode == .local
     }
 
     /// 这份配置真正会调用的云供应商 —— 只碰（也只向 Keychain 索要）在用的

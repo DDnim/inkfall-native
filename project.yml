@@ -47,6 +47,10 @@ targets:
         product: InkfallCore
       - package: WhisperKit
         product: WhisperKit
+      # 说话人分离（Pyannote CoreML）。落笔的「区分人物」靠它 ——
+      # Tauri 版用的 MOSS 只有 Python 实现，搬不过来。
+      - package: WhisperKit
+        product: SpeakerKit
     entitlements:
       path: App/Inkfall.entitlements
       # ⚠️ 必须在这里声明。XcodeGen 会**重写** entitlements 文件，

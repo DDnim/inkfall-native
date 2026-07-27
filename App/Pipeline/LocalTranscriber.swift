@@ -1,5 +1,6 @@
 import Foundation
 import InkfallCore
+import SpeakerKit
 import WhisperKit
 
 /// 本地转写。CoreML 运行时随 App 编译进二进制，**用户不需要单独安装任何东西**
@@ -8,21 +9,39 @@ import WhisperKit
 /// 要下载的只有模型权重，落在 App 容器里 —— 不进包体，否则更新包会被拖垮。
 actor LocalTranscriber {
 
-    struct Result {
+    struct Request: Sendable {
+        var wavURL: URL
+        var modelID: String
+        /// `nil` = 让模型自己检测（第一段），之后跟着会话锁走。
+        var language: String?
+        /// 专有名词纠错：听错的形态 → 正确写法。解码之后做，不碰提示词。
+        var replacements: [String: String] = [:]
+        /// 要不要出说话人标签。开了会额外跑一遍 Pyannote，慢一档。
+        var diarize: Bool = false
+    }
+
+    struct Result: Sendable {
         let text: String
         /// Whisper 检测到的语言，用于会话内语言锁定。
         let language: String?
         let elapsed: TimeInterval
+        /// 说话人数量；未开分离时为 nil。
+        let speakerCount: Int?
     }
 
     enum Failure: LocalizedError {
         case unknownModel(String)
-        case empty
+        case unreadableAudio
+        /// 模型有输出，但整段是幻觉或空白 —— 不是错误，是「没听到话」。
+        /// 带上被丢弃的原文，否则误杀了根本查不出来。
+        case noSpeech(String)
 
         var errorDescription: String? {
             switch self {
             case .unknownModel(let id): return "未知的本地模型：\(id)"
-            case .empty: return "本地模型没有输出文字"
+            case .unreadableAudio: return "音频读不出来"
+            case .noSpeech(let raw):
+                return raw.isEmpty ? "没听清" : "没听清（丢弃：\(raw.prefix(40))）"
             }
         }
     }
@@ -30,19 +49,24 @@ actor LocalTranscriber {
     /// 已加载的实例按模型 id 缓存。加载一次要几秒（CoreML 要按芯片编译），
     /// 每次录音都重来会让本地路径完全没法用。
     private var loaded: [String: WhisperKit] = [:]
+    private var diarizer: SpeakerKit?
 
-    /// 权重目录。放 Application Support 而不是 Caches —— 用户下过的 630 MB
+    /// 权重目录。放 Application Support 而不是 Caches —— 用户下过的 1.5 GB
     /// 不该被系统在磁盘吃紧时悄悄清掉。
     static let modelRoot: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/app.inkfall.native/models")
 
+    /// 送进模型前先把长停顿压掉。
+    ///
+    /// 一举两得：解码窗口变少 → 更快；模型看不到大段静音 → **少一个幻觉来源**
+    /// （它在静音上最爱吐字幕组片尾）。首尾各留 300 ms，免得把词头词尾切秃。
+    private static let trimmer = SilenceTrimmer.default
+
+    // MARK: - 权重
+
     /// 这个模型的权重是否已经在本地。
     nonisolated static func isDownloaded(_ model: LocalModelDefinition) -> Bool {
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            atPath: modelRoot.appendingPathComponent("models").path) else {
-            return folderContains(model.variant, under: modelRoot)
-        }
-        return !entries.isEmpty && folderContains(model.variant, under: modelRoot)
+        folderContains(model.variant, under: modelRoot)
     }
 
     /// WhisperKit 会在 downloadBase 下按 `models/<repo>/<variant>` 建目录，
@@ -58,7 +82,26 @@ actor LocalTranscriber {
         return false
     }
 
-    // MARK: - 下载
+    /// 磁盘占用，给模型管理界面用。
+    nonisolated static func diskBytes(_ model: LocalModelDefinition) -> Int64 {
+        guard let walker = FileManager.default.enumerator(
+            at: modelRoot, includingPropertiesForKeys: [.isDirectoryKey]) else { return 0 }
+        for case let url as URL in walker where url.lastPathComponent == model.variant {
+            return directorySize(url)
+        }
+        return 0
+    }
+
+    private nonisolated static func directorySize(_ url: URL) -> Int64 {
+        guard let walker = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in walker {
+            let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            total += Int64(size)
+        }
+        return total
+    }
 
     /// 下载权重。`progress` 在任意线程回调，0…1。
     static func download(_ model: LocalModelDefinition,
@@ -72,32 +115,76 @@ actor LocalTranscriber {
             progressCallback: { progress($0.fractionCompleted) })
     }
 
+    /// 删除权重并卸掉内存里的实例。
+    func delete(_ model: LocalModelDefinition) throws {
+        loaded.removeValue(forKey: model.id)
+        guard let walker = FileManager.default.enumerator(
+            at: Self.modelRoot, includingPropertiesForKeys: nil) else { return }
+        for case let url as URL in walker where url.lastPathComponent == model.variant {
+            try FileManager.default.removeItem(at: url)
+            return
+        }
+    }
+
+    /// 释放内存里的模型。turbo 常驻 1.5 GB，用户长时间不说话就该还回去。
+    func unload() {
+        loaded.removeAll()
+        let speaker = diarizer
+        diarizer = nil
+        Task { await speaker?.unloadModels() }
+    }
+
+    var isLoaded: Bool { !loaded.isEmpty }
+
     // MARK: - 转写
 
-    /// - Parameter language: `nil` 走自动检测（结果会用于会话语言锁定）。
-    func transcribe(wavURL: URL, modelID: String, language: String?) async throws -> Result {
-        guard let model = LocalModels.definition(id: modelID) else {
-            throw Failure.unknownModel(modelID)
+    func transcribe(_ request: Request) async throws -> Result {
+        guard let model = LocalModels.definition(id: request.modelID) else {
+            throw Failure.unknownModel(request.modelID)
         }
         let started = Date()
         let kit = try await instance(for: model)
 
+        // ⚠️ 必须自己解码成 float 数组，不能直接把路径丢给 WhisperKit：
+        // 说话人分离要的是同一批采样，重复解码一次既慢又可能对不齐时间轴。
+        guard var samples = try? AudioProcessor.loadAudioAsFloatArray(
+            fromPath: request.wavURL.path) else {
+            throw Failure.unreadableAudio
+        }
+        samples = Self.trimSilence(samples)
+
         var options = DecodingOptions()
         options.task = .transcribe
-        options.language = language
-        options.detectLanguage = language == nil
+        options.language = request.language
+        options.detectLanguage = request.language == nil
         options.skipSpecialTokens = true
-        options.withoutTimestamps = true
-        // 短句听写用不上词级时间戳，关掉省一轮解码。
-        options.wordTimestamps = false
+        options.withoutTimestamps = !request.diarize
+        // 说话人对齐要靠词级时间戳；不分离时关掉，省一轮解码。
+        options.wordTimestamps = request.diarize
+        // 超过一个 30 秒窗口就按语音活动切块并发解码 —— 长录的延迟差一个量级。
+        options.chunkingStrategy = samples.count > 16_000 * 30 ? .vad : ChunkingStrategy.none
+        // ⚠️ **绝不设 `promptTokens`。** 用它做专有名词提示是很自然的想法，
+        // 但 WhisperKit + CoreML 上实测：带 prompt 时第一次转写正常，
+        // **第二次开始一律返回空**。对常驻听写工具等于用一次就废。
+        // 专有名词改在解码之后用 `VocabularyCorrector` 确定性替换。
 
-        let results = try await kit.transcribe(audioPath: wavURL.path, decodeOptions: options)
-        let text = results.map(\.text).joined(separator: " ")
+        let results = try await kit.transcribe(audioArray: samples, decodeOptions: options)
+
+        if request.diarize, let labeled = try? await self.labeled(results, samples: samples) {
+            let corrected = VocabularyCorrector(replacements: request.replacements)
+                .apply(labeled.text)
+            return Result(text: corrected, language: results.first?.language,
+                          elapsed: Date().timeIntervalSince(started),
+                          speakerCount: labeled.speakerCount)
+        }
+
+        let raw = results.map(\.text).joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw Failure.empty }
-        return Result(text: text,
-                      language: results.first?.language,
-                      elapsed: Date().timeIntervalSince(started))
+        // Whisper 在没有语音的音频上会自信地吐字幕组片尾。整段是套话就丢掉。
+        guard !HallucinationFilter.isHallucination(raw) else { throw Failure.noSpeech(raw) }
+        let text = VocabularyCorrector(replacements: request.replacements).apply(raw)
+        return Result(text: text, language: results.first?.language,
+                      elapsed: Date().timeIntervalSince(started), speakerCount: nil)
     }
 
     /// 预热：把模型先加载好，让第一次真实录音不必等几秒的 CoreML 编译。
@@ -106,16 +193,94 @@ actor LocalTranscriber {
         _ = try? await instance(for: model)
     }
 
+    // MARK: - 说话人分离
+
+    /// 跑 Pyannote 并把说话人贴回转写段。
+    ///
+    /// ⚠️ **只有一个说话人时不加标签** —— 独白前面挂一排「说话人 1：」只是噪音。
+    private func labeled(_ results: [TranscriptionResult],
+                         samples: [Float]) async throws -> (text: String, speakerCount: Int) {
+        let speaker = try await self.speakerKit()
+        let diarization = try await speaker.diarize(audioArray: samples)
+        let grouped = diarization.addSpeakerInfo(to: results)
+        // Pyannote 自己数出来的人数 vs 贴回转写段之后还剩几个 —— 两者不一致
+        // 说明对齐掉了人，而不是「真的只有一个人在说」。
+        Log.write("diarize: pyannote=\(diarization.speakerCount) 段=\(diarization.segments.count)"
+                  + " 贴回后=\(grouped.flatMap { $0 }.count)")
+
+        let lines = grouped.flatMap { $0 }
+            .map { (id: $0.speaker.speakerId, text: $0.text.trimmingCharacters(in: .whitespaces)) }
+            .filter { !$0.text.isEmpty }
+        let distinct = Set(lines.compactMap(\.id))
+
+        guard distinct.count > 1 else {
+            let text = lines.map(\.text).joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !HallucinationFilter.isHallucination(text) else { throw Failure.noSpeech(text) }
+            return (text, max(distinct.count, 1))
+        }
+
+        // 连续同一人的段合并，否则一句话会被切成好几行。
+        var merged: [(id: Int?, text: String)] = []
+        for line in lines {
+            if let last = merged.last, last.id == line.id {
+                merged[merged.count - 1].text += line.text
+            } else {
+                merged.append(line)
+            }
+        }
+        let text = merged
+            .map { "说话人 \(($0.id ?? 0) + 1)：\($0.text)" }
+            .joined(separator: "\n")
+        return (text, distinct.count)
+    }
+
+    private func speakerKit() async throws -> SpeakerKit {
+        if let diarizer { return diarizer }
+        let created = try await SpeakerKit(
+            PyannoteConfig(downloadBase: Self.modelRoot.path, verbose: false, logLevel: .none))
+        diarizer = created
+        return created
+    }
+
+    // MARK: - 内部
+
     private func instance(for model: LocalModelDefinition) async throws -> WhisperKit {
         if let cached = loaded[model.id] { return cached }
         let config = WhisperKitConfig(
             model: model.variant,
             downloadBase: Self.modelRoot,
             modelRepo: model.repo,
+            verbose: false,
+            logLevel: .none,
             // 权重不在本地就顺手下 —— 用户点了录音才发现要先去别处下载最难受。
             download: true)
         let kit = try await WhisperKit(config)
         loaded[model.id] = kit
         return kit
+    }
+
+    /// 16 kHz 单声道 float → 压掉长停顿。
+    ///
+    /// `SilenceTrimmer` 吃的是 Int16 PCM（与录音管线同源），这里桥一下，
+    /// 免得为同一套阈值维护两份实现。
+    private nonisolated static func trimSilence(_ samples: [Float]) -> [Float] {
+        var pcm = Data(capacity: samples.count * 2)
+        for sample in samples {
+            let clamped = max(-1, min(1, sample))
+            var value = Int16(clamped * 32767).littleEndian
+            withUnsafeBytes(of: &value) { pcm.append(contentsOf: $0) }
+        }
+        let result = trimmer.trim(pcm: pcm, sampleRate: 16_000, channelCount: 1)
+        guard result.removedMs > 0 else { return samples }
+
+        var out = [Float]()
+        out.reserveCapacity(result.pcm.count / 2)
+        result.pcm.withUnsafeBytes { raw in
+            for value in raw.bindMemory(to: Int16.self) {
+                out.append(Float(Int16(littleEndian: value)) / 32767)
+            }
+        }
+        return out
     }
 }

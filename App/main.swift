@@ -26,6 +26,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pasteTarget: PasteTarget?
     private var modelDownloading = false
 
+    /// 会话内语言锁定：第一段检测到什么，后面就跟着它走。
+    /// Whisper 对短句的自动检测经常判错，一句两个字的中文被当成英文，
+    /// 输出就是一串音译垃圾。
+    private var sessionLanguage: TranscriptionLanguage?
+    /// 空闲一段时间就把模型还给系统 —— turbo 常驻 1.5 GB。
+    private var unloadTimer: Timer?
+    private var modelMenuItem: NSMenuItem?
+
     private var hotkeys: HotkeyMonitor?
     private var levelTimer: Timer?
     private var hideTimer: Timer?
@@ -123,6 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
 
+
     // MARK: - 菜单栏
 
     private func installStatusItem() {
@@ -142,7 +151,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "设置…", action: #selector(showSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "落笔面板", action: #selector(toggleNotePanel), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "下载本地模型", action: #selector(downloadLocalModel), keyEquivalent: "")
+        let models = NSMenuItem(title: "本地模型", action: nil, keyEquivalent: "")
+        models.submenu = buildModelMenu()
+        menu.addItem(models)
+        modelMenuItem = models
         menu.addItem(withTitle: "刘海自测", action: #selector(testOverlay), keyEquivalent: "")
         menu.addItem(withTitle: "重新打开引导", action: #selector(reopenOnboarding), keyEquivalent: "")
         menu.addItem(.separator())
@@ -151,6 +163,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for menuItem in menu.items { menuItem.target = self }
         item.menu = menu
         statusItem = item
+    }
+
+    /// 模型子菜单：勾选当前在用的，标出已下载/未下载，并给出下载与删除。
+    ///
+    /// 每次打开都重建 —— 下载状态是磁盘上的事实，缓存了就会骗人。
+    private func buildModelMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.delegate = self
+        let selected = store.settings.selectedLocalModelId
+        for model in LocalModels.all {
+            let downloaded = LocalTranscriber.isDownloaded(model)
+            let size = downloaded
+                ? ByteCountFormatter.string(fromByteCount: LocalTranscriber.diskBytes(model),
+                                            countStyle: .file)
+                : model.sizeLabel
+            let suffix = downloaded ? "已下载 \(size)" : "未下载 \(size)"
+            let item = NSMenuItem(title: "\(model.name) · \(suffix)",
+                                  action: #selector(selectModel(_:)), keyEquivalent: "")
+            item.representedObject = model.id
+            item.state = model.id == selected ? .on : .off
+            item.target = self
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+
+        let current = LocalModels.definition(id: selected)
+        let downloaded = current.map(LocalTranscriber.isDownloaded) ?? false
+        let download = NSMenuItem(
+            title: downloaded ? "重新下载当前模型" : "下载当前模型",
+            action: #selector(downloadLocalModel), keyEquivalent: "")
+        download.target = self
+        menu.addItem(download)
+
+        let delete = NSMenuItem(title: "删除当前模型的权重",
+                                action: #selector(deleteLocalModel), keyEquivalent: "")
+        delete.target = self
+        delete.isEnabled = downloaded
+        menu.addItem(delete)
+
+        let reveal = NSMenuItem(title: "在访达中显示权重目录",
+                                action: #selector(revealModelFolder), keyEquivalent: "")
+        reveal.target = self
+        menu.addItem(reveal)
+        return menu
+    }
+
+    @objc private func selectModel(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              id != store.settings.selectedLocalModelId else { return }
+        store.settings.selectedLocalModelId = id
+        store.save()
+        let name = LocalModels.definition(id: id)?.name ?? id
+        Log.write("model: 切换到 \(id)")
+
+        // 换模型必须把旧的卸掉，否则 1.5 GB 的 turbo 会和新模型一起赖在内存里。
+        Task { [transcriber] in
+            await transcriber.unload()
+            guard let model = LocalModels.definition(id: id),
+                  LocalTranscriber.isDownloaded(model) else {
+                await MainActor.run {
+                    AppDelegate.shared?.flash(.cancelled, "\(name)：还没下载", seconds: 2.0)
+                }
+                return
+            }
+            await MainActor.run {
+                AppDelegate.shared?.flash(.success, "已切到 \(name)", seconds: 1.4)
+            }
+            await transcriber.prewarm(modelID: id)
+        }
+    }
+
+    @objc private func deleteLocalModel() {
+        let id = store.settings.selectedLocalModelId
+        guard let model = LocalModels.definition(id: id) else { return }
+        Task { [transcriber] in
+            do {
+                try await transcriber.delete(model)
+                await MainActor.run {
+                    AppDelegate.shared?.flash(.success, "已删除 \(model.name) 的权重", seconds: 1.6)
+                }
+            } catch {
+                await MainActor.run {
+                    AppDelegate.shared?.flash(.error, Self.short(error), seconds: 2.5)
+                }
+            }
+        }
+    }
+
+    @objc private func revealModelFolder() {
+        try? FileManager.default.createDirectory(
+            at: LocalTranscriber.modelRoot, withIntermediateDirectories: true)
+        NSWorkspace.shared.activateFileViewerSelecting([LocalTranscriber.modelRoot])
     }
 
     @objc private func reopenOnboarding() { showOnboarding() }
@@ -401,19 +505,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [transcriber] in
             let started = Date()
             do {
-                let result = try await transcriber.transcribe(
-                    wavURL: url, modelID: id, language: nil)
-                emit(String(format: "首次（含模型加载）%.2fs lang=%@",
-                            Date().timeIntervalSince(started), result.language ?? "?"))
-                // 第二遍才是 App 常驻时的真实延迟 —— 模型已经在内存里。
-                let warm = try await transcriber.transcribe(
-                    wavURL: url, modelID: id, language: nil)
-                emit(String(format: "热态（模型已加载）%.2fs", warm.elapsed))
-                emit("原文：\(result.text)")
-                emit("润色：\(BasicPolisher.polish(result.text))")
-                emit("✅ 本地转写通")
+                let request = LocalTranscriber.Request(
+                    wavURL: url, modelID: id,
+                    language: TranscriptionLanguagePolicy(settings: store.settings).requested(),
+                    replacements: ProcessInfo.processInfo.arguments.contains("--no-vocab")
+                        ? [:] : store.settings.transcriptionReplacements,
+                    diarize: ProcessInfo.processInfo.arguments.contains("--diarize"))
+                // 连跑三遍：第一遍含模型加载，后两遍才是常驻时的真实延迟。
+                // 同时也是回归 —— 同一个实例上重复转写必须每次都出同样的文字。
+                var texts: [String] = []
+                for round in 1...3 {
+                    let r = try await transcriber.transcribe(request)
+                    texts.append(r.text)
+                    emit(String(format: "第 %d 遍 %.2fs lang=%@ 说话人=%@ → 「%@」",
+                                round, round == 1 ? Date().timeIntervalSince(started) : r.elapsed,
+                                r.language ?? "?", r.speakerCount.map(String.init) ?? "-", r.text))
+                }
+                emit("润色：\(BasicPolisher.polish(texts[0]))")
+                let stable = Set(texts).count == 1
+                emit(stable ? "✅ 本地转写通（三遍一致）" : "❌ 重复转写结果不一致")
                 Log.flush()
-                exit(0)
+                exit(stable ? 0 : 1)
             } catch {
                 emit("❌ 失败：\(error)")
                 Log.flush()
@@ -625,12 +737,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let policy = TranscriptionLanguagePolicy(settings: store.settings)
+        let request = LocalTranscriber.Request(
+            wavURL: url,
+            modelID: modelID,
+            language: policy.requested(locked: sessionLanguage),
+            replacements: store.settings.transcriptionReplacements,
+            // 按住说话是单人听写，不跑分离 —— 那会白白让延迟翻一倍。
+            // 落笔会话（多人会议）接上之后才传 `noteWantsSpeakerLabels`。
+            diarize: false)
+
         Task { [transcriber] in
             defer { try? FileManager.default.removeItem(at: url) }
             do {
-                let result = try await transcriber.transcribe(
-                    wavURL: url, modelID: modelID, language: nil)
+                let result = try await transcriber.transcribe(request)
                 await MainActor.run {
+                    AppDelegate.shared?.lockSessionLanguage(result.language, policy: policy)
                     AppDelegate.shared?.deliver(result, into: target)
                 }
             } catch {
@@ -642,6 +764,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 第一段的检测结果锁住整场会话。固定模式不锁；preferred 模式只接受
+    /// 候选表里的语言 —— 一句噪声被判成越南语不该把整场会都带偏。
+    private func lockSessionLanguage(_ detected: String?,
+                                     policy: TranscriptionLanguagePolicy) {
+        let language = TranscriptionLanguage.detected(detected)
+        guard policy.shouldLock(detected: language, locked: sessionLanguage) else { return }
+        sessionLanguage = language
+        Log.write("transcribe: 会话语言锁定 \(language?.rawValue ?? "?")")
+    }
+
     private func deliver(_ result: LocalTranscriber.Result, into target: PasteTarget?) {
         // 规则润色（去口头禅、补标点）—— 纯本地，不需要联网。
         let text = BasicPolisher.polish(result.text)
@@ -649,8 +781,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             flash(.cancelled, "没听清", seconds: 1.2)
             return
         }
-        Log.write(String(format: "transcribe: %.2fs lang=%@ → %d 字",
-                         result.elapsed, result.language ?? "?", text.count))
+        Log.write(String(format: "transcribe: %.2fs lang=%@ 说话人=%@ → %d 字",
+                         result.elapsed, result.language ?? "?",
+                         result.speakerCount.map(String.init) ?? "-", text.count))
+        scheduleModelUnload()
 
         notch.show(state: .processing, message: "粘贴中")
         // ⚠️ 插入路径里是一连串 `Thread.sleep`（等剪贴板、等激活、等目标读完）。
@@ -662,6 +796,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let landed = target.map { "已粘回 \($0.appName)" } ?? "已复制到剪贴板"
                 AppDelegate.shared?.flash(
                     .success, route == .clipboardOnly ? "已复制到剪贴板" : landed, seconds: 1.6)
+            }
+        }
+    }
+
+    /// 5 分钟没再用就把模型卸掉。常驻 1.5 GB 只为省下 7 秒的重新加载，
+    /// 对一个菜单栏小工具是不划算的买卖。
+    private func scheduleModelUnload() {
+        unloadTimer?.invalidate()
+        unloadTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: false) { _ in
+            Task { @MainActor in
+                guard let self = AppDelegate.shared, !self.recorder.isRecording else { return }
+                await self.transcriber.unload()
+                Log.write("transcribe: 空闲 5 分钟，已卸载模型")
             }
         }
     }
@@ -770,6 +917,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onboardingWindow?.orderOut(nil)
         // 引导里刚授权的辅助功能 —— 立刻接管热键，不等下次启动。
         startHotkeys()
+    }
+}
+
+extension AppDelegate: NSMenuDelegate {
+    /// 每次展开都按磁盘现状重建模型菜单 —— 下载/删除完不刷新就会显示旧状态。
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === modelMenuItem?.submenu else { return }
+        modelMenuItem?.submenu = buildModelMenu()
     }
 }
 
