@@ -22,8 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recorder: recorder, transcriber: transcriber, store: store, notes: noteStore)
     private lazy var notePanel = NotePanelController(session: noteSession)
     private lazy var models = ModelCatalog(store: store, transcriber: transcriber)
-    private lazy var hub = HubWindowController(store: store, permissions: permissions,
-                                               models: models, notes: noteStore)
+    private lazy var hub = HubWindowController(
+        store: store, permissions: permissions, models: models, notes: noteStore,
+        onOpenNote: { [weak self] entry in self?.openNote(entry) })
 
     private let transcriber = LocalTranscriber()
 
@@ -41,13 +42,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var holdOwnsRecorder = false
     private var modelDownloading = false
 
-    /// 会话内语言锁定：第一段检测到什么，后面就跟着它走。
+    /// 会话内语言锁定：**两段判出同一种语言才锁**（见 `SessionLanguageLock`）。
     /// Whisper 对短句的自动检测经常判错，一句两个字的中文被当成英文，
-    /// 输出就是一串音译垃圾。
-    private var sessionLanguage: TranscriptionLanguage?
+    /// 输出就是一串音译垃圾 —— 而第一句恰恰最短最急，最不该由它定生死。
+    private var languageLock = SessionLanguageLock()
+    private var sessionLanguage: TranscriptionLanguage? { languageLock.locked }
     /// 空闲一段时间就把模型还给系统 —— turbo 常驻 1.5 GB。
     private var unloadTimer: Timer?
     private var modelMenuItem: NSMenuItem?
+
+    /// 落笔的刘海驱动。30 Hz 喂电平，整秒才改文案。
+    private var noteNotchTimer: Timer?
+    private var lastNoteNotchMessage = ""
+    /// 瞬时提示的保护窗：到点之前不覆盖它。
+    private var noteNotchHoldUntil: CFAbsoluteTime = 0
+    private var noteNotchNeedsRestore = false
 
     private var hotkeys: HotkeyMonitor?
     private var levelTimer: Timer?
@@ -66,6 +75,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 菜单栏工具：无 Dock 图标（等价于 LSUIElement）。
         NSApp.setActivationPolicy(.accessory)
         AppDelegate.shared = self
+
+        // 落笔录音起停 → 刘海。走会话的唯一出口，这样快捷键、面板停止键、
+        // 关面板、tick 自愈这四条停止路径都能正确收尾。
+        //
+        // ⚠️ 必须挂在**所有自测早退分支之前**。挂晚了，任何走
+        // `--note-*` 早退的路径都拿不到这个回调，而真实路径上它同样是
+        // 排在一长串早退之后才生效 —— 太脆。
+        noteSession.onRecordingChanged = { [weak self] recording in
+            recording ? self?.startNoteNotch() : self?.finishNoteNotch()
+        }
+
+        // 刘海 hover 条上的三个按钮。刘海不认识会话，动作由这里注入。
+        notch.hoverActions = .init(
+            cut: { [weak self] in self?.cutNow() },
+            togglePause: { [weak self] in self?.toggleNotePause() },
+            stop: { [weak self] in self?.noteSession.stop() })
 
         installStatusItem()
 
@@ -142,6 +167,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 松开时不能把落笔的录音器一并停掉。
         if ProcessInfo.processInfo.arguments.contains("--note-hotkey-test") {
             runNoteHotkeyTest()
+            return
+        }
+
+        // 编辑模式自测：防抖落盘、撤销/重做、字数、截图插入、删除。
+        if ProcessInfo.processInfo.arguments.contains("--note-edit-test") {
+            runNoteEditTest()
+            return
+        }
+
+        // 手动断句自测：右⌥ **单击**要能切段，且不能和「按住说话」打架。
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--note-cut-test") {
+            runNoteCutTest(wav: ProcessInfo.processInfo.arguments[safe: index + 1] ?? "")
+            return
+        }
+
+        // 截图接线自测：功能开关、热键绑定、端到端插图。
+        if ProcessInfo.processInfo.arguments.contains("--screenshot-test") {
+            runScreenshotTest()
+            return
+        }
+
+        // 刘海 hover 条自测：悬停展开、按钮点得动、暂停/继续、click-through 还原。
+        if ProcessInfo.processInfo.arguments.contains("--note-hover-test") {
+            runNoteHoverTest()
+            return
+        }
+
+        // 编辑器按键自测：⌘B / Tab / 回车 / ⌘Z 走真实 CGEvent。
+        if ProcessInfo.processInfo.arguments.contains("--note-key-test") {
+            runNoteKeyTest()
             return
         }
 
@@ -585,13 +640,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
             emit("按住中：录音=\(recorder.isRecording) 刘海可见=\(notch.isVisible) "
                  + String(format: "已录=%.2fs", recorder.takeDurationSeconds))
+            emit("  胶囊 紧凑=\(notch.debugIsCompact) 文案=「\(notch.debugMessage)」"
+                 + " \(notch.debugCapsule)")
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.9) { [self] in
             emit("→ 合成 右⌥ 松开")
             Self.postRightOption(down: false)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [self] in
-            emit("松开后：录音=\(recorder.isRecording)")
+            emit("松开后：录音=\(recorder.isRecording) 刘海可见=\(notch.isVisible) "
+                 + "紧凑=\(notch.debugIsCompact) 文案=「\(notch.debugMessage)」")
             emit("收到事件：\(selfTestEvents.map(String.init(describing:)).joined(separator: " → "))")
             let ok = selfTestEvents.contains(.overlayHoldPressed)
                 && selfTestEvents.contains(.overlayHoldReleased)
@@ -644,10 +702,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             emit("收到事件：\(selfTestEvents.map(String.init(describing:)).joined(separator: " → "))")
             // 计时器还在走 = tick 没被 recorder 掉线卡住。
             let ticking = noteSession.elapsedSeconds >= 3
-            emit(held && ticking ? "✅ 长录锁得住" : "❌ 录音状态没锁住")
+            // 刘海：长录期间必须亮着，而且是落笔胶囊（几何要给 hover 条留高度）。
+            let notchOK = notch.isVisible && notch.debugIsCompact
+            emit("刘海：可见=\(notch.isVisible) 紧凑胶囊=\(notch.debugIsCompact) "
+                 + "文案=「\(notch.debugMessage)」\(notch.debugCapsule)")
+            let ok = held && ticking && notchOK
+            emit(ok ? "✅ 长录锁得住 + 刘海在" : "❌ "
+                 + (notchOK ? "录音状态没锁住" : "刘海没显示"))
             noteSession.cancel()
-            Log.flush()
-            exit(held && ticking ? 0 : 1)
+            // 停下来之后刘海要收尾（有段就转写中，没段就直接收）。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [self] in
+                emit("停止后：刘海可见=\(notch.isVisible)")
+                Log.flush()
+                exit(ok ? 0 : 1)
+            }
         }
     }
 
@@ -682,6 +750,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(1)
         }
         notePanel.show()
+        noteSession.debugSegmentTrace = true
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--dump-levels") {
+            noteSession.debugLevelDumpPath = ProcessInfo.processInfo.arguments[safe: index + 1]
+        }
         guard noteSession.start() else {
             emit("起录失败")
             Log.flush()
@@ -699,6 +771,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             DispatchQueue.main.async { [self] in
                 emit("停止前：段数=\(noteSession.segments.count) 在飞=\(noteSession.inFlight)")
+                noteSession.debugFlushLevelDump()
                 // 录音中的面板走 markdown 预览 —— 这是唯一能看到它真的画出来了
                 // 的时机（截图被 TCC 挡着，AX 自读窗口树在本机不可靠）。
                 emit("录音中的面板视图树：")
@@ -906,7 +979,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         case .cancelRecordingPressed:
             abortSpuriousHold()
-            if noteSession.isRecording {
+            if noteSession.isLive {
                 // 落笔用**优雅停止**：在飞的段照常转写保存，绝不丢数据。
                 noteSession.stop()
             } else if recorder.isRecording {
@@ -919,11 +992,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         case .flushSegmentPressed:
             abortSpuriousHold()
-            if noteSession.isRecording {
-                noteSession.flushNow()
+            if noteSession.isPaused {
+                noteFlash(.cancelled, "已暂停，先继续", seconds: 1.2)
+            } else if noteSession.isRecording {
+                reportCut(noteSession.flushNow())
             } else if !recorder.isRecording {
                 // Fn 推杆用户的常见情形：松开 Fn 去按组合键时录音其实已经停了。
                 flash(.cancelled, "未在录音", seconds: 1.2)
+            }
+
+        // 右⌥ **单击**（按下再松开，中间没碰过任何别的键）：**一键两用**。
+        //
+        // - 有没粘出去的段 → 把它们合成一次插进目标窗口（对齐 Tauri 的
+        //   `note_paste_all`：按段序、单换行连接、一次插入）
+        // - 没有待粘内容 → 当作手动切段
+        //
+        // Tauri 版是靠「贾维斯扫描是否 armed」来分这两个含义的；原生版还没有
+        // 贾维斯，所以改用「有没有待粘内容」来分 —— 这也正是用户按它时
+        // 心里想的那件事。想要无条件切段永远有 ⌥.。
+        //
+        // 与「按住说话」不冲突：长录期间 `beginHold()` 有
+        // `guard !noteSession.isRecording`，所以这一次按下根本没起录。
+        // 组合键（⌥Space / ⌥. / ⌥[）结束时的松开不会走到这里 ——
+        // matcher 的污染检测会把它们排除掉（三条单测钉着）。
+        case .longRecordingFlushTap:
+            guard noteSession.isLive else { break }
+            if noteSession.hasUnpasted {
+                let count = noteSession.pasteAllUnpasted()
+                noteFlash(.success, "已插入 \(count) 段", seconds: 1.4)
+            } else if noteSession.isRecording {
+                reportCut(noteSession.flushNow())
+            } else {
+                noteFlash(.cancelled, "已暂停，没有待粘内容", seconds: 1.2)
             }
 
         case .noteModePressed:
@@ -932,7 +1032,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             abortSpuriousHold()
             // ⌥Space 是「开始/停止落笔录音」，不是「显示/隐藏面板」——
             // 面板只是这件事的可视化。
-            if noteSession.isRecording {
+            if noteSession.isLive {
                 noteSession.stop()
             } else {
                 notePanel.show()
@@ -946,6 +1046,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .historyPickerPressed:
             abortSpuriousHold()
             hub.show(page: .home)
+
+        // 截图：⌥; 框选、⌥' 整屏。都直接插进当前笔记的正文。
+        case .selectScreenshotRegionPressed:
+            abortSpuriousHold()
+            captureIntoNote(.region)
+
+        case .captureScreenshotPressed:
+            abortSpuriousHold()
+            captureIntoNote(.fullScreen)
 
         // 落笔的三个开关：右⌥ + S / P / V。面板开着的时候才生效
         // （`noteTogglesActive` 已经在 noteModePressed 里跟着面板走）。
@@ -974,6 +1083,716 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 手动断句的自测。
+    ///
+    /// 把**自动断句关掉**，这样唯一能产生中间那一刀的就只有右⌥ 单击 ——
+    /// 否则数出来的段数分不清是谁切的。
+    /// 刘海 hover 条自测。
+    ///
+    /// 这条链上没有一环是单测能覆盖的：命中靠轮询全局鼠标，展开靠临时关掉
+    /// click-through，按钮能不能收到点击又取决于 `acceptsFirstMouse`
+    /// （overlay 永远不是键窗口）。所以只能合成真实鼠标事件走一遍。
+    private func runNoteHoverTest() {
+        selfTest = true
+        startHotkeys()
+        guard noteSession.start() else {
+            emit("起录失败 —— 麦克风没授权？")
+            Log.flush()
+            exit(1)
+        }
+        var failures = 0
+
+        func check(_ label: String, _ ok: Bool) {
+            emit("\(ok ? "  ✓" : "  ✗") \(label)")
+            if !ok { failures += 1 }
+        }
+
+        // ⚠️ 必须用 asyncAfter 链，不能用 RunLoop.run(until:) —— 后者不泵
+        // AppKit 的事件队列，合成出去的 CGEvent 永远送不回本 App。
+        var steps: [(Double, () -> Void)] = []
+
+        steps.append((0.4, {
+            emit("落笔已开：刘海可见=\(self.notch.isVisible) 文案=「\(self.notch.debugMessage)」")
+            check("默认 click-through", !self.notch.debugAcceptsClicks)
+            guard let rect = self.notch.debugCapsuleRect else {
+                emit("  ✗ 拿不到胶囊矩形"); failures += 1; return
+            }
+            emit("  胶囊 \(Int(rect.width))x\(Int(rect.height)) @(\(Int(rect.minX)),\(Int(rect.minY)))")
+            Self.moveMouse(to: CGPoint(x: rect.midX, y: rect.midY))
+        }))
+
+        // 轮询周期 120ms，留够两拍。
+        steps.append((0.4, {
+            check("悬停展开了条（hover=\(self.notch.debugHover)）", self.notch.debugHover == "strip")
+            check("临时收下了鼠标事件", self.notch.debugAcceptsClicks)
+            let height = self.notch.debugCapsuleRect?.height ?? 0
+            check("胶囊为条撑高了（\(Int(height))）",
+                  height >= OverlayGeometry.noteHoverStripSpan)
+            // 先点第一个（切段）。此刻一个字都没录，所以它应当报「没有声音」——
+            // 那句反馈本身就是「按钮真的接到了会话」的证据。
+            if let point = self.stripButtonCenter(index: 0) {
+                emit("  点「切段」@(\(Int(point.x)),\(Int(point.y)))")
+                Self.clickMouse(at: point)
+            } else { emit("  ✗ 算不出按钮位置"); failures += 1 }
+        }))
+
+        steps.append((0.5, {
+            check("切段按钮接到了会话（\(self.notch.debugMessage)）",
+                  self.notch.debugMessage.contains("没有声音"))
+            if let point = self.stripButtonCenter(index: 1) {
+                emit("  点「暂停」@(\(Int(point.x)),\(Int(point.y)))")
+                Self.clickMouse(at: point)
+            }
+        }))
+
+        steps.append((0.6, {
+            check("暂停生效了", self.noteSession.isPaused)
+            check("录音器真的停了", !self.recorder.isRecording)
+            check("刘海换成暂停态（\(self.notch.debugMessage)）",
+                  self.notch.debugMessage.contains("已暂停"))
+            self.hoverTestFrozenSeconds = self.noteSession.elapsedSeconds
+            emit("  冻结于 \(self.hoverTestFrozenSeconds)s，接下来停 4 秒")
+        }))
+
+        // 在暂停里待够久，让「冻没冻住」这件事真的可观测 ——
+        // 停半秒就断言「没多算」是测不出东西的。
+        steps.append((4.0, {
+            let now = self.noteSession.elapsedSeconds
+            check("停了 4 秒计时纹丝不动（\(self.hoverTestFrozenSeconds)s → \(now)s）",
+                  now == self.hoverTestFrozenSeconds)
+            check("刘海文案也冻着（\(self.notch.debugMessage)）",
+                  self.notch.debugMessage.contains("已暂停"))
+            // 条还在（鼠标没动），再点一次同一个位置 = 继续。
+            if let point = self.stripButtonCenter(index: 1) { Self.clickMouse(at: point) }
+        }))
+
+        steps.append((0.8, {
+            check("继续生效了", self.noteSession.isRecording)
+            check("录音器又起来了", self.recorder.isRecording)
+        }))
+
+        // 继续之后要接着往上走，而不是从头数，也不是把那 4 秒补回来。
+        steps.append((2.2, {
+            let now = self.noteSession.elapsedSeconds
+            check("继续后接着走（\(self.hoverTestFrozenSeconds)s → \(now)s）",
+                  now > self.hoverTestFrozenSeconds)
+            check("那 4 秒没有被补回来", now < self.hoverTestFrozenSeconds + 4)
+            // ⚠️ 不能「移回测试开始时的位置」—— 鼠标本来就可能停在刘海上，
+            // 那样一移回去还在条里，「移开」这一支根本没被测到（实测踩过）。
+            // 挑一个确定在胶囊之外的点：胶囊所在屏的正中。
+            guard let rect = self.notch.debugCapsuleRect else { return }
+            let away = CGPoint(x: rect.midX, y: rect.minY - 300)
+            emit("  移到 (\(Int(away.x)),\(Int(away.y)))，胶囊下沿 \(Int(rect.minY))")
+            Self.moveMouse(to: away)
+        }))
+
+        steps.append((0.5, {
+            emit("  鼠标现在 \(NSEvent.mouseLocation)")
+            check("移开就收条", self.notch.debugHover == "none")
+            check("click-through 已还回去", !self.notch.debugAcceptsClicks)
+            // 移回来，验第三个按钮。
+            if let rect = self.notch.debugCapsuleRect {
+                Self.moveMouse(to: CGPoint(x: rect.midX, y: rect.midY))
+            }
+        }))
+
+        steps.append((0.4, {
+            check("移回来又展开", self.notch.debugHover == "strip")
+            if let point = self.stripButtonCenter(index: 2) {
+                emit("  点「停止」@(\(Int(point.x)),\(Int(point.y)))")
+                Self.clickMouse(at: point)
+            }
+        }))
+
+        steps.append((0.6, {
+            check("停止按钮收了会话", !self.noteSession.isLive)
+            check("停会话后 click-through 仍然是还回去的", !self.notch.debugAcceptsClicks)
+            emit(failures == 0 ? "✅ hover 条通" : "❌ \(failures) 项不过")
+            Log.flush()
+            exit(failures == 0 ? 0 : 1)
+        }))
+
+        var delay: Double = 0
+        for (gap, step) in steps {
+            delay += gap
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { step() }
+        }
+    }
+
+    private var hoverTestFrozenSeconds = 0
+
+    /// hover 条上第 `index` 个按钮的中心（屏幕坐标，Cocoa 左下原点）。
+    ///
+    /// 条的排版：左右各 10 内边距、三个等宽按钮、间距 6、高 24、底部留 6。
+    private func stripButtonCenter(index: Int) -> CGPoint? {
+        guard let rect = notch.debugCapsuleRect else { return nil }
+        let inset: Double = 10, gap: Double = 6, count: Double = 3
+        let width = (rect.width - inset * 2 - gap * (count - 1)) / count
+        let x = rect.minX + inset + (width + gap) * Double(index) + width / 2
+        return CGPoint(x: x, y: rect.minY + 6 + 12)
+    }
+
+    /// CGEvent 的原点在主屏左上角，NSScreen 在左下角 —— Y 要翻。
+    private static func flipped(_ point: CGPoint) -> CGPoint {
+        let height = NSScreen.screens.first?.frame.height ?? 0
+        return CGPoint(x: point.x, y: height - point.y)
+    }
+
+    private static func moveMouse(to point: CGPoint) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        CGEvent(mouseEventSource: source, mouseType: .mouseMoved,
+                mouseCursorPosition: flipped(point), mouseButton: .left)?
+            .post(tap: .cghidEventTap)
+    }
+
+    private static func clickMouse(at point: CGPoint) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        let target = flipped(point)
+        for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+            CGEvent(mouseEventSource: source, mouseType: type,
+                    mouseCursorPosition: target, mouseButton: .left)?
+                .post(tap: .cghidEventTap)
+        }
+    }
+
+    private func runNoteCutTest(wav: String) {
+        selfTest = true
+        let savedAutoSegment = noteSession.autoSegment
+        noteSession.autoSegment = false
+        startHotkeys()
+        notePanel.show()
+        guard noteSession.start() else {
+            emit("起录失败")
+            Log.flush()
+            exit(1)
+        }
+        emit("会话开始（自动断句已关）")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let player = Process()
+            player.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+            player.arguments = [wav]
+            try? player.run()
+            player.waitUntilExit()
+        }
+
+        // 第一次单击：此刻**没有**待粘内容（一段都还没转完），所以这一键
+        // 应当走「手动切段」那一支。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 7.0) { [self] in
+            emit("→ 第一次右⌥ 单击：待粘=\(noteSession.hasUnpasted) "
+                 + "段数=\(noteSession.segments.count)")
+            Self.postRightOption(down: true)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 7.2) { [self] in
+            Self.postRightOption(down: false)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { [self] in
+            cutTestSegmentsAfterFirstTap = noteSession.segments.count
+            emit("第一次单击之后：段数=\(cutTestSegmentsAfterFirstTap) "
+                 + "落笔仍在录=\(noteSession.isRecording)")
+        }
+
+        // 等第一段真的转完 —— **不能用固定时刻**：首次推理要先加载模型，
+        // 冷启动 7 秒以上，写死时间只会测到「还没转完」那一支。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 9.0) { [self] in
+            waitForUnpasted(ticks: 0, savedAutoSegment: savedAutoSegment)
+        }
+    }
+
+    /// 轮询到「有待粘内容」为止，再发第二次单击验证粘贴支。
+    private func waitForUnpasted(ticks: Int, savedAutoSegment: Bool) {
+        guard noteSession.hasUnpasted || ticks >= 60 else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+                waitForUnpasted(ticks: ticks + 1, savedAutoSegment: savedAutoSegment)
+            }
+            return
+        }
+        cutTestSegmentsBeforeSecondTap = noteSession.segments.count
+        emit("→ 第二次右⌥ 单击：待粘=\(noteSession.hasUnpasted) "
+             + "段数=\(cutTestSegmentsBeforeSecondTap)（等了 \(Double(ticks) * 0.5)s）")
+        Self.postRightOption(down: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            Self.postRightOption(down: false)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [self] in
+            noteSession.stop()
+            waitForCutTest(ticks: 0, savedAutoSegment: savedAutoSegment)
+        }
+    }
+
+    private var cutTestSegmentsAfterFirstTap = 0
+    private var cutTestSegmentsBeforeSecondTap = 0
+
+    private func waitForCutTest(ticks: Int, savedAutoSegment: Bool) {
+        if noteSession.inFlight > 0, ticks < 40 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
+                waitForCutTest(ticks: ticks + 1, savedAutoSegment: savedAutoSegment)
+            }
+            return
+        }
+        emit("收到事件：\(selfTestEvents.map(String.init(describing:)).joined(separator: " → "))")
+        let tapped = selfTestEvents.contains(.longRecordingFlushTap)
+        for segment in noteSession.segments {
+            emit("  段 \(segment.id) [\(segment.status.rawValue)] "
+                 + segment.displayText.replacingOccurrences(of: "\n", with: " ⏎ "))
+        }
+        // 分支一：没有待粘内容时，单击 = 切段。手动那一刀 + 停止收尾 ≥ 2 段。
+        let cutBranch = tapped && cutTestSegmentsAfterFirstTap >= 1
+        // 分支二：有待粘内容时，同一个键改成粘贴所有，**不再多切一段**。
+        let pastedAll = noteSession.segments.filter(\.pasted).count
+        let didNotCutAgain = noteSession.segments.count <= cutTestSegmentsBeforeSecondTap + 1
+        emit("第一次单击后段数=\(cutTestSegmentsAfterFirstTap)（切段支）")
+        emit("第二次单击前段数=\(cutTestSegmentsBeforeSecondTap) "
+             + "最终段数=\(noteSession.segments.count) 已标记粘贴=\(pastedAll)（粘贴支）")
+        let ok = cutBranch && pastedAll >= 1 && didNotCutAgain
+        emit(ok ? "✅ 右⌥ 单击一键两用：无待粘→切段，有待粘→粘贴所有"
+                : "❌ 一键两用没接通")
+
+        noteSession.autoSegment = savedAutoSegment
+        noteSession.deleteCurrent()
+        Log.flush()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { exit(ok ? 0 : 1) }
+    }
+
+    /// 截图接线的自测。
+    ///
+    /// 「按了没反应」有两个成因，这里都要验到：
+    /// 1. `screenshotFeatureEnabled` 默认关着 → `effectiveShortcuts` 把
+    ///    ⌥; / ⌥' 两个槽**置空**，热键压根没绑上；
+    /// 2. 面板按钮直连 `session.insertScreenshot`，没有笔记时静默失败。
+    private func runScreenshotTest() {
+        selfTest = true
+        let keys = store.effectiveShortcuts
+        emit("生效绑定：框选=「\(keys.selectScreenshotRegion.displayLabel)」"
+             + " 整屏=「\(keys.captureScreenshot.displayLabel)」")
+        emit("功能开关=\(store.settings.screenshotFeatureEnabled) "
+             + "迁移标记=\(store.settings.screenshotDefaultMigrated) "
+             + "屏幕录制授权=\(ScreenCapture.isAuthorized)")
+
+        guard !keys.captureScreenshot.isEmpty else {
+            emit("❌ 整屏截图没有绑定 —— 热键被功能开关置空了")
+            Log.flush()
+            exit(1)
+        }
+        guard ScreenCapture.isAuthorized else {
+            emit("⚠️ 未授权屏幕录制，无法验证端到端")
+            Log.flush()
+            exit(1)
+        }
+
+        startHotkeys()
+        // 没有面板、没有当前笔记 —— 正是「按了没反应」最容易复现的状态。
+        emit("起始状态：面板可见=\(notePanel.isVisible) 当前笔记=\(noteSession.noteID ?? "无")")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
+            emit("→ 合成 ⌥' （整屏截图）")
+            Self.postRightOption(down: true)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+            Self.postKeyWithRightOption(39)          // '
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [self] in
+            Self.postRightOption(down: false)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [self] in
+            emit("收到事件：\(selfTestEvents.map(String.init(describing:)).joined(separator: " → "))")
+            let fired = selfTestEvents.contains(.captureScreenshotPressed)
+            let noteID = noteSession.noteID
+            let dir = noteID.map { NoteAttachments.directory(for: $0) }
+            let files = dir.flatMap {
+                try? FileManager.default.contentsOfDirectory(atPath: $0.path)
+            } ?? []
+            let inBody = noteSession.body.contains("![截图]")
+            emit("热键触发=\(fired) 自动开了笔记=\(noteID ?? "无") "
+                 + "面板可见=\(notePanel.isVisible) 图片文件=\(files.count) 正文含图片=\(inBody)")
+            let ok = fired && noteID != nil && files.count == 1 && inBody
+            emit(ok ? "✅ ⌥' 截图端到端通" : "❌ 截图没接通")
+            noteSession.deleteCurrent()
+            Log.flush()
+            exit(ok ? 0 : 1)
+        }
+    }
+
+    /// 右⌥ 按着时的一次普通键。修饰位（共享位 + 右侧设备位）必须带上，
+    /// 否则 matcher 眼里那就是一个裸键。
+    private static func postKeyWithRightOption(_ keycode: CGKeyCode) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        for down in [true, false] {
+            guard let event = CGEvent(keyboardEventSource: source,
+                                      virtualKey: keycode, keyDown: down) else { continue }
+            event.flags = CGEventFlags(rawValue: 0x80000 | 0x40)
+            event.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// 编辑器按键的自测：⌘B 加粗、Tab 缩进、回车续列表、⌘Z 撤销。
+    ///
+    /// 发的是**真实的 CGEvent**，走完整条
+    /// 「HID → WindowServer → 面板 sendEvent → handleKey → MarkdownEditing → 绑定回写」。
+    /// 纯逻辑那一层已经有单测了，这里验的是接线：焦点拿不拿得到、拦截有没有
+    /// 真的拦到、NSTextView 抢不抢得走 Tab 与回车、选区还原对不对。
+    ///
+    /// ⚠️ 每一步都必须用 `asyncAfter` 排队，**不能用 `RunLoop.run(until:)` 等**。
+    /// 后者只跑 timer 与 input source，不从 AppKit 的事件队列取 NSEvent，
+    /// 于是合成的鼠标/键盘事件一个都到不了面板（排查这个花了好几轮）。
+    private struct KeyCase {
+        let name: String
+        let setup: (() -> Void)?
+        let selection: NSRange
+        let expect: String
+        let post: () -> Void
+    }
+    private var keyCases: [KeyCase] = []
+    private var keyCaseIndex = 0
+    private var keyFailures = 0
+
+    private func runNoteKeyTest() {
+        selfTest = true
+        notePanel.show()
+        noteSession.openBlank()
+        noteSession.draft = "甲乙丙"
+
+        keyCases = [
+            KeyCase(name: "⌘B 加粗选中的「乙」", setup: nil,
+                    selection: NSRange(location: 1, length: 1), expect: "甲**乙**丙",
+                    post: { Self.postKey(11, flags: .maskCommand) }),
+            KeyCase(name: "⌘B 再按一次解开", setup: nil,
+                    selection: NSRange(location: 3, length: 1), expect: "甲乙丙",
+                    post: { Self.postKey(11, flags: .maskCommand) }),
+            KeyCase(name: "回车续列表",
+                    setup: { AppDelegate.shared?.noteSession.draft = "- 甲" },
+                    selection: NSRange(location: 3, length: 0), expect: "- 甲\n- ",
+                    post: { Self.postKey(36, flags: []) }),
+            KeyCase(name: "空列表项上回车退出列表", setup: nil,
+                    selection: NSRange(location: 6, length: 0), expect: "- 甲\n",
+                    post: { Self.postKey(36, flags: []) }),
+            KeyCase(name: "Tab 缩进",
+                    setup: { AppDelegate.shared?.noteSession.draft = "- 甲" },
+                    selection: NSRange(location: 1, length: 0), expect: "  - 甲",
+                    post: { Self.postKey(48, flags: []) }),
+            KeyCase(name: "⇧Tab 反缩进", setup: nil,
+                    selection: NSRange(location: 1, length: 0), expect: "- 甲",
+                    post: { Self.postKey(48, flags: .maskShift) }),
+            KeyCase(name: "⌘Z 撤销回到缩进后的状态", setup: nil,
+                    selection: NSRange(location: 0, length: 0), expect: "  - 甲",
+                    post: { Self.postKey(6, flags: .maskCommand) }),
+        ]
+
+        // 等 SwiftUI 把编辑器画出来，再挪到主屏（合成点击要跨屏换算坐标，
+        // 本机内置屏在外接屏下方，换算一错就点在没有窗口的地方）。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
+            notePanel.debugMoveToMainScreen()
+        }
+        // 挪窗到 WindowServer 生效是异步的。挪完立刻点，点的是旧位置背后的
+        // 那个窗口 —— 表现为「点完 App 反而失活了」。必须留出时间。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { [self] in
+            emit("点击前：\(notePanel.debugPanelState)")
+            _ = notePanel.debugClickEditor()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.8) { [self] in
+            emit("点击后：\(notePanel.debugPanelState)")
+            guard notePanel.debugEditorHasFocus else {
+                emit("❌ 点进编辑器拿不到键盘焦点 —— 编辑模式没法打字")
+                Log.flush()
+                exit(1)
+            }
+            emit("✅ 点一下就能打字（面板成为键窗口，编辑器是第一响应者）")
+            runNextKeyCase()
+        }
+    }
+
+    private func runNextKeyCase() {
+        guard keyCaseIndex < keyCases.count else {
+            emit(keyFailures == 0 ? "✅ 编辑器按键全通" : "❌ \(keyFailures) 项没通")
+            noteSession.deleteCurrent()
+            Log.flush()
+            exit(keyFailures == 0 ? 0 : 1)
+        }
+        let step = keyCases[keyCaseIndex]
+        keyCaseIndex += 1
+
+        step.setup?()
+        noteSession.commitDraft()
+        // 改完正文要等绑定落到 NSTextView 上，才谈得上设选区。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
+            notePanel.debugSetSelection(step.selection)
+            step.post()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [self] in
+                let got = noteSession.draft
+                let ok = got == step.expect
+                if !ok { keyFailures += 1 }
+                emit("\(ok ? "✅" : "❌") \(step.name)：「\(got.replacingOccurrences(of: "\n", with: "⏎"))」"
+                     + (ok ? "" : "（期望「\(step.expect.replacingOccurrences(of: "\n", with: "⏎"))」）"))
+                runNextKeyCase()
+            }
+        }
+    }
+
+    private static func postKey(_ keycode: CGKeyCode, flags: CGEventFlags) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        for down in [true, false] {
+            guard let event = CGEvent(keyboardEventSource: source,
+                                      virtualKey: keycode, keyDown: down) else { continue }
+            event.flags = flags
+            event.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// 编辑模式的自测。
+    ///
+    /// 盯四件事：正文落盘是**防抖**的（不是每敲一个字重写整库）、撤销栈
+    /// 真的能回退、截图确实落成文件并进了正文、删除会连附件一起清掉。
+    private func runNoteEditTest() {
+        selfTest = true
+        notePanel.show()
+        noteSession.openBlank()
+        let noteID = noteSession.noteID ?? "?"
+        emit("新建空白笔记 \(noteID)")
+
+        let historyURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Application Support/app.inkfall.native/history.json")
+        func historyMTime() -> Date? {
+            try? FileManager.default.attributesOfItem(
+                atPath: historyURL.path)[.modificationDate] as? Date
+        }
+
+        // ——— 防抖：模拟逐字符输入，落盘次数必须远少于按键次数。
+        let typed = "今天讨论了三件事"
+        var writes = 0
+        var lastSeen = historyMTime()
+        for index in typed.indices {
+            noteSession.draft = String(typed[typed.startIndex...index])
+            noteSession.commitDraft()
+            // 同步观察：不给 runloop 机会，防抖计时器就不会触发。
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            let now = historyMTime()
+            if now != lastSeen { writes += 1; lastSeen = now }
+        }
+        emit("逐字输入 \(typed.count) 次 → 期间落盘 \(writes) 次（防抖 0.6s）")
+
+        RunLoop.current.run(until: Date().addingTimeInterval(1.0))
+        emit("防抖窗口过后正文=「\(noteSession.draft)」字数=\(noteSession.wordCount)")
+
+        // ——— 撤销：连续打字合并成一步，⌘Z 应该整段退回。
+        noteSession.draft = "今天讨论了三件事，第一件是排期"
+        noteSession.commitDraft()
+        RunLoop.current.run(until: Date().addingTimeInterval(1.2))
+        noteSession.draft = "今天讨论了三件事，第一件是排期，第二件是预算"
+        noteSession.commitDraft()
+        emit("撤销前=「\(noteSession.draft)」canUndo=\(noteSession.canUndo)")
+        noteSession.undo()
+        emit("撤销一步=「\(noteSession.draft)」")
+        noteSession.undo()
+        emit("撤销两步=「\(noteSession.draft)」")
+        noteSession.redo()
+        emit("重做一步=「\(noteSession.draft)」")
+
+        // ——— 中英混排的字数。
+        noteSession.draft = "今天 review 了 pull request"
+        noteSession.commitDraft()
+        emit("中英混排「\(noteSession.draft)」→ \(noteSession.wordCount) 字"
+             + "（中文「今天了」3 字 + 英文 review/pull/request 3 词 = 6）")
+
+        // ——— 截图。整屏模式不需要交互，可以在自测里跑完。
+        guard ScreenCapture.isAuthorized else {
+            emit("⚠️ 未授权屏幕录制，跳过截图验证")
+            finishNoteEditTest(noteID: noteID)
+            return
+        }
+        noteSession.insertScreenshot(.fullScreen) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                let dir = NoteAttachments.directory(for: noteID)
+                let files = (try? FileManager.default
+                    .contentsOfDirectory(atPath: dir.path)) ?? []
+                let bytes = files.compactMap {
+                    try? FileManager.default.attributesOfItem(
+                        atPath: dir.appendingPathComponent($0).path)[.size] as? Int
+                }.reduce(0, +)
+                emit("截图落盘：\(files.count) 个文件 / \(bytes / 1024) KB")
+                emit("正文尾部=「\(self.noteSession.draft.suffix(60))」")
+            case .failure(let error):
+                emit("❌ 截图失败 \(error.localizedDescription)")
+            }
+            self.finishNoteEditTest(noteID: noteID)
+        }
+    }
+
+    private func finishNoteEditTest(noteID: String) {
+        noteSession.flushPersist()
+        let saved = noteStore.note(id: noteID)
+        emit("盘上这篇：标题=「\(saved?.title ?? "无")」正文 \(saved?.finalText.count ?? 0) 字符")
+
+        // ——— 删除必须连附件目录一起清掉。
+        noteSession.deleteCurrent()
+        let gone = noteStore.note(id: noteID) == nil
+        let attachmentsGone = !FileManager.default.fileExists(
+            atPath: NoteAttachments.directory(for: noteID).path)
+        emit("删除后：笔记已移除=\(gone) 附件目录已移除=\(attachmentsGone)")
+        emit(gone && attachmentsGone ? "✅ 编辑模式自测通过" : "❌ 删除没清干净")
+        Log.flush()
+        exit(gone && attachmentsGone ? 0 : 1)
+    }
+
+    /// 面板上的剪刀按钮。和两个快捷键走同一条路，反馈也一致。
+    func cutNow() { reportCut(noteSession.flushNow()) }
+
+    /// 双击预览里的某一段 → 把这一段插进起录时的那个窗口。
+    func pasteSegment(_ id: UInt64) {
+        guard noteSession.pasteSegment(id: id) else {
+            flash(.cancelled, "这一段还没转好", seconds: 1.2)
+            return
+        }
+        flash(.success, "已插入这一段", seconds: 1.2)
+    }
+
+    /// 手动切段的反馈。切了个空段却毫无提示，用户只会以为快捷键坏了。
+    private func reportCut(_ outcome: NoteSessionController.CutOutcome) {
+        switch outcome {
+        case .submitted(let ms):
+            noteFlash(.success, String(format: "已切段 · %.1fs", Double(ms) / 1000), seconds: 1.2)
+        case .discarded:
+            noteFlash(.cancelled, "这一段没有声音", seconds: 1.2)
+        case .notRecording:
+            flash(.cancelled, "未在录音", seconds: 1.2)
+        }
+    }
+
+    // MARK: - 落笔的刘海
+
+    /// 录音中的文案：计时 + 段数。
+    private var noteNotchMessage: String {
+        let time = String(format: "%02d:%02d",
+                          noteSession.elapsedSeconds / 60, noteSession.elapsedSeconds % 60)
+        let count = noteSession.segments.count
+        // 不写「正在录音」—— 胶囊亮着本身就是那个意思。
+        return count > 0 ? "\(time) · \(count) 段" : time
+    }
+
+    /// hover 条上的暂停/继续。
+    func toggleNotePause() {
+        let wasPaused = noteSession.isPaused
+        guard noteSession.togglePause() else {
+            // 继续失败只有一个原因：麦克风起不来（被别的 App 抢了、拔了）。
+            // 静悄悄留在暂停态会让用户以为在录，而一个字都不会进来。
+            if wasPaused { noteFlash(.error, "麦克风起不来", seconds: 1.8) }
+            return
+        }
+        // 暂停不发 onRecordingChanged（发了刘海会被收走），所以这里要自己
+        // 把胶囊推到位 —— 否则暂停之后刘海还停在最后一次的计时上。
+        lastNoteNotchMessage = ""
+        noteNotchHoldUntil = 0
+        noteNotchNeedsRestore = true
+        tickNoteNotch()
+    }
+
+    private func startNoteNotch() {
+        hideTimer?.invalidate()
+        lastNoteNotchMessage = ""
+        noteNotchHoldUntil = 0
+        noteNotchNeedsRestore = true
+        notch.setHoverStripAvailable(true)
+        noteNotchTimer?.invalidate()
+        noteNotchTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
+            Task { @MainActor in AppDelegate.shared?.tickNoteNotch() }
+        }
+        tickNoteNotch()
+    }
+
+    private func tickNoteNotch() {
+        guard noteSession.isLive else { return }
+        let paused = noteSession.isPaused
+        // 暂停时电平必须归零。留着最后一帧的呼吸幅度，胶囊会看起来还在听。
+        notch.setLevel(paused ? 0 : Double(recorder.level))
+        // 瞬时提示（已切段 / 没有声音）的保护窗内不改文案。
+        guard CFAbsoluteTimeGetCurrent() >= noteNotchHoldUntil else { return }
+        let message = paused ? noteNotchMessage + " · 已暂停" : noteNotchMessage
+        guard message != lastNoteNotchMessage || noteNotchNeedsRestore else { return }
+        lastNoteNotchMessage = message
+        noteNotchNeedsRestore = false
+        notch.show(state: paused ? .notePaused : .recording, message: message, compact: true)
+    }
+
+    /// 录音中的瞬时提示。到点之后**回到落笔胶囊**，而不是像 `flash` 那样
+    /// 把刘海整个收掉 —— 录音还在继续，刘海就不能消失。
+    private func noteFlash(_ state: OverlayState, _ message: String, seconds: Double) {
+        guard noteSession.isLive else {
+            flash(state, message, seconds: seconds)
+            return
+        }
+        hideTimer?.invalidate()
+        notch.show(state: state, message: message, compact: true)
+        noteNotchHoldUntil = CFAbsoluteTimeGetCurrent() + seconds
+        noteNotchNeedsRestore = true
+    }
+
+    /// 录音停了：还在飞的段要继续显示「转写中」，都落地了才收。
+    private func finishNoteNotch() {
+        noteNotchTimer?.invalidate()
+        noteNotchTimer = nil
+        // ⚠️ 无条件收掉 hover 条，连同 click-through。会话没了还留着它，
+        // 屏幕顶端会一直吃点击。
+        notch.setHoverStripAvailable(false)
+        notch.setLevel(0)
+        let count = noteSession.segments.count
+        guard count > 0 || noteSession.inFlight > 0 else {
+            notch.hide()
+            return
+        }
+        waitForNoteNotchDrain(ticks: 0)
+    }
+
+    private func waitForNoteNotchDrain(ticks: Int) {
+        let inFlight = noteSession.inFlight
+        guard inFlight > 0, ticks < 120 else {
+            flash(.success, "已存 \(noteSession.segments.count) 段", seconds: 1.6)
+            return
+        }
+        notch.show(state: .transcribing, message: "\(inFlight) 段转写中")
+        hideTimer?.invalidate()
+        hideTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
+            Task { @MainActor in AppDelegate.shared?.waitForNoteNotchDrain(ticks: ticks + 1) }
+        }
+    }
+
+    /// 截一张图插进当前笔记。
+    ///
+    /// 没有「当前笔记」时先开一篇 —— 截图本身就是一次记录动作，
+    /// 让它因为「你还没开笔记」而失败是没道理的。
+    func captureIntoNote(_ mode: ScreenCapture.Mode) {
+        guard ScreenCapture.isAuthorized else {
+            // 首次调用才会弹系统对话框，之后只能靠用户自己去设置里勾。
+            ScreenCapture.requestAuthorization()
+            permissions.request(.screenRecording)
+            flash(.error, "需要屏幕录制权限", seconds: 2.5)
+            return
+        }
+        if noteSession.noteID == nil {
+            noteSession.openBlank()
+        }
+        notePanel.show()
+        noteSession.insertScreenshot(mode) { [weak self] result in
+            switch result {
+            case .success:
+                self?.flash(.success, "截图已插入笔记", seconds: 1.4)
+            case .failure(let error):
+                if case ScreenCapture.Failure.cancelled = error { return }
+                self?.flash(.error, error.localizedDescription, seconds: 2.0)
+            }
+        }
+    }
+
+    /// 主页点一条笔记 → 在落笔面板里打开它。
+    private func openNote(_ entry: HistoryEntry) {
+        guard noteSession.open(entry) else {
+            flash(.error, "正在录音，先停下来", seconds: 2.0)
+            return
+        }
+        notePanel.show()
+    }
+
     /// 右⌥ 组合键被识别出来了：⌥ 按下时起的那截录音是组合键的副产物，不是说话。
     /// 丢掉它，并让随后的 `.overlayHoldReleased` 变成空操作。
     ///
@@ -991,8 +1810,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func beginHold() {
         guard !recorder.isRecording else { return }
-        // 落笔正在录音时，右⌥ 按住不另起一段 —— 一个麦克风不能同时喂两条管线。
-        guard !noteSession.isRecording else { return }
+        // 落笔会话开着时，右⌥ 按住不另起一段 —— 一个麦克风不能同时喂两条管线。
+        // 暂停中也不行：麦克风虽然空着，但那次按住的转写会跑去抢刘海，
+        // 而刘海这时正显示着「已暂停」等用户回来点继续。
+        guard !noteSession.isLive else { return }
         guard recorder.microphoneAuthorized else {
             flash(.error, "麦克风未授权", seconds: 2.0)
             return
@@ -1011,7 +1832,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 必须在起录时抓，不能等转写回来 —— 那时用户多半已经切走了。
         pasteTarget = PasteTarget.current()
         hideTimer?.invalidate()
-        notch.show(state: .recording, message: "松开结束")
+        // 和落笔一样走紧凑胶囊：只排一行计时。
+        // 不写「正在录音」，也不写「松开结束」—— 手正按着那个键，
+        // 用不着别人提醒它松开。
+        lastHoldNotchSecond = -1
+        notch.show(state: .recording, message: "00:00", compact: true)
         startLevelTicker()
     }
 
@@ -1026,11 +1851,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             flash(.error, "录音结束失败", seconds: 2.0)
             return
         }
-        // 太短 / 全静音的一段直接丢掉，不进管线也不打扰用户。
+        // 太短 / 全静音的一段不进管线 —— 但**必须给反馈**。
+        // 早先这里是直接 `notch.hide()`：用户说了一句、刘海一闪就没了，
+        // 分不清是「没录上」还是「转写失败了」，只能干等。
         let verdict = RecordingSubmissionPolicy.default.verdict(for: audio)
         guard verdict == .submit else {
             Log.write("hotkey: 丢弃 \(verdict.rawValue) durationMs=\(audio.durationMs)")
-            notch.hide()
+            switch verdict {
+            case .tooShort: flash(.cancelled, "太短了，没录上", seconds: 1.4)
+            case .silent: flash(.cancelled, "没有听到声音", seconds: 1.4)
+            case .submit: break
+            }
             return
         }
         Log.write("hotkey: 采集完成 \(audio.data.count) 字节 / \(audio.durationMs) ms")
@@ -1089,14 +1920,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 第一段的检测结果锁住整场会话。固定模式不锁；preferred 模式只接受
-    /// 候选表里的语言 —— 一句噪声被判成越南语不该把整场会都带偏。
+    /// 把这一段的检测结果投进会话语言的票箱。两票一致才锁。
     private func lockSessionLanguage(_ detected: String?,
                                      policy: TranscriptionLanguagePolicy) {
-        let language = TranscriptionLanguage.detected(detected)
-        guard policy.shouldLock(detected: language, locked: sessionLanguage) else { return }
-        sessionLanguage = language
-        Log.write("transcribe: 会话语言锁定 \(language?.rawValue ?? "?")")
+        guard languageLock.observe(TranscriptionLanguage.detected(detected),
+                                   policy: policy) else { return }
+        Log.write("transcribe: 会话语言锁定 \(languageLock.locked?.rawValue ?? "?") "
+            + "（\(languageLock.votes.map(\.rawValue).joined(separator: "→"))）")
     }
 
     private func deliver(_ result: LocalTranscriber.Result, into target: PasteTarget?) {
@@ -1190,8 +2020,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 按住说话期间刘海上的计时。**只在整秒变化时才写** ——
+    /// 这个函数是 30 Hz 在跑的。
+    private var lastHoldNotchSecond = -1
+
     private func pushLevel() {
         notch.setLevel(Double(recorder.level))
+        guard holdOwnsRecorder, recorder.isRecording else { return }
+        let whole = Int(recorder.takeDurationSeconds)
+        guard whole != lastHoldNotchSecond else { return }
+        lastHoldNotchSecond = whole
+        notch.show(state: .recording,
+                   message: String(format: "%02d:%02d", whole / 60, whole % 60),
+                   compact: true)
     }
 
     private func stopLevelTicker() {
@@ -1277,8 +2118,12 @@ final class SettingsStore {
            let decoded = try? JSONDecoder().decode(AppSettings.self, from: data) {
             loaded = decoded
         }
+        let beforeSanitize = loaded
         loaded.sanitize()
         settings = loaded
+        // sanitize 改动了什么就当场写回去。否则迁移只活在内存里，
+        // 盘上永远是旧值，每次启动都要重新迁移一遍，两边状态还对不上。
+        let needsRewrite = beforeSanitize != loaded
 
         var keys = ShortcutsConfig()
         if let data = try? Data(contentsOf: Self.source("shortcuts.json")),
@@ -1286,6 +2131,7 @@ final class SettingsStore {
             keys = decoded
         }
         shortcuts = keys
+        if needsRewrite { save() }
     }
 
     /// 交给监听器的配置：关掉截图功能时把那两个槽**置空**，而不是「匹配了但不处理」——
