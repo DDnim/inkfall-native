@@ -38,6 +38,16 @@ public struct SilenceSegmenterConfig: Sendable, Equatable {
     public var floorEpsilon: Float
     /// 用第一帧播种噪声底时的上限，避免会话从说话中间开始时播下一个虚高的底。
     public var initialFloorSeed: Float
+    /// 噪声底取「最近这么长时间里的最低电平」。见 `adaptNoiseFloor` 的说明。
+    public var floorWindowSeconds: Double
+    /// 进入语音需要连续超过阈值多久。**一帧尖峰不算说话** —— 停顿期间的
+    /// 环境噪声是很尖的，没有这个起振时间，每个尖峰都会把静音计时器清零。
+    public var speechAttackSeconds: Double
+    /// 噪声底相对近期语音峰值的上限。防止「电平恒定的说话」把底噪一路抬到
+    /// 语音本身的高度，进而把说话误判成静音。
+    public var floorPeakCapRatio: Float
+    /// 语音峰值记忆的衰减时间常数。
+    public var speechPeakTimeConstant: Double
 
     public init(
         silenceCutSeconds: Double = 1.3,
@@ -48,7 +58,11 @@ public struct SilenceSegmenterConfig: Sendable, Equatable {
         floorRiseTimeConstant: Double = 2.0,
         floorFallTimeConstant: Double = 0.3,
         floorEpsilon: Float = 0.0008,
-        initialFloorSeed: Float = 0.006
+        initialFloorSeed: Float = 0.006,
+        floorWindowSeconds: Double = 1.0,
+        speechAttackSeconds: Double = 0.12,
+        floorPeakCapRatio: Float = 0.15,
+        speechPeakTimeConstant: Double = 4.0
     ) {
         self.silenceCutSeconds = silenceCutSeconds
         self.minSpeechSeconds = minSpeechSeconds
@@ -59,6 +73,10 @@ public struct SilenceSegmenterConfig: Sendable, Equatable {
         self.floorFallTimeConstant = floorFallTimeConstant
         self.floorEpsilon = floorEpsilon
         self.initialFloorSeed = initialFloorSeed
+        self.floorWindowSeconds = floorWindowSeconds
+        self.speechAttackSeconds = speechAttackSeconds
+        self.floorPeakCapRatio = floorPeakCapRatio
+        self.speechPeakTimeConstant = speechPeakTimeConstant
     }
 
     public static let `default` = SilenceSegmenterConfig()
@@ -78,6 +96,13 @@ public struct SilenceSegmenter: Sendable {
     private var isInSpeech = false
     /// 噪声底是否已经用真实样本播种过。
     private var floorInitialized = false
+    /// 当前统计窗口内的最低电平，以及窗口已累计的时长。
+    private var windowMin: Float = 1
+    private var windowElapsed: Double = 0
+    /// 连续超过进入阈值的时长（起振计时）。
+    private var aboveEnter: Double = 0
+    /// 近期语音峰值的衰减记忆，给噪声底封顶用。
+    private var speechPeak: Float = 0
 
     public init(config: SilenceSegmenterConfig = .default) {
         self.config = config
@@ -95,8 +120,14 @@ public struct SilenceSegmenter: Sendable {
             return false
         }
 
-        updateSpeechState(level: level)
+        // ⚠️ 顺序要紧，而且和旧版**相反**：先更新噪声底，再用新阈值判定语音。
+        //
+        // 旧版是「先判语音、后更新底噪」，配合「语音期间冻结底噪」才自洽。
+        // 换成窗口最小值之后必须调过来：底噪要先吸收这一帧，语音判定才能用上
+        // 追平环境之后的阈值。反过来会晚一个窗口，实测序列就切不出来。
+        // （`speechPeak` 因此用的是**上一帧**的语音状态，这是有意的。）
         adaptNoiseFloor(level: level, delta: delta)
+        updateSpeechState(level: level, delta: delta)
 
         if isInSpeech {
             speechAccumulated += delta
@@ -117,24 +148,62 @@ public struct SilenceSegmenter: Sendable {
     }
 
     /// 迟滞式相对语音判定。
-    private mutating func updateSpeechState(level: Float) {
+    private mutating func updateSpeechState(level: Float, delta: Double) {
         if isInSpeech {
-            if level < exitThreshold { isInSpeech = false }
+            if level < exitThreshold {
+                isInSpeech = false
+                aboveEnter = 0
+            }
         } else if level > enterThreshold {
-            isInSpeech = true
+            // ⚠️ 起振时间：连续超过阈值 `speechAttackSeconds` 才算说话。
+            // 少了它，停顿期间的一帧噪声尖峰就会把静音计时器清零 ——
+            // 实测停顿的峰值能到 0.014 而最低只有 0.004，全靠这一条把尖峰滤掉。
+            aboveEnter += delta
+            if aboveEnter >= config.speechAttackSeconds { isInSpeech = true }
+        } else {
+            aboveEnter = 0
         }
     }
 
     /// 向下快、向上慢，且语音期间绝不上升。
+    /// 噪声底 = **最近一个窗口里的最低电平**（minimum statistics）。
+    ///
+    /// ## 为什么不是「语音期间冻结」
+    ///
+    /// 旧做法只在 `!isInSpeech` 时让底噪上升。这会自锁：会话在真静音里起录，
+    /// 底噪被播种在 epsilon（0.0008），退出语音的门槛因而被绝对下限钉在
+    /// 0.0025；而真实停顿的最低电平是 0.0042 —— 永远出不了语音态，底噪也就
+    /// 永远没机会上升去追环境。实测 17.6 秒、含一个 2.3 秒停顿的素材，
+    /// 旧算法**一刀都切不出来**。
+    ///
+    /// 窗口最小值不受这个死锁影响：说话时的字间停顿天然提供最低点，
+    /// 底噪照样能追上环境。
+    ///
+    /// ## 为什么要对语音峰值封顶
+    ///
+    /// 电平恒定的说话（合成音、稳定音量的朗读）会让窗口最小值等于语音本身，
+    /// 底噪一路爬到语音高度，于是说话被判成静音、切出一堆假段。
+    /// 所以底噪不得超过近期语音峰值的 `floorPeakCapRatio`。
     private mutating func adaptNoiseFloor(level: Float, delta: Double) {
-        if level < noiseFloor {
-            let a = Self.smoothingAlpha(delta: delta, tau: config.floorFallTimeConstant)
-            noiseFloor += a * (level - noiseFloor)
-        } else if !isInSpeech {
-            let a = Self.smoothingAlpha(delta: delta, tau: config.floorRiseTimeConstant)
-            noiseFloor += a * (level - noiseFloor)
+        // 语音峰值的衰减记忆。
+        let decay = Float(exp(-delta / config.speechPeakTimeConstant))
+        speechPeak = max(speechPeak * decay, isInSpeech ? level : 0)
+
+        windowMin = min(windowMin, level)
+        windowElapsed += delta
+        guard windowElapsed >= config.floorWindowSeconds else { return }
+
+        var target = windowMin
+        if speechPeak > 0 {
+            target = min(target, speechPeak * config.floorPeakCapRatio)
         }
+        let tau = target < noiseFloor
+            ? config.floorFallTimeConstant : config.floorRiseTimeConstant
+        noiseFloor += Self.smoothingAlpha(delta: windowElapsed, tau: tau)
+            * (target - noiseFloor)
         noiseFloor = max(noiseFloor, config.floorEpsilon)
+        windowMin = 1
+        windowElapsed = 0
     }
 
     private var enterThreshold: Float {
@@ -151,12 +220,21 @@ public struct SilenceSegmenter: Sendable {
         return Float(1 - exp(-delta / tau))
     }
 
+    // 诊断用（仅测试读取）。
+    public var debugNoiseFloor: Float { noiseFloor }
+    public var debugIsInSpeech: Bool { isInSpeech }
+    public var debugCurrentSilence: Double { currentSilence }
+
     /// 全新会话（起停一次录音）用。连学到的噪声底一起清掉，下次从头学。
     public mutating func reset() {
         resetSegment()
         noiseFloor = 0
         isInSpeech = false
         floorInitialized = false
+        windowMin = 1
+        windowElapsed = 0
+        aboveEnter = 0
+        speechPeak = 0
     }
 
     /// 只重置本段计时（切段后、手动切段后）。噪声底与语音迟滞保留。

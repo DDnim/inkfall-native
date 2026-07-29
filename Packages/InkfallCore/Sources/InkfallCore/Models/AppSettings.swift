@@ -91,7 +91,12 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var appLanguage: AppLanguage = .system
     /// 截图要 Screen Recording 这个很宽的权限，所以默认关，
     /// 关着时两个快捷键会**从监听器里摘掉**（按键原样透传给其他 App）。
-    public var screenshotFeatureEnabled = false
+    /// 截图功能总开关。关掉时 ⌥; / ⌥' 两个槽会被**置空**，原样透传给别的 App。
+    public var screenshotFeatureEnabled = true
+    /// 一次性迁移标记：原生版之前把这个功能默认关着，而设置页里从来没有
+    /// 对应的开关 —— 盘上那个 `false` 是没人选过的默认值，不是用户的决定。
+    /// 迁移只做一次；之后用户在设置页里关掉它就一直是关着的。
+    public var screenshotDefaultMigrated = false
     public var screenshotQuoteMarkerEnabled = true
     public var micGainBoostEnabled = true
     public var micGainBoostTargetPercent: UInt8 = 80
@@ -123,6 +128,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case noteAutoSegment, noteAutoPaste, noteProcessingEnabled, noteProcessingPreset
         case noteRestoreOnLaunch, noteSpeakerDiarizationEnabled
         case appLanguage, screenshotFeatureEnabled, screenshotQuoteMarkerEnabled
+        case screenshotDefaultMigrated
         case micGainBoostEnabled, micGainBoostTargetPercent, integrationApiEnabled
         case hasCompletedOnboarding
     }
@@ -183,6 +189,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
         appLanguage = f(.appLanguage, appLanguage)
         screenshotFeatureEnabled = f(.screenshotFeatureEnabled, screenshotFeatureEnabled)
+        screenshotDefaultMigrated = f(.screenshotDefaultMigrated, screenshotDefaultMigrated)
         screenshotQuoteMarkerEnabled = f(.screenshotQuoteMarkerEnabled, screenshotQuoteMarkerEnabled)
         micGainBoostEnabled = f(.micGainBoostEnabled, micGainBoostEnabled)
         micGainBoostTargetPercent = f(.micGainBoostTargetPercent, micGainBoostTargetPercent)
@@ -197,6 +204,13 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
     /// 把非法/过期的值收拾回合法状态。load 与 save 两侧都要跑。
     public mutating func sanitize() {
+        // 截图默认值的一次性迁移。老配置里这个键是 `false`，但设置页里
+        // 从来没有过对应的开关 —— 那不是用户关的，是个没人碰过的默认值，
+        // 而它会把 ⌥; / ⌥' 两个槽置空，表现为「按了没反应」。
+        if !screenshotDefaultMigrated {
+            screenshotDefaultMigrated = true
+            screenshotFeatureEnabled = true
+        }
         if !ProviderModels.openAITranscription.contains(selectedOpenAiModel) {
             selectedOpenAiModel = "gpt-4o-mini-transcribe"
         }

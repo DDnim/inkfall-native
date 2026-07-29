@@ -433,6 +433,10 @@ final class SettingsDecodingTests: XCTestCase {
     func testLocalModelIDMigration() {
         XCTAssertEqual(LocalModels.migrate(id: "whisper-tiny"), "whisper-tiny")
         XCTAssertEqual(LocalModels.migrate(id: "whisper-medium"), "whisper-turbo")
+        // large 现在是真实存在的一条，不该再被改判成 turbo。
+        XCTAssertEqual(LocalModels.migrate(id: "whisper-large"), "whisper-large")
+        XCTAssertEqual(LocalModels.definition(id: "whisper-large")?.variant,
+                       "openai_whisper-large-v3")
         XCTAssertEqual(LocalModels.migrate(id: LocalModels.mossID), "whisper-turbo")
         XCTAssertEqual(LocalModels.migrate(id: "nope"), "whisper-base")
         for model in LocalModels.all {

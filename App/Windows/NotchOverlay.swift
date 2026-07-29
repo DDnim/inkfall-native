@@ -16,7 +16,73 @@ final class NotchOverlayController {
     /// 只有目标屏真的变了才 setFrame —— 它是这条路径上最贵的一步。
     private var currentScreenFrame: CGRect?
 
-    func show(state: OverlayState, message: String = "", title: String? = nil) {
+    // MARK: - 悬停
+
+    /// hover 条上的三个动作。宿主注入 —— 刘海不认识会话。
+    struct HoverActions {
+        var cut: () -> Void
+        var togglePause: () -> Void
+        var stop: () -> Void
+    }
+
+    var hoverActions: HoverActions?
+
+    /// 窗口永久 click-through，收不到 mouseEntered/Exited，只能轮询。
+    /// 120ms：跟手，又不至于让一个常驻计时器变成耗电项。
+    private static let hoverPollSeconds: TimeInterval = 0.12
+    private var hoverTimer: Timer?
+
+    /// 这一刻有没有 hover 条可展开。
+    ///
+    /// 只有长录会话有。按住说话同样是紧凑胶囊，但那时手正按在键上，
+    /// 条上三个按钮一个都用不上 —— 给它展开只会挡住计时。
+    func setHoverStripAvailable(_ available: Bool) {
+        guard model.stripAvailable != available else { return }
+        model.stripAvailable = available
+        if available {
+            startHoverPolling()
+        } else {
+            stopHoverPolling()
+        }
+    }
+
+    private func startHoverPolling() {
+        guard hoverTimer == nil else { return }
+        hoverTimer = Timer.scheduledTimer(withTimeInterval: Self.hoverPollSeconds,
+                                          repeats: true) { _ in
+            Task { @MainActor in self.pollHover() }
+        }
+    }
+
+    /// ⚠️ 这里**必须无条件**把 click-through 放回去。overlay 卡在
+    /// 「接受点击」是能把整个屏幕顶端点死的，而且用户完全看不出是谁在吃他的点击。
+    private func stopHoverPolling() {
+        hoverTimer?.invalidate()
+        hoverTimer = nil
+        model.hover = .none
+        window?.ignoresMouseEvents = true
+    }
+
+    private func pollHover() {
+        guard let panel = window, model.visible else {
+            stopHoverPolling()
+            return
+        }
+        // 命中判的是**当前绘制的胶囊**，不是画布 —— 画布 520×168 里绝大部分
+        // 是透明的，拿它当热区会让鼠标一飘到屏幕顶端就触发。
+        let rect = OverlayGeometry.capsuleRect(canvas: panel.frame, capsule: model.capsule)
+        let response = OverlayHover.response(hovering: rect.contains(NSEvent.mouseLocation),
+                                             stripAvailable: model.stripAvailable)
+        guard response != model.hover else { return }
+        model.hover = response
+        panel.ignoresMouseEvents = !OverlayHover.wantsMouseEvents(response)
+    }
+
+    /// - Parameter compact: 紧凑胶囊 —— 只排一行、矮一半。录音中用它：
+    ///   胶囊亮着本身就代表在录音，再写一行「正在录音」是白占屏幕顶部。
+    func show(state: OverlayState, message: String = "", title: String? = nil,
+              compact: Bool = false) {
+        model.compact = compact
         model.state = state
         model.message = message
         model.title = title
@@ -27,7 +93,11 @@ final class NotchOverlayController {
     }
 
     func hide() {
+        model.compact = false
         model.visible = false
+        // 收走之前先把 click-through 放回去 —— 一个 orderOut 掉的窗口
+        // 仍然会因为 ignoresMouseEvents=false 而在下次显示时吃掉第一次点击。
+        setHoverStripAvailable(false)
         window?.orderOut(nil)
     }
 
@@ -63,7 +133,10 @@ final class NotchOverlayController {
         panel.ignoresMouseEvents = true      // 永久 click-through
         panel.isMovable = false
 
-        let host = NSHostingView(rootView: NotchOverlayView(model: model))
+        let host = FirstMouseHostingView(rootView: NotchOverlayView(model: model,
+                                                                   actions: { [weak self] in
+            self?.hoverActions
+        }))
         host.frame = panel.contentView?.bounds ?? .zero
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
@@ -94,6 +167,15 @@ final class NotchOverlayController {
 
     /// 供验证脚本读取的当前几何。
     var debugFrame: NSRect? { window?.frame }
+    var debugIsCompact: Bool { model.compact }
+    var debugMessage: String { model.message }
+    var debugHover: String { "\(model.hover)" }
+    var debugAcceptsClicks: Bool { window?.ignoresMouseEvents == false }
+    /// 胶囊在屏幕坐标里的矩形。自测拿它算按钮该点哪儿。
+    var debugCapsuleRect: NSRect? {
+        guard let frame = window?.frame else { return nil }
+        return OverlayGeometry.capsuleRect(canvas: frame, capsule: model.capsule)
+    }
 
     /// 实测的刘海宽 + 由它算出的胶囊尺寸。
     /// Tauri 版读不到真实刘海宽（`auxiliaryTopLeftArea` 是 Swift-only API），
@@ -117,19 +199,33 @@ final class NotchModel {
     var level: Double = 0
     var visible = false
     var armed = false
-    var noteCapsule = false
+    var compact = false
     var topInset: Double = 32
     var notchWidth: Double = OverlayGeometry.estimatedNotchWidth
+    var hover: OverlayHoverResponse = .none
+    var stripAvailable = false
 
     var capsule: CapsuleSize {
         OverlayGeometry.capsule(state: state, topInset: topInset,
                                 notchWidth: notchWidth, armed: armed,
-                                noteCapsule: noteCapsule)
+                                compact: compact, hoverStrip: hover == .strip)
     }
+}
+
+/// 借来收 hover 条上的点击。
+///
+/// overlay 是不激活的面板，永远不会成为 key window —— 默认情况下落在
+/// 非 key 窗口上的第一次点击只会被拿去「让窗口变 key」，按钮收不到。
+/// hover 条上的每一次点击都是**第一次**点击，所以这个 override 不是优化，
+/// 是那三个按钮能不能用的前提。
+private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 struct NotchOverlayView: View {
     @Bindable var model: NotchModel
+    /// 迟绑定：hover 条的动作在窗口建好之后才由宿主注入。
+    let actions: () -> NotchOverlayController.HoverActions?
 
     /// 状态色。刘海永远浮在别人的窗口上，所以这套色**固定，不随系统明暗翻转**。
     /// 紫色是唯一的非墨色相，专留给「机器在思考」，不与转写的青混淆。
@@ -167,7 +263,10 @@ struct NotchOverlayView: View {
     var body: some View {
         let capsule = model.capsule
         ZStack(alignment: .top) {
-            Color.clear
+            // ⚠️ 展开 hover 条时窗口会临时收鼠标事件，而这块画布铺满了
+            // 520×168。不关掉它的命中，胶囊之外那一大片透明区域会把
+            // 菜单栏的点击全吃掉。
+            Color.clear.allowsHitTesting(false)
             UnevenRoundedRectangle(
                 bottomLeadingRadius: isBand ? 0 : 18,
                 bottomTrailingRadius: isBand ? 0 : 18)
@@ -181,10 +280,13 @@ struct NotchOverlayView: View {
         .frame(width: OverlayGeometry.canvasWidth,
                height: OverlayGeometry.canvasHeight(topInset: model.topInset),
                alignment: .top)
-        .opacity(model.visible ? 1 : 0)
+        // 普通状态 hover = 淡化让路；落笔胶囊反过来，展开条且**绝不淡化**
+        // —— 淡化的按钮既难认也难点。
+        .opacity(model.visible ? (model.hover == .dim ? 0.32 : 1) : 0)
         .animation(.spring(duration: 0.42, bounce: 0.12), value: capsule.height)
         .animation(.spring(duration: 0.32), value: capsule.width)
         .animation(.easeOut(duration: 0.2), value: model.visible)
+        .animation(.easeOut(duration: 0.16), value: model.hover)
     }
 
     /// 刘海带：状态点在左翼，锁/标记在右翼，都在带内垂直居中，
@@ -205,7 +307,19 @@ struct NotchOverlayView: View {
 
     @ViewBuilder
     private func content(capsule: CapsuleSize) -> some View {
-        if !isBand {
+        if model.hover == .strip {
+            hoverStrip(capsule: capsule)
+        } else if model.compact {
+            // 紧凑胶囊只排一行：计时。胶囊亮着就代表在录音，
+            // 不必再写一遍「正在录音」—— 那既占高度又是废话。
+            Text(model.message)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(Color(red: 0.945, green: 0.91, blue: 0.84))
+                .lineLimit(1)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 7)
+                .frame(width: capsule.width)
+        } else if !isBand {
             VStack(spacing: 2) {
                 if let title = model.title ?? defaultTitle {
                     Text(title)
@@ -223,6 +337,48 @@ struct NotchOverlayView: View {
             .padding(.bottom, 12)
             .frame(width: capsule.width)
         }
+    }
+
+    /// 鼠标停在落笔胶囊上时摊开的操作条。
+    ///
+    /// 三个动作都是「录着录着突然要做的事」：切一段、停一下、收工。
+    /// 面板可能被挡在别人窗口后面，快捷键要记，而刘海一直在那儿。
+    ///
+    /// （spec/07 §6 的条是 [拆出][暂停·继续][停止]。**拆出还没做**（#21），
+    /// 摆一个点了没反应的按钮比不摆更糟，所以先放切段 —— 它今天就能用，
+    /// 而且和融合柱里的那组按钮是同一套。）
+    private func hoverStrip(capsule: CapsuleSize) -> some View {
+        let paused = model.state == .notePaused
+        return HStack(spacing: 6) {
+            stripButton("scissors", "切段") { actions()?.cut() }
+                .disabled(paused)
+                .opacity(paused ? 0.35 : 1)
+            stripButton(paused ? "play.fill" : "pause.fill", paused ? "继续" : "暂停") {
+                actions()?.togglePause()
+            }
+            stripButton("stop.fill", "停止", danger: true) { actions()?.stop() }
+        }
+        .padding(.horizontal, 10)
+        .padding(.bottom, 6)
+        .frame(width: capsule.width)
+    }
+
+    private func stripButton(_ icon: String, _ label: String,
+                             danger: Bool = false,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 9, weight: .bold))
+                Text(label).font(.system(size: 11, weight: .medium))
+            }
+            .foregroundStyle(danger ? Color(red: 0.84, green: 0.35, blue: 0.29)
+                                    : Color(red: 0.945, green: 0.91, blue: 0.84))
+            .frame(maxWidth: .infinity)
+            .frame(height: 24)
+            .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
+            .contentShape(RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
     }
 
     private var defaultTitle: String? {

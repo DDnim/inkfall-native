@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// 刘海岛（墨锭）的可见状态。
@@ -68,7 +69,17 @@ public enum OverlayGeometry {
     /// 同上，减掉键盘提示行与它的间距 —— 结果卡不需要回答。
     public static let jarvisResultPaneHeight: Double = 74
     /// 落笔胶囊在带之下预留给 hover 条的空间（30pt 的条 + 8pt 余量）。
+    /// 只在鼠标真的停上来时才撑到这个高度 —— 平时那条不在，
+    /// 白留 8pt 就是白占屏幕顶部。
     public static let noteHoverStripSpan: Double = 38
+    /// 紧凑胶囊在带之下的内容高。
+    ///
+    /// 比普通状态的 `contentHeight`(60) 矮一半：普通状态排两行
+    /// （「正在录音」+ 副行文案），紧凑胶囊只排一行 —— 胶囊亮着本身
+    /// 就代表在录音，再写一遍「正在录音」是白占高度。
+    /// 录音期间（按住说话与落笔）都用它；转写/加工/结果那些状态仍排两行，
+    /// 因为那时标题（「正在转写」）是真信息。
+    public static let compactContentHeight: Double = 30
 
     /// 画布：按最大的那个状态定尺寸，永不改变。
     public static let canvasWidth: Double = jarvisCardWidth
@@ -84,12 +95,14 @@ public enum OverlayGeometry {
     ///   - topInset: 屏幕顶部安全区（刘海高度）；无刘海屏为 0。
     ///   - notchWidth: 硬件刘海宽度；无刘海屏为 0。
     ///   - armed: 关键词扫描是否 armed。
-    ///   - noteCapsule: 是否是落笔胶囊（要给 hover 条留位置）。
+    ///   - compact: 紧凑胶囊（只排一行，用于录音中）。
+    ///   - hoverStrip: 正在展开 hover 条（只对紧凑胶囊有意义）。
     public static func capsule(state: OverlayState,
                                topInset: Double,
                                notchWidth: Double,
                                armed: Bool,
-                               noteCapsule: Bool = false) -> CapsuleSize {
+                               compact: Bool = false,
+                               hoverStrip: Bool = false) -> CapsuleSize {
         let hasNotch = topInset > 0 && notchWidth > 0
         // 承载状态点与电平的带。无刘海屏给一个等高的合成带，
         // 这样卡片在哪儿都是同一个排版。
@@ -113,13 +126,26 @@ public enum OverlayGeometry {
             size = CapsuleSize(width: width, height: contentHeight + topInset)
         }
 
-        // 落笔胶囊要给 hover 条（[拆出][暂停/继续][停止]）留位置。条贴在带的下沿、
-        // 约 30pt 高，所以一个普通录音 pill（60pt，或无刘海屏的 32pt 带）会把它
-        // 的底部切掉。把画的矩形做这么高，同时也把 hover 命中区扩到够得着条。
-        if noteCapsule {
-            size = CapsuleSize(width: size.width,
-                               height: max(size.height, band + noteHoverStripSpan))
+        // 紧凑胶囊：只排一行（计时），所以比普通状态矮一截。
+        // 鼠标停上来时那一行换成 hover 条（[切段][暂停/继续][停止]），
+        // 要撑到 `noteHoverStripSpan` 才放得下，否则条的下半截会被裁掉。
+        if compact {
+            let content = hoverStrip ? noteHoverStripSpan : compactContentHeight
+            size = CapsuleSize(width: size.width, height: content + topInset)
         }
         return size
+    }
+
+    /// 胶囊在画布里的位置：**贴顶居中**。
+    ///
+    /// 悬停命中判的是这个矩形，不是整块画布 —— 画布 520×168 里绝大部分是
+    /// 透明的，拿它当热区会让鼠标一飘到屏幕顶端就触发。
+    ///
+    /// - Parameter canvas: overlay 窗口在屏幕坐标里的 frame（Cocoa 左下原点）。
+    public static func capsuleRect(canvas: CGRect, capsule: CapsuleSize) -> CGRect {
+        CGRect(x: canvas.midX - capsule.width / 2,
+               y: canvas.maxY - capsule.height,
+               width: capsule.width,
+               height: capsule.height)
     }
 }

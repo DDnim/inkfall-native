@@ -214,6 +214,12 @@ public enum LocalModels {
         .init(id: "whisper-turbo", name: "Whisper Large v3 Turbo", repo: repo,
               variant: "openai_whisper-large-v3-v20240930_turbo", sizeLabel: "~1.5 GB",
               runtime: .whisper),
+        // 完整的 large v3：解码器是 turbo 的 8 倍层数，慢不少，但对口音、
+        // 专有名词和嘈杂环境更稳。体积也几乎翻倍（实测仓库里 2.88 GB）。
+        // 放在 turbo 后面 —— 绝大多数人该用 turbo，这一条是给「宁可等」的场合。
+        .init(id: "whisper-large", name: "Whisper Large v3", repo: repo,
+              variant: "openai_whisper-large-v3", sizeLabel: "~2.9 GB",
+              runtime: .whisper),
     ]
 
     public static func definition(id: String) -> LocalModelDefinition? {
@@ -222,10 +228,13 @@ public enum LocalModels {
 
     /// 旧 id → 新 id。Tauri 版的 `whisper-medium` 在 CoreML 仓库里没有对应尺寸，
     /// 落到体积相近但更快更准的 turbo；不认识的一律回落 base。
+    ///
+    /// 注意 `whisper-large` 现在是**真实存在的一条**，会被上面那句直接放行 ——
+    /// 老配置里选了它的用户拿到的就是完整的 large v3，而不再被改判成 turbo。
     public static func migrate(id: String) -> String {
         if definition(id: id) != nil { return id }
         switch id {
-        case "whisper-medium", "whisper-large", mossID: return "whisper-turbo"
+        case "whisper-medium", mossID: return "whisper-turbo"
         default: return "whisper-base"
         }
     }

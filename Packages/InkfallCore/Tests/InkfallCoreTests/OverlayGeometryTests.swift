@@ -16,7 +16,7 @@ final class OverlayGeometryTests: XCTestCase {
     private func capsule(_ s: OverlayState, _ screen: (notch: Double, inset: Double),
                          armed: Bool = false, note: Bool = false) -> CapsuleSize {
         OverlayGeometry.capsule(state: s, topInset: screen.inset,
-                                notchWidth: screen.notch, armed: armed, noteCapsule: note)
+                                notchWidth: screen.notch, armed: armed, compact: note)
     }
 
     /// | 模式 | 宽 | 高 |
@@ -138,12 +138,17 @@ final class OverlayGeometryTests: XCTestCase {
         XCTAssertEqual(withNotch, without, "卡片不该换形状")
     }
 
-    /// 落笔胶囊要留得下 hover 条，否则条的下半截会被裁掉。
-    func testNoteCapsuleReservesRoomForTheHoverStrip() {
+    /// 紧凑胶囊（录音中）只排一行（计时），要明显比普通状态矮 ——
+    /// 它常驻在屏幕顶部，占多少高度是有代价的。
+    func testCompactCapsuleIsShorterThanOrdinaryStates() {
         for screen in screens {
-            let band = screen.inset > 0 ? screen.inset : OverlayGeometry.bandHeight
-            let paused = capsule(.notePaused, screen, note: true)
-            XCTAssertGreaterThanOrEqual(paused.height, band + OverlayGeometry.noteHoverStripSpan)
+            let note = capsule(.recording, screen, note: true)
+            let ordinary = capsule(.recording, screen)
+            XCTAssertLessThan(note.height, ordinary.height)
+            XCTAssertEqual(note.height,
+                           OverlayGeometry.compactContentHeight + screen.inset)
+            // 宽度不受影响：它仍然要贴住刘海两翼。
+            XCTAssertEqual(note.width, ordinary.width)
         }
     }
 

@@ -13,8 +13,10 @@ final class HubWindowController {
     private let model: HubModel
 
     init(store: SettingsStore, permissions: PermissionCoordinator,
-         models: ModelCatalog, notes: NoteStore) {
+         models: ModelCatalog, notes: NoteStore,
+         onOpenNote: @escaping (HistoryEntry) -> Void) {
         model = HubModel(store: store, permissions: permissions, models: models, notes: notes)
+        model.onOpenNote = onOpenNote
     }
 
     func show(page: HubModel.Page? = nil) {
@@ -82,6 +84,9 @@ final class HubModel {
     let permissions: PermissionCoordinator
     let models: ModelCatalog
     let notes: NoteStore
+    /// 点一条笔记要干什么。宿主（AppDelegate）注入 —— 合并窗不该自己知道
+    /// 落笔面板的存在。
+    var onOpenNote: ((HistoryEntry) -> Void)?
 
     init(store: SettingsStore, permissions: PermissionCoordinator,
          models: ModelCatalog, notes: NoteStore) {
@@ -183,26 +188,27 @@ struct HubView: View {
     }
 
     private func noteRow(_ note: HistoryEntry) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text(note.title).font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Ink.ink1)
-                Spacer()
-            }
-            // 正文是 markdown，列表这一行只要个摘要 —— 把换行压成空格，
-            // 否则第一行是个标题井号就什么都看不出来。
-            Text(note.displayText.replacingOccurrences(of: "\n", with: " "))
-                .font(.system(size: 11))
-                .foregroundStyle(Ink.ink3).lineLimit(1)
-        }
-        .padding(.horizontal, 14).padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(alignment: .bottom) { Divider().overlay(Ink.hair) }
+        NoteRow(note: note,
+                open: { model.onOpenNote?(note) },
+                delete: { deleteNote(note) })
+    }
+
+    private func deleteNote(_ note: HistoryEntry) {
+        let alert = NSAlert()
+        alert.messageText = "删除「\(note.title)」？"
+        alert.informativeText = "正文与其中的截图都会被删掉，无法恢复。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        model.notes.remove(id: note.id)
+        NoteAttachments.removeAll(noteID: note.id)
     }
 
     private var footerHints: some View {
         HStack(spacing: 8) {
-            ForEach([("↑↓", "选择"), ("↵", "粘贴"), ("⌘↵", "编辑"), ("esc", "关闭")], id: \.0) { pair in
+            ForEach([("点击", "打开编辑"), ("⌥Space", "开始录音"),
+                     ("⌥;", "截图"), ("esc", "关闭")], id: \.0) { pair in
                 HStack(spacing: 4) {
                     Text(pair.0)
                         .font(.system(size: 9, design: .monospaced))
@@ -262,6 +268,7 @@ struct HubView: View {
                     case .operators: operatorsPage
                     case .general: generalPage
                     case .shortcuts: shortcutsPage
+                    case .screenshot: screenshotPage
                     default: notWiredYet
                     }
                 }
@@ -271,6 +278,22 @@ struct HubView: View {
             }
         }
         .background(Ink.paper2)
+    }
+
+    private var screenshotPage: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            group("截图") {
+                toggleRow("启用截图", "⌥; 框选、⌥' 整屏，截完直接插进当前笔记。"
+                          + "关掉之后这两个组合键会原样透传给别的 App",
+                          isOn: Binding(get: { model.settings.screenshotFeatureEnabled },
+                                        set: { model.settings.screenshotFeatureEnabled = $0 }))
+                caption("图片存在 ~/Library/Application Support/app.inkfall.native/attachments/，"
+                        + "删除笔记时会连同它的图片一起删掉。")
+            }
+            group("权限") {
+                permissionRow(.screenRecording)
+            }
+        }
     }
 
     private var operatorsPage: some View {
@@ -333,24 +356,26 @@ struct HubView: View {
                                         set: { model.settings.noteRestoreOnLaunch = $0 }))
             }
             group("权限") {
-                ForEach(Permission.allCases, id: \.self) { p in
-                    HStack(spacing: 9) {
-                        Image(systemName: model.permissions.isGranted(p)
-                              ? "checkmark.circle.fill" : "circle.dashed")
-                            .foregroundStyle(model.permissions.isGranted(p) ? Ink.teal : Ink.ink4)
-                            .font(.system(size: 13))
-                        Text(p.title).font(.system(size: 12)).foregroundStyle(Ink.ink1)
-                        Spacer()
-                        if !model.permissions.isGranted(p) {
-                            Button("授权") { model.permissions.request(p) }
-                                .font(.system(size: 11))
-                        }
-                    }
-                    .padding(.horizontal, 11).padding(.vertical, 7)
-                    .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
-                }
+                ForEach(Permission.allCases, id: \.self) { permissionRow($0) }
             }
         }
+    }
+
+    private func permissionRow(_ p: Permission) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: model.permissions.isGranted(p)
+                  ? "checkmark.circle.fill" : "circle.dashed")
+                .foregroundStyle(model.permissions.isGranted(p) ? Ink.teal : Ink.ink4)
+                .font(.system(size: 13))
+            Text(p.title).font(.system(size: 12)).foregroundStyle(Ink.ink1)
+            Spacer()
+            if !model.permissions.isGranted(p) {
+                Button("授权") { model.permissions.request(p) }
+                    .font(.system(size: 11))
+            }
+        }
+        .padding(.horizontal, 11).padding(.vertical, 7)
+        .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
     }
 
     private var shortcutsPage: some View {
@@ -514,5 +539,49 @@ struct HubView: View {
         .padding(.horizontal, 14).padding(.vertical, 6)
         .background(Ink.paper0)
         .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+    }
+}
+
+/// 笔记列表的一行。
+///
+/// 单独抽出来是为了 `@State` 的悬停态 —— 删除按钮只在鼠标移上来时出现，
+/// 否则一列垃圾桶图标会让「打开」这个主要动作显得次要。
+private struct NoteRow: View {
+    let note: HistoryEntry
+    let open: () -> Void
+    let delete: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(note.title).font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Ink.ink1)
+                // 正文是 markdown，列表这一行只要个摘要 —— 把换行压成空格，
+                // 否则第一行是个标题井号就什么都看不出来。
+                Text(note.displayText.replacingOccurrences(of: "\n", with: " "))
+                    .font(.system(size: 11))
+                    .foregroundStyle(Ink.ink3).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if hovering {
+                Button(action: delete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Ink.ink3)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .help("删除这篇")
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(hovering ? Ink.paper3 : .clear)
+        .contentShape(Rectangle())          // 空白处也要能点，不是只有文字
+        .onTapGesture(perform: open)
+        .onHover { hovering = $0 }
+        .overlay(alignment: .bottom) { Divider().overlay(Ink.hair) }
     }
 }
