@@ -99,6 +99,21 @@ final class NoteSessionController {
     /// 发 false 会让宿主把刘海整个收走，用户就再也点不到「继续」了。
     var onRecordingChanged: ((Bool) -> Void)?
 
+    /// 贾维斯的扫描入口。**只喂 raw transcript**（spec/10 A13）：
+    /// 加工会改写填充词和标点，能把关键词整个毁掉。
+    ///
+    /// 返回「这一段是不是一条指令」—— 命中的那一段照样落进正文（不能悄悄
+    /// 扣下用户说过的话），但标成 `>> 原文` 并预标已粘贴：命令已经跑了，
+    /// 没有东西可粘，所以它不该进「粘贴所有」，也不算未粘贴内容。
+    var scanTranscript: ((String) -> Bool)?
+
+    /// 关键词扫描 armed。
+    ///
+    /// ⚠️ armed 时**无视**「自动断句」这个开关（spec/10 A14）：切段是关键词
+    /// 可见的前提，段不闭合就永远扫不到命令 —— 而用户完全看不出「关掉自动断句」
+    /// 和「贾维斯变聋了」之间有什么关系。
+    var scanArmed = false
+
 
     /// 已录秒数。**只在整秒变化时才写** —— tick 是 30 Hz，每次都写会让整个
     /// 面板一秒重绘三十次。
@@ -341,7 +356,8 @@ final class NoteSessionController {
             cut()
             return
         }
-        guard store.settings.noteAutoSegment else {
+        // A14：扫描 armed 时无视这个开关 —— 关掉它就等于把贾维斯变聋。
+        guard store.settings.noteAutoSegment || scanArmed else {
             debugSampleLevel(now: now, level: recorder.level, autoOn: false, delta: delta)
             return
         }
@@ -465,15 +481,38 @@ final class NoteSessionController {
             Log.write("note: 会话语言锁定 \(languageLock.locked?.rawValue ?? "?") "
                 + "（\(languageLock.votes.map(\.rawValue).joined(separator: "→"))）")
         }
+        // 贾维斯先看一眼 **raw**。扫描是 filter、笔记是 sink，两者正交 ——
+        // 命中与否都不影响这一段会不会落进正文。
+        let hit = scanArmed ? (scanTranscript?(result.text) ?? false) : false
         // 带说话人标签的结果原样放行：标签的排版是结构，不是待清理的噪声。
         let text = result.labeled ? result.text : BasicPolisher.polish(result.text)
         var segment = segments.first { $0.id == id }
             ?? NoteSessionSegment(id: id, createdAtMs: HistoryEntry.nowMs())
         segment.rawText = result.text
-        segment.finalText = text
+        segment.finalText = hit ? SessionMachine.noteBody(transcript: text, wasCommandHit: true)
+                                : text
+        // 命令已经执行了，没有东西可粘 —— 预标已粘贴，免得它挤进「粘贴所有」。
+        segment.pasted = hit
         segment.status = .done
         queue.complete(seq: seq, item: segment)
         drain()
+    }
+
+    /// 自测用：把一段**假装转写回来的文字**喂进真实的落地路径。
+    ///
+    /// 走的是和真转写完全同一个 `finish()` —— 扫描、标记指令、有序落正文、
+    /// 落盘全都照跑，只有「声音变成文字」那一步是伪造的。
+    /// （共跑那条链上唯一测不动的就是麦克风，其余每一环都在这里被真实驱动。）
+    func debugInjectTranscript(_ text: String) {
+        let seq = queue.enqueue()
+        let id = nextSegmentID
+        nextSegmentID += 1
+        segments.append(NoteSessionSegment(id: id, status: .processing,
+                                           createdAtMs: HistoryEntry.nowMs()))
+        finish(id: id, seq: seq,
+               result: LocalTranscriber.Result(text: text, language: "zh",
+                                               elapsed: 0, speakerCount: nil),
+               policy: TranscriptionLanguagePolicy(settings: store.settings))
     }
 
     private func markFailed(_ id: UInt64) {
@@ -748,6 +787,23 @@ final class NoteSessionController {
         title = ""
         history.reset(to: "")
         Log.write("note: 已删除 \(id)")
+    }
+
+    /// 当前这篇在**外部**被删掉了（集成 API 的 DELETE）。
+    ///
+    /// 必须解绑，否则面板会继续往一个幽灵条目上追加，而下一次防抖落盘
+    /// 又把刚删掉的那篇整个复活。录音中的会话不解绑 —— 正在录的内容会无处可去，
+    /// 那种情况下删除本身就该被拒绝。
+    func detachDeletedNote() {
+        guard !isLive else { return }
+        persistTimer?.invalidate()
+        persistTimer = nil
+        noteID = nil
+        title = ""
+        draft = ""
+        lastSyncedDraft = ""
+        segments = []
+        history.reset(to: "")
     }
 
     /// 空笔记不该占列表位置，但**只在真的什么都没录到时**才算空。

@@ -29,6 +29,10 @@ final class HubWindowController {
     }
 
     var debugFrame: NSRect? { window?.frame }
+    /// 取证用：SwiftUI 真的画出东西了，这里就有对应的宿主视图与文本视图；
+    /// 画不出来就是一层空壳。截图受 TCC 限制、AX 自读窗口树在本机时灵时不灵，
+    /// 所以这是「这一页到底渲染出来没有」最可靠的一条通道。
+    var debugContentView: NSView? { window?.contentView }
 
     private func ensureWindow() {
         guard window == nil else { return }
@@ -269,6 +273,8 @@ struct HubView: View {
                     case .general: generalPage
                     case .shortcuts: shortcutsPage
                     case .screenshot: screenshotPage
+                    case .voiceCommands: voiceCommandsPage
+                    case .integration: integrationPage
                     default: notWiredYet
                     }
                 }
@@ -401,8 +407,230 @@ struct HubView: View {
     }
 
     private var shortcutRows: [(String, String)] {
-        [("按住说话", "右 ⌥"), ("落笔", "⌥ Space"), ("快速粘贴", "⌥ ["),
-         ("切段", "⌥ ."), ("发送前编辑", "⌥ /"), ("取消录音", "⌥ Esc")]
+        [("按住说话", "右 ⌥"), ("落笔", "⌥ Space"), ("贾维斯待命", "⌥ ,"),
+         ("快速粘贴", "⌥ ["), ("切段", "⌥ ."), ("发送前编辑", "⌥ /"),
+         ("取消录音", "⌥ Esc"), ("撤销待执行命令", "esc（仅倒计时期间）"),
+         ("立即执行", "↩（仅倒计时期间）")]
+    }
+
+    // MARK: - 子页：语音命令 / 贾维斯
+
+    private var voiceCommandsPage: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            group("总开关") {
+                toggleRow("语音命令", "口述里出现关键词时，不粘贴，改为在终端里执行一条命令。"
+                          + "默认关：随口一句以关键词开头的听写就会启动终端，而命令是任意 shell",
+                          isOn: Binding(get: { model.settings.voiceCommandsEnabled },
+                                        set: { model.settings.voiceCommandsEnabled = $0 }))
+                toggleRow("按住提问（双击右⌥ 并按住）", "快速点一下右⌥、立刻再按住，"
+                          + "说完松开 —— 问题连同选中的文字交给 Claude Code，"
+                          + "答案显示出来，不粘贴。关掉之后这个手势退化成普通听写",
+                          isOn: Binding(get: { model.settings.askModeEnabled },
+                                        set: { model.settings.askModeEnabled = $0 }))
+                toggleRow("贾维斯待命（⌥,）", "一直听着，只扫关键词，不留任何文字。"
+                          + "落笔开着时可以叠加 —— 那时每段既留下又扫描",
+                          isOn: Binding(get: { model.settings.jarvisModeEnabled },
+                                        set: { model.settings.jarvisModeEnabled = $0 }))
+            }
+            caption("命中之后有 3 秒倒计时：esc 撤销，↩ 立即执行。"
+                    + "这两个键**只在**倒计时期间被接管，其余时间原样透传。")
+
+            group("命令") {
+                ForEach(Array(model.settings.voiceCommands.enumerated()), id: \.offset) { pair in
+                    commandCard(index: pair.offset)
+                }
+                HStack {
+                    Button("＋ 新增命令") {
+                        model.settings.voiceCommands.append(
+                            VoiceCommand(keyword: "", commandTemplate: "", terminal: .terminal))
+                    }
+                    .font(.system(size: 11))
+                    Spacer()
+                }
+                .padding(.horizontal, 11).padding(.vertical, 7)
+                .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+            }
+            caption("占位符：{text} 是整句话减去关键词，{selection} 是当前选中的文字，"
+                    + "{clipboard} 是剪贴板。终端命令里要把它们包在双引号里 ——"
+                    + "替换值按双引号 shell 上下文转义，换行会压成空格；"
+                    + "Claude Code 那一路模板就是提问本身，引号和分行原样保留。")
+
+            group("Claude Code 助手") {
+                caption2("选「Claude Code」的命令不开终端窗口：后台 tmux 里跑 claude -p，"
+                         + "同一个关键词的后续每一句都 --resume 接回同一场会话 ——"
+                         + "所以它记得住上下文。回答落在刘海上，全文进剪贴板。")
+                copyRow("看对话", "tmux attach -t \(ClaudeCode.tmuxSession)")
+                HStack(spacing: 8) {
+                    Text("环境").font(.system(size: 11)).foregroundStyle(Ink.ink2)
+                        .frame(width: 52, alignment: .leading)
+                    Text(ClaudeCodeAgent.readiness)
+                        .font(.system(size: 10))
+                        .foregroundStyle(ClaudeCodeAgent.readiness == "就绪" ? Ink.teal : Ink.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 11).padding(.vertical, 7)
+                .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+                caption2("「跳过权限确认」默认关：语音是会误触的输入方式，"
+                         + "而它等于把改文件、跑命令的确认全免掉。关着时仍然能读能查能答。")
+            }
+        }
+    }
+
+    /// 一条命令。380pt 宽的子页放不下一行摆完，所以竖着排。
+    private func commandCard(index: Int) -> some View {
+        let command = Binding(
+            get: { model.settings.voiceCommands[safe: index] ?? VoiceCommand() },
+            set: {
+                guard model.settings.voiceCommands.indices.contains(index) else { return }
+                model.settings.voiceCommands[index] = $0
+            })
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                TextField("关键词", text: command.keyword)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .padding(.horizontal, 7).padding(.vertical, 4)
+                    .background(Ink.paper4, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Ink.hair))
+                Toggle("", isOn: command.enabled)
+                    .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                Button {
+                    model.settings.voiceCommands.remove(at: index)
+                } label: {
+                    Image(systemName: "trash").font(.system(size: 10))
+                }
+                .buttonStyle(.plain).foregroundStyle(Ink.ink3)
+            }
+            TextField("命令模板，例如 claude \"{text}。{selection}\"",
+                      text: command.commandTemplate, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, design: .monospaced))
+                .lineLimit(1...3)
+                .padding(.horizontal, 7).padding(.vertical, 4)
+                .background(Ink.paper4, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Ink.hair))
+            HStack(spacing: 6) {
+                Picker("", selection: command.runner) {
+                    ForEach(VoiceCommandRunner.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .labelsHidden().controlSize(.small).frame(width: 108)
+                Picker("", selection: command.keywordPosition) {
+                    ForEach(KeywordPosition.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .labelsHidden().controlSize(.small)
+            }
+            if command.runner.wrappedValue == .claudeCode {
+                claudeRow(command)
+            } else {
+                terminalRow(command)
+            }
+            miniToggle("连续对话", command.continuousConversation)
+        }
+        .padding(.horizontal, 11).padding(.vertical, 8)
+        .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+    }
+
+    /// 终端命令那一路的三个开关。
+    /// 「新标签页」必须激活终端，所以它和「保持焦点」互斥；
+    /// Ghostty 没有脚本接口，对它整项置灰。
+    private func terminalRow(_ command: Binding<VoiceCommand>) -> some View {
+        HStack(spacing: 10) {
+            Picker("", selection: command.terminal) {
+                ForEach(TerminalApp.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .labelsHidden().controlSize(.small).frame(width: 92)
+            miniToggle("保持焦点", command.keepFocus)
+                .disabled(command.openInNewTab.wrappedValue)
+            miniToggle("新标签页", command.openInNewTab)
+                .disabled(!command.terminal.wrappedValue.supportsNewTab)
+        }
+    }
+
+    /// Claude Code 那一路：跑在哪个目录、要不要免掉权限确认。
+    private func claudeRow(_ command: Binding<VoiceCommand>) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            TextField("工作目录（空 = 用户主目录）", text: command.workingDirectory)
+                .textFieldStyle(.plain)
+                .font(.system(size: 10, design: .monospaced))
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background(Ink.paper4, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Ink.hair))
+            miniToggle("允许联网查资料（WebSearch / WebFetch，只读）", command.allowWebTools)
+            miniToggle("跳过权限确认（能改文件、能跑命令）", command.skipPermissions)
+                .foregroundStyle(command.skipPermissions.wrappedValue ? Ink.amber : Ink.ink2)
+        }
+    }
+
+    private func miniToggle(_ label: String, _ isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) {
+            Text(label).font(.system(size: 10)).foregroundStyle(Ink.ink2)
+        }
+        .toggleStyle(.checkbox).controlSize(.mini)
+    }
+
+    // MARK: - 子页：集成
+
+    private var integrationPage: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            group("本地 API") {
+                toggleRow("允许本地读写笔记", "把笔记的增删改查暴露给任何持 token 的本机进程"
+                          + "（MCP 桥、curl、脚本）。只监听 127.0.0.1，默认关",
+                          isOn: Binding(get: { model.settings.integrationApiEnabled },
+                                        set: { model.settings.integrationApiEnabled = $0 }))
+                copyRow("地址", "http://127.0.0.1:\(IntegrationStore.port)/api/notes")
+                copyRow("令牌", IntegrationStore.token(), masked: true)
+                HStack {
+                    Button("重新生成令牌") { _ = IntegrationStore.regenerate() }
+                        .font(.system(size: 11))
+                    Spacer()
+                    Text("0600 · 只有你读得到")
+                        .font(.system(size: 9.5)).foregroundStyle(Ink.ink4)
+                }
+                .padding(.horizontal, 11).padding(.vertical, 7)
+                .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+            }
+            caption("五条路由：GET /api/notes 列表、GET /api/notes/<id> 详情、"
+                    + "POST 新建、PATCH 改标题或正文、DELETE 删除。"
+                    + "开关关着是 403，token 不对是 401。")
+
+            group("MCP 桥") {
+                copyRow("注册命令", IntegrationStore.registerCommand)
+                caption2("把上面这行贴进终端，编码助手就能读写你的笔记。"
+                         + "脚本每次启动都会重写一遍 —— App 升级后自动最新，路径不变。")
+            }
+            group("调试通道") {
+                caption2("/health 报权限与快捷键；/debug/overlay/state 报刘海真实几何；"
+                         + "/debug/note/state 报当前会话；/debug/jarvis/{state,match,take,toggle} "
+                         + "走真实分发路径。这几条不需要 token（只监听回环），"
+                         + "但都只读或无害 —— 写操作一律走 /api/*。")
+            }
+        }
+    }
+
+    private func copyRow(_ label: String, _ value: String, masked: Bool = false) -> some View {
+        HStack(spacing: 8) {
+            Text(label).font(.system(size: 11)).foregroundStyle(Ink.ink2).frame(width: 52,
+                                                                                alignment: .leading)
+            Text(masked ? String(value.prefix(8)) + "…" + String(value.suffix(4)) : value)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Ink.ink1)
+                .lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 4)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(value, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc").font(.system(size: 10))
+            }
+            .buttonStyle(.plain).foregroundStyle(Ink.ink3)
+        }
+        .padding(.horizontal, 11).padding(.vertical, 7)
+        .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+    }
+
+    private func caption2(_ text: String) -> some View {
+        caption(text).padding(.horizontal, 11).padding(.bottom, 8)
     }
 
     private var notWiredYet: some View {

@@ -597,6 +597,21 @@ struct NotePanelView: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(paperOnInk.opacity(0.55))
             }
+            // 共跑指示：贾维斯 armed 时每段既留下又扫描。必须看得见 ——
+            // 「待命」单独跑时承诺的是「什么都不留」，这里正好相反，
+            // 而两者用的是同一个 ⌥,。
+            if session.scanArmed {
+                HStack(spacing: 3) {
+                    Image(systemName: "waveform.badge.magnifyingglass")
+                        .font(.system(size: 9))
+                    Text("待命").font(.system(size: 9.5, weight: .medium))
+                }
+                // 面板是墨底的，用刘海那套固定色板里的青，不跟随系统明暗。
+                .foregroundStyle(Color(red: 0.44, green: 0.75, blue: 0.70))
+                .padding(.horizontal, 5).padding(.vertical, 1.5)
+                .background(Color(red: 0.44, green: 0.75, blue: 0.70).opacity(0.14),
+                            in: Capsule())
+            }
             Spacer()
             if session.isLive {
                 if session.isRecording {

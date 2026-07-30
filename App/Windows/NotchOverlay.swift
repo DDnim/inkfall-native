@@ -108,6 +108,14 @@ final class NotchOverlayController {
         model.level = min(max(level, 0), 1)
     }
 
+    /// 关键词扫描 armed。**只管宽度** —— 「宽 = 在扫描」「高 = 在采集」
+    /// 是两根独立的轴，所以先开哪个模式都不影响结果。
+    func setArmed(_ armed: Bool) {
+        model.armed = armed
+    }
+
+    var debugArmed: Bool { model.armed }
+
     // MARK: - 窗口
 
     private func ensureWindow() {
@@ -169,6 +177,8 @@ final class NotchOverlayController {
     var debugFrame: NSRect? { window?.frame }
     var debugIsCompact: Bool { model.compact }
     var debugMessage: String { model.message }
+    var debugTitle: String { model.title ?? "" }
+    var debugState: String { model.state.rawValue }
     var debugHover: String { "\(model.hover)" }
     var debugAcceptsClicks: Bool { window?.ignoresMouseEvents == false }
     /// 胶囊在屏幕坐标里的矩形。自测拿它算按钮该点哪儿。
@@ -305,10 +315,17 @@ struct NotchOverlayView: View {
         .frame(width: width, height: bandHeight)
     }
 
+    /// 贾维斯的卡片状态：命令要用等宽字排，而且比正常两行多一条键盘提示。
+    private var isCard: Bool {
+        [.jarvisPending, .jarvisResult, .jarvisError].contains(model.state)
+    }
+
     @ViewBuilder
     private func content(capsule: CapsuleSize) -> some View {
         if model.hover == .strip {
             hoverStrip(capsule: capsule)
+        } else if isCard {
+            jarvisCard(capsule: capsule)
         } else if model.compact {
             // 紧凑胶囊只排一行：计时。胶囊亮着就代表在录音，
             // 不必再写一遍「正在录音」—— 那既占高度又是废话。
@@ -337,6 +354,49 @@ struct NotchOverlayView: View {
             .padding(.bottom, 12)
             .frame(width: capsule.width)
         }
+    }
+
+    /// 命中关键词时掉下来的那张卡。
+    ///
+    /// 决策点在**执行之前**：3 秒倒计时期间 esc 撤销、↩ 立即执行。
+    /// 命令用等宽字排 —— 用户要读的是一行 shell，不是散文。
+    /// 执行失败时卡片不自动收，命令已经躺在剪贴板里（刘海 click-through，
+    /// 没有按钮可点）。
+    private func jarvisCard(capsule: CapsuleSize) -> some View {
+        let paper = Color(red: 0.945, green: 0.91, blue: 0.84)
+        return VStack(alignment: .leading, spacing: 6) {
+            if let title = model.title {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(model.state == .jarvisError ? tint : paper)
+            }
+            Text(model.message)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(paper.opacity(0.86))
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if model.state == .jarvisPending {
+                HStack(spacing: 8) {
+                    keyHint("esc", "撤销")
+                    keyHint("↩", "立即执行")
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
+        .frame(width: capsule.width, alignment: .leading)
+    }
+
+    private func keyHint(_ key: String, _ label: String) -> some View {
+        HStack(spacing: 4) {
+            Text(key)
+                .font(.system(size: 9, design: .monospaced))
+                .padding(.horizontal, 4).padding(.vertical, 1)
+                .background(Color.white.opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
+            Text(label).font(.system(size: 9.5))
+        }
+        .foregroundStyle(Color(red: 0.945, green: 0.91, blue: 0.84).opacity(0.66))
     }
 
     /// 鼠标停在落笔胶囊上时摊开的操作条。
