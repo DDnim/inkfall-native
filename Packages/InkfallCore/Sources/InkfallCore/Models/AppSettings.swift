@@ -87,6 +87,16 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var noteRestoreOnLaunch = true
     public var noteSpeakerDiarizationEnabled = false
 
+    // 语音命令与贾维斯
+    /// ⚠️ 默认**关**：随口一句以关键词开头的听写就会启动终端，而命令是任意 shell。
+    public var voiceCommandsEnabled = false
+    public var voiceCommands: [VoiceCommand] = [.defaultClaude]
+    /// ⌥, 的关键词待命扫描。与 `voiceCommandsEnabled` 是**两道**门 ——
+    /// 前者管「命令能不能跑」，后者管「要不要一直听着」。
+    public var jarvisModeEnabled = false
+    public var selectionCommandModeEnabled = false
+    public var askModeEnabled = true
+
     // 其他
     public var appLanguage: AppLanguage = .system
     /// 截图要 Screen Recording 这个很宽的权限，所以默认关，
@@ -127,6 +137,8 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case customPostProcessingPrompt, processingMemoryContext, recentContextEnabled
         case noteAutoSegment, noteAutoPaste, noteProcessingEnabled, noteProcessingPreset
         case noteRestoreOnLaunch, noteSpeakerDiarizationEnabled
+        case voiceCommandsEnabled, voiceCommands, jarvisModeEnabled
+        case selectionCommandModeEnabled, askModeEnabled
         case appLanguage, screenshotFeatureEnabled, screenshotQuoteMarkerEnabled
         case screenshotDefaultMigrated
         case micGainBoostEnabled, micGainBoostTargetPercent, integrationApiEnabled
@@ -187,6 +199,13 @@ public struct AppSettings: Codable, Sendable, Equatable {
         noteSpeakerDiarizationEnabled = f(.noteSpeakerDiarizationEnabled,
                                           noteSpeakerDiarizationEnabled)
 
+        voiceCommandsEnabled = f(.voiceCommandsEnabled, voiceCommandsEnabled)
+        voiceCommands = f(.voiceCommands, voiceCommands)
+        jarvisModeEnabled = f(.jarvisModeEnabled, jarvisModeEnabled)
+        selectionCommandModeEnabled = f(.selectionCommandModeEnabled,
+                                        selectionCommandModeEnabled)
+        askModeEnabled = f(.askModeEnabled, askModeEnabled)
+
         appLanguage = f(.appLanguage, appLanguage)
         screenshotFeatureEnabled = f(.screenshotFeatureEnabled, screenshotFeatureEnabled)
         screenshotDefaultMigrated = f(.screenshotDefaultMigrated, screenshotDefaultMigrated)
@@ -236,6 +255,16 @@ public struct AppSettings: Codable, Sendable, Equatable {
         // 直接回落默认会把用户选过的档位悄悄降级。
         selectedLocalModelId = LocalModels.migrate(id: selectedLocalModelId)
         processingMemoryContext = String(processingMemoryContext.prefix(8000))
+        // 「新标签页」必须激活终端才开得出来，所以它和「保持焦点」互斥；
+        // Ghostty 没有脚本接口，对它这个开关只能是关的。
+        for index in voiceCommands.indices {
+            if !voiceCommands[index].terminal.supportsNewTab {
+                voiceCommands[index].openInNewTab = false
+            }
+            if voiceCommands[index].openInNewTab {
+                voiceCommands[index].keepFocus = false
+            }
+        }
         // 提示词会占解码上下文，词表必须有上限；顺带去空去重。
         var seenVocabulary = Set<String>()
         transcriptionVocabulary = transcriptionVocabulary

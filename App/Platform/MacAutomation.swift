@@ -36,6 +36,8 @@ enum MacAutomation {
 
     private static let keyC: CGKeyCode = 8
     private static let keyV: CGKeyCode = 9
+    /// 连续对话粘完要敲的那一下回车。
+    static let keyReturn: CGKeyCode = 36
 
     static func sendKey(_ keycode: CGKeyCode, command: Bool) {
         let source = CGEventSource(stateID: .hidSystemState)
@@ -74,6 +76,20 @@ enum MacAutomation {
         guard changed, let new else { return nil }
         let trimmed = new.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    // MARK: - 剪贴板
+
+    /// 当前剪贴板文本。语音命令模板里的 `{clipboard}` 用它。
+    static func clipboardText() -> String {
+        NSPasteboard.general.string(forType: .string) ?? ""
+    }
+
+    /// 明确地把文字放上剪贴板（**不**还原）。
+    /// 命令执行失败时用它 —— 刘海是 click-through 的，没有按钮可点，
+    /// 那条没跑成的命令只能这样交回给用户。
+    static func copyToClipboard(_ text: String) {
+        setPasteboard(text)
     }
 
     // MARK: - 插入

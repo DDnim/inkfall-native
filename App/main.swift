@@ -22,6 +22,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recorder: recorder, transcriber: transcriber, store: store, notes: noteStore)
     private lazy var notePanel = NotePanelController(session: noteSession)
     private lazy var models = ModelCatalog(store: store, transcriber: transcriber)
+    /// 关键词待命。**是 filter 不是 sink** —— 它和落笔可以同时开。
+    private lazy var jarvis = JarvisController(
+        recorder: recorder, transcriber: transcriber, store: store, notch: notch)
+    /// 本地集成：127.0.0.1:48765 上的 `/api/notes` + `/debug/*`。
+    private lazy var integration = IntegrationAPI(
+        store: store, notes: noteStore, session: noteSession, jarvis: jarvis,
+        notch: notch, permissions: permissions)
+    private var httpServer: LocalHTTPServer?
     private lazy var hub = HubWindowController(
         store: store, permissions: permissions, models: models, notes: noteStore,
         onOpenNote: { [weak self] entry in self?.openNote(entry) })
@@ -91,6 +99,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             cut: { [weak self] in self?.cutNow() },
             togglePause: { [weak self] in self?.toggleNotePause() },
             stop: { [weak self] in self?.noteSession.stop() })
+
+        // 贾维斯的接线。它不认识 AppDelegate，会话形状与副作用都由这里注入。
+        //
+        // ⚠️ 和上面那个回调一样，必须挂在**所有自测早退分支之前** ——
+        // 走 `--jarvis-test` 的路径同样要经过这几根线。
+        jarvis.noteSessionLive = { [weak self] in self?.noteSession.isLive ?? false }
+        jarvis.holdActive = { [weak self] in self?.holdOwnsRecorder ?? false }
+        jarvis.abortHold = { [weak self] in self?.abortSpuriousHold() }
+        jarvis.onScanningChanged = { [weak self] armed in
+            guard let self else { return }
+            // A14：armed 时落笔无视「自动断句」开关 —— 段不闭合就永远扫不到命令。
+            noteSession.scanArmed = armed
+        }
+        // A12：**只在**有待执行命令倒计时期间抢占 esc / ↩。遗留 = 用户的
+        // Escape 键全系统失效，而屏幕上没有任何解释。
+        jarvis.onCountdownChanged = { [weak self] active in
+            self?.hotkeys?.jarvisCountdown = active
+        }
+        jarvis.onHoldNotch = { [weak self] seconds in
+            guard let self else { return }
+            hideTimer?.invalidate()
+            noteNotchHoldUntil = CFAbsoluteTimeGetCurrent() + seconds
+            noteNotchNeedsRestore = true
+        }
+        // 落笔每段转写回来时顺带扫一遍 raw —— 共跑就是这一行。
+        noteSession.scanTranscript = { [weak self] transcript in
+            self?.jarvis.dispatch(transcript) ?? false
+        }
 
         installStatusItem()
 
@@ -200,9 +236,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // 贾维斯自测：待命 → 扫描 → 命中 → 倒计时 → 撤销 / 真的执行。
+        if ProcessInfo.processInfo.arguments.contains("--jarvis-test") {
+            runJarvisTest()
+            return
+        }
+
+        // ask 手势自测：双击右⌥ 并按住 → 提问态；关掉开关则退化成普通听写。
+        if ProcessInfo.processInfo.arguments.contains("--ask-test") {
+            runAskTest()
+            return
+        }
+
+        // Claude Code 助手自测：真的问两句，验第二句接得住第一句的上下文。
+        if ProcessInfo.processInfo.arguments.contains("--claude-test") {
+            runClaudeTest()
+            return
+        }
+
+        // 集成自测：两道门禁 + /api/notes 的五条路由 + MCP 桥落盘。
+        if ProcessInfo.processInfo.arguments.contains("--integration-test") {
+            startIntegrationServer()
+            runIntegrationTest()
+            return
+        }
+
         // 验证入口：屏幕捕获受 TCC 限制、刘海又是 click-through 的，
         // 所以「它到底渲染成什么样」只能靠这条通道取证。
         // 这是 spec/04 §3.2 那套 /debug 路由在原生版的最小对应物。
+        // 合并窗某一页的取证：把这一页真正画出来的文字读回来。
+        // 「构建通过」和「这一页画出来了」是两件事 —— 设置页尤其容易只剩空壳。
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--verify-page") {
+            let name = ProcessInfo.processInfo.arguments[safe: index + 1] ?? "integration"
+            runVerifyPage(name: name)
+            return
+        }
+
         if ProcessInfo.processInfo.arguments.contains("--verify-windows") {
             hub.show(page: .operators)
             notePanel.show()
@@ -238,6 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         startHotkeys()
+        startIntegrationServer()
 
         // 预热本地模型：第一次按住说话不该等几秒的 CoreML 编译。
         // 权重没下过就跳过 —— 静默拉 1.5 GB 是不能接受的。
@@ -253,6 +323,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         hotkeys?.stop()
+        httpServer?.stop()
+    }
+
+    // MARK: - 本地集成服务
+
+    /// 起 127.0.0.1:48765。
+    ///
+    /// **总是**起 —— `/health` 与 `/debug/*` 是这套 UI 唯一的取证通道
+    /// （截图受 TCC 限制、刘海是 click-through 的）。真正碰用户数据的
+    /// `/api/*` 另有两道门：设置开关 + bearer token。
+    private func startIntegrationServer() {
+        let server = LocalHTTPServer(port: IntegrationStore.port) { [weak self] request in
+            guard let self else { return (503, "{\"ok\":false,\"message\":\"shutting down\"}") }
+            return integration.handle(request)
+        }
+        guard server.start() else { return }
+        httpServer = server
+        // 每次启动都把内嵌的 MCP 桥重写一遍：App 升级后磁盘上那份自动最新，
+        // 而用户注册进编码助手的那条路径保持不变。
+        IntegrationStore.exportMCPScript()
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
@@ -971,9 +1061,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func apply(_ event: HotkeyEvent) {
         switch event {
-        // ask 手势的管线（提问 → LLM 作答）还没接，按 spec §11 退化成普通按住说话。
-        case .overlayHoldPressed, .askHoldPressed:
+        case .overlayHoldPressed:
             beginHold()
+
+        // 双击右⌥ 并按住 = 向助手提问（spec/01 §2.2）。转写出来的问题连同
+        // 当前选区一起交给 Claude Code，答案显示出来而**不粘贴**。
+        // 关掉 ask 模式、或本机没有 claude 时退化成普通按住说话 ——
+        // 手势坏掉比手势没有更糟。
+        case .askHoldPressed:
+            holdIsAsk = jarvis.askAvailable
+            beginHold()
+
         case .overlayHoldReleased, .askHoldReleased:
             endHold()
 
@@ -1042,6 +1140,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             hotkeys?.noteTogglesActive = notePanel.isVisible
+
+        // ⌥, 关键词待命。**扫描是 filter**：落笔开着时它叠加上去，
+        // 两者共跑（每段既留下又扫描），而不是二选一。
+        case .jarvisTogglePressed:
+            // ⚠️ 不在这里 abortSpuriousHold()：动作表里「把刚起头的 hold 转成
+            // 待命会话」是一条**正当分支**，得由 `toggle()` 自己决定丢不丢。
+            let refused = !jarvis.featureEnabled
+            Log.write("hotkey: ⌥, 贾维斯开关（功能已开=\(!refused)）")
+            if let message = jarvis.toggle() {
+                // ⚠️ 一律走 noteFlash。`flash` 不设保护窗，长录期间计时每跳一秒
+                // 就把它盖掉 —— 用户按了 ⌥, 只看到刘海闪一下又变回计时，
+                // 读成「快捷键失效」。noteFlash 在没有会话时会自己回落到 flash。
+                noteFlash(refused ? .error : (jarvis.scanning ? .success : .cancelled),
+                          message, seconds: refused ? 2.4 : 1.6)
+            }
+            // 功能没开时**把设置页打开到那一栏**。⌥, 是这个功能唯一的入口，
+            // 而一句「去设置里开」对一个已经按了快捷键的人来说太远了。
+            if refused { hub.show(page: .voiceCommands) }
+
+        // 这两个键**只在倒计时期间**能走到这里（matcher 的 jarvisCountdown 门）。
+        case .jarvisUndoPressed:
+            _ = jarvis.undo()
+
+        case .jarvisRunNowPressed:
+            _ = jarvis.runNow()
 
         case .historyPickerPressed:
             abortSpuriousHold()
@@ -1253,6 +1376,739 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     mouseCursorPosition: target, mouseButton: .left)?
                 .post(tap: .cghidEventTap)
         }
+    }
+
+    /// 打开合并窗的某一页，把它真的渲染出来的文字读回来。
+    private func runVerifyPage(name: String) {
+        selfTest = true
+        guard let page = HubModel.Page(rawValue: name) else {
+            emit("未知页 \(name)，可选：" + HubModel.Page.allCases.map(\.rawValue)
+                .joined(separator: " / "))
+            Log.flush()
+            exit(1)
+        }
+        store.readOnly = true          // 渲染设置页时 SwiftUI 会写绑定 —— 别落盘
+        hub.show(page: page)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [self] in
+            NSApp.activate(ignoringOtherApps: true)
+            // AX 读自己的窗口树要求 App 处在激活态，否则 kAXWindows 返回空数组。
+            Thread.sleep(forTimeInterval: 0.6)
+            emit("「\(page.title)」页的文字：")
+            // 两条路一起走：SwiftUI 的 `Text` 落到 AppKit 上不是 NSTextField
+            // 而是私有绘制层，只有 AX 树看得见它；而输入框与开关反过来 ——
+            // NSView 树里才有。少任何一条都会把「画出来了」看成「空壳」。
+            var texts = Self.axTexts(pid: getpid())
+            Self.collectText(hub.debugContentView, into: &texts)
+            for line in texts { emit("  \(line)") }
+            emit("共 \(texts.count) 段文字")
+            // 一页真的画出来了，至少会有页标题和若干行说明；空壳只会剩个框。
+            let ok = texts.count >= 6
+            emit(ok ? "✅ 这一页画出来了" : "❌ 这一页是空壳")
+            Log.flush()
+            exit(ok ? 0 : 1)
+        }
+    }
+
+    /// 从 NSView 树里把 SwiftUI 渲染出来的文字捞出来。
+    ///
+    /// SwiftUI 的 `Text` 落到 AppKit 上不是 NSTextField，而是私有的绘制层，
+    /// 所以要走它的 accessibility 值 —— 那是唯一稳定暴露文字的口子。
+    private static func collectText(_ view: NSView?, into out: inout [String]) {
+        guard let view else { return }
+        for candidate in [view.accessibilityValue(), view.accessibilityLabel()] {
+            guard let text = candidate as? String ?? candidate.map({ "\($0)" }),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  text != "0" else { continue }
+            out.append(String(text.prefix(90)))
+            break
+        }
+        for child in view.subviews { collectText(child, into: &out) }
+    }
+
+    // MARK: - 贾维斯自测
+
+    /// 贾维斯的端到端自测。
+    ///
+    /// 盯的是这几件**单测覆盖不到**的事：待命真的占住了麦克风、扫描 armed 会
+    /// 把刘海撑宽、命中之后 esc/↩ 的抢占开了又关得干净（A12）、以及命令**真的
+    /// 在终端里跑起来了**。最后一条只能靠让命令写一个文件再读回来取证。
+    ///
+    /// 用的是一条无害的 `echo > /tmp/...`，并且 `keepFocus`（`open -g`）——
+    /// 自测不该把终端窗口怼到用户脸上。
+    private func runJarvisTest() {
+        selfTest = true
+        startHotkeys()
+
+        store.readOnly = true          // 自测绝不能把用户的配置改了
+        let stamp = "\(Int(Date().timeIntervalSince1970))"
+        let marker = "落音贾维斯\(Int.random(in: 1000...9999))"
+        let outputPath = "/tmp/inkfall-jarvis-test-\(stamp).txt"
+        // ⚠️ 只改内存里的设置，**不 save()** —— 自测不能把用户的配置改了。
+        //
+        // 两个总开关**先关着**：第一段用例复现的正是用户报的那个症状
+        // （默认就是关的，所以「按了没反应」是绝大多数人遇到的第一件事）。
+        // 后面的用例会在自己那一步把它们打开。
+        store.settings.jarvisModeEnabled = false
+        store.settings.voiceCommandsEnabled = false
+        store.settings.voiceCommands = [
+            VoiceCommand(keyword: "测试助手",
+                         commandTemplate: "echo \"{text}\" > \(outputPath)",
+                         terminal: .terminal, enabled: true,
+                         keywordPosition: .anywhere, keepFocus: true)
+        ]
+
+        var failures = 0
+        func check(_ label: String, _ ok: Bool) {
+            emit("\(ok ? "  ✓" : "  ✗") \(label)")
+            if !ok { failures += 1 }
+        }
+
+        var steps: [(Double, () -> Void)] = []
+
+        // ——— 症状复现：功能关着 + 长录中按 ⌥,。
+        //
+        // 拒绝那句话以前走的是 `flash`，它不设保护窗；而落笔的刘海是 30 Hz 在
+        // 重画的，计时每跳一秒就把它盖掉 —— 用户只看到刘海闪一下又变回计时，
+        // 读成「快捷键失效」。所以这里要断言它**过一秒还在**。
+        steps.append((0.3, {
+            emit("——— 功能关着时 ———")
+            check("落笔起来了（模拟常时录音）", self.noteSession.start())
+            emit("→ 合成 ⌥,（此时两个开关都是关的）")
+            Self.postRightOption(down: true)
+        }))
+        steps.append((0.4, { Self.postKeyWithRightOption(43) }))
+        steps.append((0.4, { Self.postRightOption(down: false) }))
+        steps.append((0.5, {
+            emit("  刘海：「\(self.notch.debugMessage)」")
+            check("说了句人话（不是默默无视）",
+                  self.notch.debugMessage.contains("贾维斯没开"))
+            check("没有真的 arm 起来", !self.jarvis.scanning)
+        }))
+        steps.append((1.4, {
+            // 关键的一条：一秒之后计时已经跳过至少一次，那句话必须还在。
+            emit("  1.9 秒后刘海：「\(self.notch.debugMessage)」")
+            check("提示没有被落笔的计时盖掉",
+                  self.notch.debugMessage.contains("贾维斯没开"))
+            check("顺手把设置页开到了语音命令那一栏",
+                  self.hub.debugFrame != nil)
+            self.noteSession.cancel()
+            self.noteSession.deleteCurrent()
+            // 打开吧，后面那些正经用例要用。
+            self.store.settings.jarvisModeEnabled = true
+            self.store.settings.voiceCommandsEnabled = true
+        }))
+
+        // 走**真实按键**：右⌥ 按下必然先起一截「按住说话」，逗号到达时
+        // 动作表要把它转成待命会话（ConvertHold）。这条分支只有真按键才走得到 ——
+        // 直接调 toggle() 的话 hold 根本不存在。
+        steps.append((0.5, {
+            check("起始不抢占 esc/↩", self.hotkeys?.jarvisCountdown == false)
+            emit("——— 功能开着时 ———")
+            emit("→ 合成 ⌥,")
+            Self.postRightOption(down: true)
+        }))
+        steps.append((0.4, {
+            check("右⌥ 按下先起了一截按住说话（ConvertHold 的前提）",
+                  self.recorder.isRecording)
+            Self.postKeyWithRightOption(43)          // ,
+        }))
+        steps.append((0.5, {
+            Self.postRightOption(down: false)
+        }))
+        steps.append((0.5, {
+            emit("收到事件：\(self.selfTestEvents.map(String.init(describing:)).joined(separator: " → "))")
+            check("热键发出了 jarvisTogglePressed",
+                  self.selfTestEvents.contains(.jarvisTogglePressed))
+            check("待命起来了", self.jarvis.scanning && self.jarvis.owningRecorder)
+            check("录音器真的开了", self.recorder.isRecording)
+            check("刘海撑宽了（armed）", self.notch.debugArmed)
+            check("刘海亮着", self.notch.isVisible)
+            // 干跑：只算命不命中，不执行。
+            emit("  干跑：\(self.jarvis.debugMatch("测试助手，\(marker)"))")
+            check("干跑认得出关键词",
+                  self.jarvis.debugMatch("测试助手，你好").contains("命中"))
+            check("干跑对无关的话说未命中",
+                  self.jarvis.debugMatch("今天天气不错") == "未命中")
+        }))
+
+        // 未命中：计数 +1，并且要把听到的原文说出来（否则分不清听错还是没听见）。
+        steps.append((0.3, {
+            let hit = self.jarvis.dispatch("今天天气不错")
+            check("无关的话不命中", !hit)
+            check("丢弃计数 +1", self.jarvis.discarded == 1)
+            check("刘海回报了听到的原文（\(self.notch.debugMessage)）",
+                  self.notch.debugMessage.contains("今天天气不错"))
+        }))
+
+        // 命中 → 抓选区（后台线程，要给它时间）→ 倒计时。
+        steps.append((0.3, { _ = self.jarvis.dispatch("测试助手，\(marker)") }))
+        steps.append((1.2, {
+            emit("  \(self.jarvis.debugSnapshot)")
+            check("进了倒计时", self.jarvis.debugPendingShell != nil)
+            check("命令带上了口述内容",
+                  self.jarvis.debugPendingShell?.contains(marker) == true)
+            check("倒计时期间抢占 esc/↩", self.hotkeys?.jarvisCountdown == true)
+            // esc 撤销 —— 决策点在执行**之前**。
+            check("撤销成功", self.jarvis.undo())
+        }))
+        steps.append((0.3, {
+            check("撤销后没有待执行命令", self.jarvis.debugPendingShell == nil)
+            check("撤销后立刻还回 esc/↩", self.hotkeys?.jarvisCountdown == false)
+            // 再来一次，这次让它真的跑完。
+            _ = self.jarvis.dispatch("测试助手，\(marker)")
+        }))
+
+        // 倒计时 3 秒 + 终端冷启动。
+        steps.append((JarvisTiming.undoCountdownSeconds + 4.0, {
+            check("执行后 esc/↩ 已还回去", self.hotkeys?.jarvisCountdown == false)
+            let text = (try? String(contentsOfFile: outputPath, encoding: .utf8)) ?? ""
+            emit("  命令产物：\(outputPath) →「\(text.trimmingCharacters(in: .whitespacesAndNewlines))」")
+            check("命令真的在终端里跑了", text.contains(marker))
+            try? FileManager.default.removeItem(atPath: outputPath)
+        }))
+
+        // 收摊：⌥, 再按一次 = 整个待命会话结束。
+        steps.append((0.3, {
+            let message = self.jarvis.toggle()
+            emit("⌥, → 「\(message ?? "")」")
+            check("待命停了", !self.jarvis.scanning && !self.jarvis.owningRecorder)
+            check("录音器也停了", !self.recorder.isRecording)
+            check("刘海收了", !self.notch.isVisible)
+            check("收摊后不再抢占 esc/↩", self.hotkeys?.jarvisCountdown == false)
+        }))
+
+        // ——— 共跑：扫描是 filter、落笔是 sink，两者正交（spec/01 §1）。
+        // 这是历史上最容易写错的一块 —— 贾维斯以前是个 sink，两者永远互斥。
+        steps.append((0.4, {
+            emit("——— 共跑 ———")
+            // 自动断句先关掉，这样「armed 无视这个开关」才是可观测的。
+            self.store.settings.noteAutoSegment = false
+            // 自动粘贴也关掉：开着的话每一段都会被插进当前前台窗口 ——
+            // 既把「未粘贴」这个判据搅浑，也会往用户正在用的窗口里吐字。
+            self.store.settings.noteAutoPaste = false
+            check("落笔起来了", self.noteSession.start())
+            let message = self.jarvis.toggle()
+            emit("落笔录音中按 ⌥, → 「\(message ?? "")」")
+            check("扫描叠加上去了（不是另起一摊）",
+                  self.jarvis.scanning && !self.jarvis.owningRecorder)
+            check("落笔照常在录", self.noteSession.isRecording)
+            // A14：armed 时分段器无视「自动断句」开关 —— 段不闭合就永远扫不到命令。
+            check("A14：armed 让落笔无视自动断句开关", self.noteSession.scanArmed)
+        }))
+
+        // 一段**没有**关键词的话：照常落进正文，不标指令。
+        steps.append((0.3, {
+            self.noteSession.debugInjectTranscript("今天讨论了三件事")
+        }))
+        steps.append((0.4, {
+            let plain = self.noteSession.segments.last
+            // 规则润色会补一个句号，所以判包含而不是相等。
+            check("普通的一段照常落进正文（\(plain?.displayText ?? "")）",
+                  plain?.displayText.hasPrefix("今天讨论了三件事") == true)
+            check("普通的一段算未粘贴", plain?.pasted == false)
+            // 一段命中关键词的话。
+            self.noteSession.debugInjectTranscript("测试助手，\(marker)")
+        }))
+        steps.append((1.4, {
+            let hit = self.noteSession.segments.last
+            emit("  命中那段：「\(hit?.displayText ?? "")」pasted=\(hit?.pasted ?? false)")
+            check("命中的那段**仍然**落进正文", hit?.displayText.contains(marker) == true)
+            check("并且标成了指令（>> 前缀）", hit?.displayText.hasPrefix(">>") == true)
+            check("预标已粘贴（命令跑了，没东西可粘）", hit?.pasted == true)
+            // 「粘贴所有」只该看到那一段普通的话 —— 指令那段已经预标已粘贴。
+            let unpasted = self.noteSession.segments.filter { !$0.pasted && $0.status == .done }
+            check("「粘贴所有」只看得到那段普通的话（\(unpasted.count) 段）",
+                  unpasted.count == 1 && unpasted[0].displayText.hasPrefix("今天讨论了三件事"))
+            check("共跑时也进了倒计时", self.jarvis.debugPendingShell != nil)
+            check("撤销它", self.jarvis.undo())
+        }))
+
+        // 落笔还开着时再按 ⌥,：只撤过滤器，录音**继续**。
+        steps.append((0.4, {
+            let message = self.jarvis.toggle()
+            emit("再按 ⌥, → 「\(message ?? "")」")
+            check("扫描撤了", !self.jarvis.scanning)
+            check("落笔录音没被连累", self.noteSession.isRecording && self.recorder.isRecording)
+            check("落笔的自动断句开关也还回去了", !self.noteSession.scanArmed)
+            self.noteSession.cancel()
+            self.noteSession.deleteCurrent()
+            emit(failures == 0 ? "✅ 贾维斯通" : "❌ \(failures) 项不过")
+            Log.flush()
+            exit(failures == 0 ? 0 : 1)
+        }))
+
+        var delay: Double = 0
+        for (gap, step) in steps {
+            delay += gap
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { step() }
+        }
+    }
+
+    // MARK: - ask 手势自测
+
+    /// 「双击右⌥ 并按住」的自测。
+    ///
+    /// 手势本身（一击 ≤0.35s、间隔 ≤0.4s、再按住）只有真按键才走得到 ——
+    /// matcher 的单测能覆盖判定，但覆盖不了「按下之后 App 到底进没进提问态」。
+    ///
+    /// ⚠️ 中间那一段「说话 → 转写」没法在自测里驱动（要真的对着麦克风说），
+    /// 所以这里验两头：手势 → 提问态、以及 提问 → 答案回到刘海。
+    private func runAskTest() {
+        selfTest = true
+        startHotkeys()
+        store.readOnly = true
+        store.settings.askModeEnabled = true
+
+        var failures = 0
+        func check(_ label: String, _ ok: Bool) {
+            emit("\(ok ? "  ✓" : "  ✗") \(label)")
+            if !ok { failures += 1 }
+        }
+
+        emit("ask 可用=\(jarvis.askAvailable)（开关=\(store.settings.askModeEnabled) "
+             + "claude=\(ClaudeCodeAgent.claudePath ?? "无")）")
+        var steps: [(Double, () -> Void)] = []
+
+        // 一击：按下 → 0.15s 松开（远短于 0.35s 的上限）。
+        steps.append((0.4, {
+            emit("→ 一击")
+            Self.postRightOption(down: true)
+        }))
+        steps.append((0.15, { Self.postRightOption(down: false) }))
+        // 间隔 0.2s（<0.4s）之后再按住 —— 这一次要被读成 ask。
+        steps.append((0.2, {
+            emit("→ 立刻再按住")
+            Self.postRightOption(down: true)
+        }))
+        steps.append((0.6, {
+            emit("收到事件：\(self.selfTestEvents.map(String.init(describing:)).joined(separator: " → "))")
+            check("手势被读成 ask（不是两次普通按住）",
+                  self.selfTestEvents.contains(.askHoldPressed))
+            check("录音起来了", self.recorder.isRecording)
+            emit("  刘海：「\(self.notch.debugMessage)」")
+            check("刘海说明这次是在提问", self.notch.debugMessage.contains("问克劳德"))
+        }))
+        steps.append((0.8, {
+            emit("→ 松开")
+            Self.postRightOption(down: false)
+        }))
+        steps.append((1.0, {
+            check("松开发出了 askHoldReleased",
+                  self.selfTestEvents.contains(.askHoldReleased))
+            // ⚠️ 不能假设自测环境是安静的（实测踩过：风扇声就够把这一段
+            // 判成有效语音，于是它真的被当成提问发出去了）。两种结局都对，
+            // 错的是**默默消失**：要么说「没听到」，要么进提问流程。
+            emit("  刘海：「\(self.notch.debugMessage)」")
+            let quiet = self.notch.debugMessage.contains("没有听到声音")
+                || self.notch.debugMessage.contains("太短")
+            let heard = self.notch.debugMessage.contains("听你说完了")
+                || self.notch.debugMessage.contains("克劳德")
+                || self.jarvis.claude.busyKeyword != nil
+            check("松开之后有交代（没听到 / 或进了提问流程）", quiet || heard)
+        }))
+
+        // 关掉开关 → 同一个手势退化成普通按住说话。
+        steps.append((0.6, {
+            emit("——— 关掉 ask 开关 ———")
+            self.store.settings.askModeEnabled = false
+            self.selfTestEvents.removeAll()
+            Self.postRightOption(down: true)
+        }))
+        steps.append((0.15, { Self.postRightOption(down: false) }))
+        steps.append((0.2, { Self.postRightOption(down: true) }))
+        steps.append((0.6, {
+            check("手势照样被识别（matcher 不受开关影响）",
+                  self.selfTestEvents.contains(.askHoldPressed))
+            emit("  刘海：「\(self.notch.debugMessage)」")
+            check("但退化成了普通听写（刘海只有计时）",
+                  !self.notch.debugMessage.contains("问克劳德"))
+            Self.postRightOption(down: false)
+        }))
+
+        // 后半段：提问 → 答案回到刘海。走的是 ask 手势真正的出口。
+        //
+        // ⚠️ 先等上一轮落地再开始：上面那两次松开可能已经把一段噪声送出去了，
+        // 不等它就会把**它的**回答当成这一问的答案（实测踩过）。
+        steps.append((1.2, {
+            emit("——— 提问 → 答案 ———")
+            self.store.settings.askModeEnabled = true
+            // 等两次：中间留出 3 秒，好让**迟到的那段转写**先浮出来 ——
+            // 它可能还在本地模型里，第一次问「闲了吗」时看起来是闲的。
+            self.waitForClaudeIdle(ticks: 0) { [self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [self] in
+                    waitForClaudeIdle(ticks: 0) { [self] in
+                        jarvis.claude.reset()      // 丢掉噪声起的那场会话
+                        notch.show(state: .idle, message: "", title: "")
+                        jarvis.askDirectly("只回答一个词：苹果。不要解释。")
+                        waitForClaude(keyword: "提问", contains: "苹果", ticks: 0) { ok in
+                            check("答案回到了刘海", ok)
+                            emit(failures == 0 ? "✅ ask 手势通" : "❌ \(failures) 项不过")
+                            Log.flush()
+                            exit(failures == 0 ? 0 : 1)
+                        }
+                    }
+                }
+            }
+        }))
+
+        var delay: Double = 0
+        for (gap, step) in steps {
+            delay += gap
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { step() }
+        }
+    }
+
+    // MARK: - Claude Code 助手自测
+
+    private var claudeTestFailures = 0
+    private var claudeTestFirstSession: String?
+
+    /// 后台 Claude Code 助手的端到端自测。
+    ///
+    /// 只有一件事真正值得验：**第二句听得懂第一句**。所以第一轮让它记住一个词，
+    /// 第二轮问它那个词是什么 —— 答对了，就说明 `--session-id` / `--resume`
+    /// 那条会话链是真的接上了，而不是每句话都从零开始。
+    ///
+    /// 这一测会真的调用模型（几秒 + 几分钱），没有别的办法：会话延续是
+    /// claude 那边的状态，本地怎么造都造不出来。
+    private func runClaudeTest() {
+        selfTest = true
+        emit("环境：\(jarvis.claude.debugSnapshot)")
+        emit("就绪判断：\(ClaudeCodeAgent.readiness)")
+        guard ClaudeCodeAgent.claudePath != nil else {
+            emit("❌ 没找到 claude 命令")
+            Log.flush()
+            exit(1)
+        }
+
+        store.readOnly = true          // 自测绝不能把用户的配置改了
+        store.settings.voiceCommandsEnabled = true
+        store.settings.jarvisModeEnabled = true
+        store.settings.voiceCommands = [
+            VoiceCommand(keyword: "测试助手", commandTemplate: "{text}",
+                         runner: .claudeCode, enabled: true,
+                         keywordPosition: .anywhere, continuousConversation: true)
+        ]
+
+        func check(_ label: String, _ ok: Bool) {
+            emit("\(ok ? "  ✓" : "  ✗") \(label)")
+            if !ok { claudeTestFailures += 1 }
+        }
+
+        let message = jarvis.toggle()
+        emit("⌥, → 「\(message ?? "")」")
+        check("待命起来了", jarvis.scanning)
+
+        emit("→ 第一句：让它记住一个词")
+        _ = jarvis.dispatch("测试助手，请只回答一个词：橘子。不要解释。")
+        // 抓选区在后台线程，倒计时 3 秒 —— 等它进倒计时再按「立即执行」，
+        // 免得自测白等。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [self] in
+            emit("  待执行：\(jarvis.debugPendingShell ?? "无")")
+            check("第一句进了倒计时（新会话要过这道门）", jarvis.debugPendingShell != nil)
+            check("提示词就是那句话本身",
+                  jarvis.debugPendingShell?.contains("橘子") == true)
+            _ = jarvis.runNow()          // ↩ 立即执行
+            claudeTestFirstSession = jarvis.claude.sessionID(keyword: "测试助手")
+            emit("  会话 id=\(claudeTestFirstSession ?? "无")")
+            check("会话 id 是我们自己按上去的 uuid",
+                  UUID(uuidString: claudeTestFirstSession ?? "") != nil)
+            waitForClaude(keyword: "第一句", contains: "橘子", ticks: 0) { [self] ok in
+                check("第一句答对了", ok)
+                claudeSecondTurn(check: check)
+            }
+        }
+    }
+
+    /// 第二句：不再倒计时（这是对话不是新命令），并且必须接得住上下文。
+    private func claudeSecondTurn(check: @escaping (String, Bool) -> Void) {
+        emit("→ 第二句：问它刚才那个词是什么（考的是上下文）")
+        notch.show(state: .idle, message: "", title: "")   // 清掉上一轮的字，免得误判
+        _ = jarvis.dispatch("测试助手，我刚才让你回答的那个词是什么？只回答那个词。")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [self] in
+            check("第二句**没有**再走倒计时（是对话，不是新命令）",
+                  jarvis.debugPendingShell == nil)
+            check("还是同一场会话",
+                  jarvis.claude.sessionID(keyword: "测试助手") == claudeTestFirstSession)
+            waitForClaude(keyword: "第二句", contains: "橘子", ticks: 0) { [self] ok in
+                check("第二句记得第一句说过什么（--resume 真的接上了）", ok)
+                claudeWebTurn(check: check)
+            }
+        }
+    }
+
+    /// 第三句：要联网才答得出来的问题。
+    ///
+    /// `-p` 是非交互的，需要确认的工具**弹不出确认框直接被拒**，模型只会回
+    /// 一句「我没拿到网络访问权限」—— 用户看起来就像助手根本不能上网。
+    /// 所以这一句必须真的抓到外部内容才算通过。
+    /// 用 example.com 而不是股价：答案是恒定的，才断言得了。
+    private func claudeWebTurn(check: @escaping (String, Bool) -> Void) {
+        emit("→ 第三句：要联网才答得出来的问题")
+        notch.show(state: .idle, message: "", title: "")
+        _ = jarvis.dispatch("测试助手，用 WebFetch 打开 https://example.com，只回答页面标题四个字。")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [self] in
+            waitForClaude(keyword: "第三句", contains: "Example Domain", ticks: 0) { [self] ok in
+                check("联网的问题真的答上来了（不是「我没拿到权限」）", ok)
+                check("没有反过来说自己没权限", !notch.debugMessage.contains("权限"))
+                finishClaudeTest(check: check)
+            }
+        }
+    }
+
+    private func finishClaudeTest(check: @escaping (String, Bool) -> Void) {
+        // tmux 里应该留着这场对话：两轮 = 两个窗口，跑完不销毁。
+        let windows = Self.tmuxWindows()
+        emit("tmux 窗口：\(windows.joined(separator: " | "))")
+        check("每一轮都留在 tmux 里（\(windows.count) 个窗口）", windows.count == 3)
+        let panes = windows.map { window in
+            Self.tmux(["capture-pane", "-p", "-S", "-200",
+                       "-t", "\(ClaudeCode.tmuxSession):\(window)"])
+        }
+        for (window, pane) in zip(windows, panes) {
+            emit("  \(window)：\(pane.replacingOccurrences(of: "\n", with: " ⏎ ").prefix(120))")
+        }
+        check("第一轮的问与答都在存档里",
+              panes.contains { $0.contains("请只回答一个词") && $0.contains("橘子") })
+        check("第二轮的问与答也在",
+              panes.contains { $0.contains("我刚才让你回答") && $0.contains("橘子") })
+        emit("环境：\(jarvis.claude.debugSnapshot)")
+
+        // 收摊：把这场自测的 tmux 会话清掉，别留给用户。
+        Self.tmux(["kill-session", "-t", ClaudeCode.tmuxSession])
+        jarvis.stopStandby()
+        emit(claudeTestFailures == 0 ? "✅ Claude Code 助手通（会话真的续上了）"
+                                     : "❌ \(claudeTestFailures) 项不过")
+        Log.flush()
+        exit(claudeTestFailures == 0 ? 0 : 1)
+    }
+
+    /// 等到没有在飞的那一轮为止。
+    private func waitForClaudeIdle(ticks: Int, completion: @escaping () -> Void) {
+        guard jarvis.claude.busyKeyword != nil, ticks < 240 else {
+            completion()
+            return
+        }
+        if ticks == 0 { emit("  等上一轮落地（\(jarvis.claude.busyKeyword ?? "")）…") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+            waitForClaudeIdle(ticks: ticks + 1, completion: completion)
+        }
+    }
+
+    /// 轮询刘海上的回答。模型可能要几十秒，写死等待时间只会测到「还没回来」。
+    private func waitForClaude(keyword: String, contains: String, ticks: Int,
+                               completion: @escaping (Bool) -> Void) {
+        let text = notch.debugMessage
+        let title = notch.debugTitle
+        // 「还在想上一句」是拒绝，不是答案 —— 别把它当成这一问的结果。
+        if title.contains("克劳德") && !title.contains("在想") && !title.contains("上一句") {
+            emit("  \(keyword)回答（\(title)）：「\(text)」")
+            completion(text.contains(contains))
+            return
+        }
+        guard ticks < 240 else {                     // 0.5s × 240 = 120s
+            emit("  \(keyword)超时（最后停在「\(title)」/「\(text)」）")
+            completion(false)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+            waitForClaude(keyword: keyword, contains: contains, ticks: ticks + 1,
+                          completion: completion)
+        }
+    }
+
+    @discardableResult
+    private static func tmux(_ arguments: [String]) -> String {
+        guard let tmux = ClaudeCodeAgent.tmuxPath else { return "" }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tmux)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return "" }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    private static func tmuxWindows() -> [String] {
+        tmux(["list-windows", "-t", ClaudeCode.tmuxSession, "-F", "#{window_name}"])
+            .split(separator: "\n").map(String.init)
+    }
+
+    // MARK: - 集成自测
+
+    /// 本地 HTTP + `/api/notes` 的端到端自测。
+    ///
+    /// 用真的 `URLSession` 打真的 127.0.0.1:48765 —— 解析那一层已经有单测，
+    /// 这里验的是接线：监听起没起来、两道门禁挡不挡得住、五条路由改的是不是
+    /// 真的那份 `history.json`。
+    private func runIntegrationTest() {
+        selfTest = true
+        var failures = 0
+        func check(_ label: String, _ ok: Bool) {
+            emit("\(ok ? "  ✓" : "  ✗") \(label)")
+            if !ok { failures += 1 }
+        }
+
+        store.readOnly = true          // 自测绝不能把用户的配置改了
+        store.settings.integrationApiEnabled = false
+        let token = IntegrationStore.token()
+        let base = "http://127.0.0.1:\(IntegrationStore.port)"
+
+        func request(_ method: String, _ path: String, token: String? = nil,
+                     body: [String: Any]? = nil) async -> (Int, [String: Any]) {
+            var req = URLRequest(url: URL(string: base + path)!)
+            req.httpMethod = method
+            if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+            if let body {
+                req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            }
+            guard let (data, response) = try? await URLSession.shared.data(for: req) else {
+                return (0, [:])
+            }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+            return (status, json)
+        }
+
+        Task { @MainActor in
+            // 服务要一点时间才 ready。
+            try? await Task.sleep(nanoseconds: 600_000_000)
+
+            let (healthStatus, health) = await request("GET", "/health")
+            emit("GET /health → \(healthStatus)")
+            check("服务起来了", healthStatus == 200)
+            check("/health 报了权限与快捷键", health["permissions"] != nil
+                  && health["shortcuts"] != nil)
+
+            // 门禁一：功能开关关着 → 403，连 token 对不对都不看。
+            let (offStatus, _) = await request("GET", "/api/notes", token: token)
+            check("开关关着时 403（\(offStatus)）", offStatus == 403)
+
+            store.settings.integrationApiEnabled = true
+
+            // 门禁二：没有 / 错误的 token → 401。
+            let (noTokenStatus, _) = await request("GET", "/api/notes")
+            check("没 token 时 401（\(noTokenStatus)）", noTokenStatus == 401)
+            let (badStatus, _) = await request("GET", "/api/notes", token: String(token.dropLast()) + "0")
+            check("错 token 时 401（\(badStatus)）", badStatus == 401)
+
+            let before = self.noteStore.notes.count
+            let (listStatus, list) = await request("GET", "/api/notes", token: token)
+            check("列表 200（\(listStatus)）", listStatus == 200)
+            check("列表条数对得上盘上的（\((list["notes"] as? [Any])?.count ?? -1) vs \(before)）",
+                  (list["notes"] as? [Any])?.count == before)
+
+            // 建
+            let marker = "落音集成\(Int.random(in: 1000...9999))"
+            let (createStatus, created) = await request(
+                "POST", "/api/notes", token: token, body: ["text": marker, "title": "集成自测"])
+            let id = ((created["note"] as? [String: Any])?["id"] as? String) ?? ""
+            emit("POST /api/notes → \(createStatus) id=\(id)")
+            check("建笔记 201", createStatus == 201)
+            check("真的进了盘上的库", self.noteStore.note(id: id)?.finalText == marker)
+
+            // 读
+            let (readStatus, read) = await request("GET", "/api/notes/\(id)", token: token)
+            check("读回来 200（\(readStatus)）", readStatus == 200)
+            check("正文一致", (read["note"] as? [String: Any])?["text"] as? String == marker)
+
+            // 改
+            let (patchStatus, _) = await request("PATCH", "/api/notes/\(id)", token: token,
+                                                 body: ["title": "改过的标题"])
+            check("改 200（\(patchStatus)）", patchStatus == 200)
+            check("标题真的改了", self.noteStore.note(id: id)?.title == "改过的标题")
+            let (emptyPatch, _) = await request("PATCH", "/api/notes/\(id)", token: token,
+                                                body: [:])
+            check("什么都不给的 PATCH 是 400（\(emptyPatch)）", emptyPatch == 400)
+
+            // 删
+            let (deleteStatus, _) = await request("DELETE", "/api/notes/\(id)", token: token)
+            check("删 200（\(deleteStatus)）", deleteStatus == 200)
+            check("盘上真的没了", self.noteStore.note(id: id) == nil)
+            let (goneStatus, _) = await request("GET", "/api/notes/\(id)", token: token)
+            check("再读是 404（\(goneStatus)）", goneStatus == 404)
+            let (unknownStatus, _) = await request("GET", "/api/settings", token: token)
+            check("未知路由 404（\(unknownStatus)）", unknownStatus == 404)
+
+            // token 是凭据：只有属主可读。
+            let attributes = (try? FileManager.default.attributesOfItem(
+                atPath: IntegrationStore.tokenPath.path)) ?? [:]
+            let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+            check("token 文件是 0600（实际 \(String(mode, radix: 8))）", mode == 0o600)
+            check("token 是 64 位十六进制", token.count == 64)
+
+            // MCP 桥
+            let script = IntegrationStore.exportMCPScript()
+            let body = script.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+            emit("MCP 桥 → \(script?.path ?? "无")")
+            check("MCP 脚本落盘了", body.contains("list_notes") && body.contains("tools/call"))
+            check("MCP 读的是原生版的 token 路径",
+                  body.contains("app.inkfall.native/integration_token"))
+            emit("注册命令：\(IntegrationStore.registerCommand)")
+
+            // 真的把桥跑起来：node 起进程 → JSON-RPC 握手 → tools/call。
+            // 只验「文件写出去了」证明不了编码助手接得上。
+            if let script = script, let node = Self.nodePath() {
+                let reply = Self.driveMCP(node: node, script: script)
+                emit("MCP 应答：\(reply.prefix(160))")
+                check("MCP 握手 + tools/list 通", reply.contains("list_notes"))
+                check("MCP tools/call 真的读到了笔记", reply.contains("createdAtMs"))
+            } else {
+                emit("⚠️ 本机没有 node，跳过 MCP 桥的端到端验证")
+            }
+
+            // /debug 只读面
+            let (debugStatus, debug) = await request("GET", "/debug/overlay/state")
+            check("/debug 无需鉴权（\(debugStatus)）", debugStatus == 200)
+            check("/debug 报了刘海几何", debug["capsule"] != nil)
+            let (matchStatus, match) = await request(
+                "GET", "/debug/jarvis/match?text=%E4%BB%8A%E5%A4%A9%E5%A4%A9%E6%B0%94")
+            check("/debug/jarvis/match 干跑（\(matchStatus)）",
+                  matchStatus == 200 && (match["result"] as? String) == "未命中")
+
+            self.store.settings.integrationApiEnabled = false
+            emit(failures == 0 ? "✅ 集成通" : "❌ \(failures) 项不过")
+            Log.flush()
+            exit(failures == 0 ? 0 : 1)
+        }
+    }
+
+    /// 本机的 node。App 是从 Finder / `open` 起的，PATH 里没有 homebrew。
+    private static func nodePath() -> String? {
+        ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    /// 起一个真的 MCP 桥进程，走一遍 initialize → tools/list → tools/call。
+    /// 一行一条 JSON-RPC（stdio 传输）。
+    private static func driveMCP(node: String, script: URL) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: node)
+        process.arguments = [script.path]
+        let input = Pipe()
+        let output = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return "起不来" }
+
+        let lines = [
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_notes","arguments":{}}}"#,
+        ]
+        input.fileHandleForWriting.write(Data((lines.joined(separator: "\n") + "\n").utf8))
+        // 三条应答都回来之后桥仍然挂在 stdin 上等下一条 —— 给它一拍就收工。
+        Thread.sleep(forTimeInterval: 2.0)
+        try? input.fileHandleForWriting.close()
+        process.terminate()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)?
+            .replacingOccurrences(of: "\n", with: " ") ?? ""
     }
 
     private func runNoteCutTest(wav: String) {
@@ -1808,6 +2664,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.write("hotkey: 右⌥ 组合键 —— 丢弃推杆按下时起的那截录音")
     }
 
+    /// 这一次「按住」是 ask 手势（问助手），不是听写。
+    private var holdIsAsk = false
+    /// ask 手势按下那一刻的选区。
+    ///
+    /// **必须在按下时抓**（spec/01 §3.1 并发抓选区）：用户是「选中一段 →
+    /// 按住问」，等松开再抓，中间那几秒他多半已经点掉了选区。
+    private var askSelection = ""
+
     private func beginHold() {
         guard !recorder.isRecording else { return }
         // 落笔会话开着时，右⌥ 按住不另起一段 —— 一个麦克风不能同时喂两条管线。
@@ -1836,8 +2700,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 不写「正在录音」，也不写「松开结束」—— 手正按着那个键，
         // 用不着别人提醒它松开。
         lastHoldNotchSecond = -1
-        notch.show(state: .recording, message: "00:00", compact: true)
+        notch.show(state: .recording,
+                   message: holdIsAsk ? "问克劳德 00:00" : "00:00", compact: true)
         startLevelTicker()
+
+        // ask：并发抓选区。用户是「选中一段 → 按住问」，等松开再抓就晚了。
+        // ⌘C 那条路里全是 Thread.sleep，绝不能放主线程。
+        guard holdIsAsk else { return }
+        askSelection = ""
+        DispatchQueue.global(qos: .userInitiated).async {
+            let selection = MacAutomation.captureSelection() ?? ""
+            Task { @MainActor in AppDelegate.shared?.askSelection = selection }
+        }
     }
 
     private func endHold() {
@@ -1845,6 +2719,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 见 `holdOwnsRecorder` 的说明。
         guard holdOwnsRecorder else { return }
         holdOwnsRecorder = false
+        // 这一次是不是提问，在这里定下来 —— 后面的转写是异步的，
+        // 等它回来时下一次按住可能已经开始了。
+        let asking = holdIsAsk
+        holdIsAsk = false
         guard recorder.isRecording else { return }
         stopLevelTicker()
         guard let audio = try? recorder.stop() else {
@@ -1864,8 +2742,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
-        Log.write("hotkey: 采集完成 \(audio.data.count) 字节 / \(audio.durationMs) ms")
-        transcribeAndInsert(audio)
+        Log.write("hotkey: 采集完成 \(audio.data.count) 字节 / \(audio.durationMs) ms"
+            + (asking ? "（提问）" : ""))
+        if asking {
+            transcribeAndAsk(audio)
+        } else {
+            transcribeAndInsert(audio)
+        }
+    }
+
+    /// ask 手势的后半段：转写出问题 → 连同选区交给助手 → 显示答案（**不粘贴**）。
+    private func transcribeAndAsk(_ audio: RecordedAudio) {
+        notch.show(state: .transcribing, message: "听你说完了", title: "提问")
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("inkfall-ask-\(UUID().uuidString).wav")
+        guard (try? audio.data.write(to: url)) != nil else {
+            flash(.error, "写入临时文件失败", seconds: 2.0)
+            return
+        }
+        let policy = TranscriptionLanguagePolicy(settings: store.settings)
+        let request = LocalTranscriber.Request(
+            wavURL: url, modelID: store.settings.selectedLocalModelId,
+            language: policy.requested(locked: sessionLanguage),
+            replacements: store.settings.transcriptionReplacements,
+            diarize: false)
+
+        Task { [transcriber] in
+            defer { try? FileManager.default.removeItem(at: url) }
+            do {
+                let result = try await transcriber.transcribe(request)
+                await MainActor.run { AppDelegate.shared?.deliverAsk(result.text) }
+            } catch {
+                Log.write("ask: 转写失败 \(error)")
+                await MainActor.run {
+                    AppDelegate.shared?.flash(.error, Self.short(error), seconds: 3.0)
+                }
+            }
+        }
+    }
+
+    private func deliverAsk(_ transcript: String) {
+        // 问题**不过润色**：那一层是给要粘出去的正文准备的，而这句话是给模型的。
+        let question = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else {
+            flash(.cancelled, "没听清", seconds: 1.2)
+            return
+        }
+        let prompt = JarvisController.askCommand.prompt(
+            spoken: question, selection: askSelection, clipboard: "")
+        askSelection = ""
+        Log.write("ask: 「\(question)」（带选区 \(prompt.count - question.count) 字）")
+        jarvis.askDirectly(prompt)
     }
 
     // MARK: - 转写 → 加工 → 粘贴
@@ -2030,8 +2957,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let whole = Int(recorder.takeDurationSeconds)
         guard whole != lastHoldNotchSecond else { return }
         lastHoldNotchSecond = whole
+        // ⚠️ 提问态的前缀必须在这里也带上。这个函数 30 Hz 在跑，
+        // `beginHold()` 写的那行「问克劳德 00:00」会在第一拍就被它盖掉 ——
+        // 于是提问和普通听写在屏幕上长得一模一样（实测踩过）。
+        let time = String(format: "%02d:%02d", whole / 60, whole % 60)
         notch.show(state: .recording,
-                   message: String(format: "%02d:%02d", whole / 60, whole % 60),
+                   message: holdIsAsk ? "问克劳德 \(time)" : time,
                    compact: true)
     }
 
@@ -2150,7 +3081,16 @@ final class SettingsStore {
         return FileManager.default.fileExists(atPath: native.path) ? native : legacy
     }
 
+    /// 自测期间**禁止落盘**。
+    ///
+    /// ⚠️ 血的教训：自测只在内存里改开关（`store.settings.x = true`），本以为
+    /// 退出即恢复 —— 但界面上任何一个绑定被 SwiftUI 写一次就会调 `save()`，
+    /// 把那些临时值连同整份配置一起写进用户的 settings.json。
+    /// 于是「跑了一遍自测」变成了「替用户打开了语音命令与贾维斯」。
+    var readOnly = false
+
     func save() {
+        guard !readOnly else { return }
         settings.sanitize()
         let dir = Self.directory(Self.nativeBundleID)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
