@@ -19,7 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let notch = NotchOverlayController()
     private let noteStore = NoteStore()
     private lazy var noteSession = NoteSessionController(
-        recorder: recorder, transcriber: transcriber, store: store, notes: noteStore)
+        recorder: recorder, transcriber: transcriber, store: store, notes: noteStore,
+        processing: processing)
     private lazy var notePanel = NotePanelController(session: noteSession)
     private lazy var models = ModelCatalog(store: store, transcriber: transcriber)
     /// 关键词待命。**是 filter 不是 sink** —— 它和落笔可以同时开。
@@ -35,9 +36,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onOpenNote: { [weak self] entry in self?.openNote(entry) })
 
     private let transcriber = LocalTranscriber()
+    /// 转写完到落笔/粘贴之间的那一步：预设、提示词、云端或 `claude -p`、降级。
+    /// 听写与落笔共用同一个实例，提示与日志才只有一套。
+    private lazy var processing = PostProcessingCoordinator(store: store, notes: noteStore)
+
+    /// 加工那一步要跟用户说的话。攒到粘贴结果那一刻一起说 —— 单独闪一下
+    /// 会被紧接着的「粘贴中 / 已粘回 X」在几十毫秒内盖掉。
+    private var pendingProcessingNotice: (text: String, isProblem: Bool)?
 
     /// 录音**开始那一刻**的前台窗口。等转写回来再看前台是谁，就粘到别人窗口里了。
     private var pasteTarget: PasteTarget?
+
+    /// 「粘贴要辅助功能授权」这句引导，一次运行只弹一次。
+    private var accessibilityPrompted = false
 
     /// 这一次「按住说话」是不是真的占着录音器。
     ///
@@ -93,6 +104,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         noteSession.onRecordingChanged = { [weak self] recording in
             recording ? self?.startNoteNotch() : self?.finishNoteNotch()
         }
+        // 落笔的插入结果与听写共用同一个出口 —— 降级原因和授权引导只该有一套。
+        noteSession.onPasteResult = { [weak self] result, appName in
+            // 成功时不抢刘海：落笔面板自己会把块标成已粘贴，那就是反馈。
+            // 只有降级了才必须说话，否则用户以为这一段丢了。
+            guard !result.landedInTarget else { return }
+            self?.reportPaste(result, appName: appName)
+        }
 
         // 刘海 hover 条上的三个按钮。刘海不认识会话，动作由这里注入。
         notch.hoverActions = .init(
@@ -129,6 +147,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         installStatusItem()
+
+        // 预热这份配置真会用到的 API key（后台线程读钥匙串）。
+        // 绝不在「用户刚说完话、正等着文字落下来」的路径上现 fork 一个
+        // `security` —— 那是最不能被阻塞的几百毫秒。
+        processing.preloadKeys()
+
+        // 加工自测：把九个预设的提示词打出来，再真跑一次当前配置的加工。
+        // 麦克风与真机粘贴都绕开了，验的就是「加工这一段到底通不通」。
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--process-test") {
+            // 下一个参数是**可选的**待加工文本。以 `--` 开头的说明那是下一个
+            // 开关（`--engine` 之类），不是文本。
+            let next = ProcessInfo.processInfo.arguments[safe: index + 1] ?? ""
+            runProcessTest(text: next.hasPrefix("--") ? "" : next)
+            return
+        }
+
+        // 落笔加工自测：三段依次走真实落地路径，验加工之后正文仍然按序。
+        if ProcessInfo.processInfo.arguments.contains("--note-process-test") {
+            runNoteProcessTest()
+            return
+        }
 
         // 录音自测：录 N 秒，落成 WAV，把提交策略的裁决一并打出来。
         // 麦克风是这一层唯一没法靠单测覆盖的东西 —— 必须真的录一次。
@@ -191,6 +230,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // 自动粘贴自测：剪贴板存/还原（A20）、目标退出/无目标/开关关闭的降级、
+        // 跨 App 粘完的焦点归还。`--paste-test` 证「落进去了」，这条证其余的。
+        if ProcessInfo.processInfo.arguments.contains("--autopaste-test") {
+            runAutoPasteTest()
+            return
+        }
+
         // 热键自测：合成一次真实的右 ⌥ 按住并松开，走完整条
         // CGEventPost → HID tap → 匹配器 → 录音 的链路。
         // 单测覆盖不到 tap 本身，而真机按键又没法在这里取证 —— 只能自己发事件。
@@ -239,6 +285,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 贾维斯自测：待命 → 扫描 → 命中 → 倒计时 → 撤销 / 真的执行。
         if ProcessInfo.processInfo.arguments.contains("--jarvis-test") {
             runJarvisTest()
+            return
+        }
+
+        // 分离模型下载自测：在**没有本地权重**的状态下走一遍真实下载路径。
+        // 「新机器上下不动」只有把本机的那份挪开才复现得了。
+        if ProcessInfo.processInfo.arguments.contains("--diarize-download-test") {
+            runDiarizationDownloadTest()
             return
         }
 
@@ -614,7 +667,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             let markerA = "落音甲\(Int.random(in: 1000...9999))"
             let routeA = MacAutomation.insert(markerA, into: target)
-            emit("① 目标在前台：route=\(routeA.rawValue)")
+            emit("① 目标在前台：route=\(routeA.route?.rawValue ?? "无") "
+                 + "outcome=\(routeA.outcome.rawValue)")
 
             // 切走再插一次，走跨 App 的 B1/B2。
             NSWorkspace.shared.runningApplications
@@ -622,7 +676,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Thread.sleep(forTimeInterval: 0.8)
             let markerB = "落音乙\(Int.random(in: 1000...9999))"
             let routeB = MacAutomation.insert(markerB, into: target)
-            emit("② 跨 App：route=\(routeB.rawValue)")
+            emit("② 跨 App：route=\(routeB.route?.rawValue ?? "无") "
+                 + "outcome=\(routeB.outcome.rawValue)")
 
             // 存盘再从磁盘读 —— AX 读回会摸到窗口标题之类的邻近元素，
             // 不是可信的地面真相。
@@ -640,6 +695,164 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.flush()
             exit(okA && okB ? 0 : 1)
         }
+    }
+
+    /// 自动粘贴自测：把**能程序化取证**的那几条挨个跑一遍。
+    ///
+    /// `--paste-test` 证的是「文字落进了目标窗口」。这一条证的是它证不了的部分：
+    /// 剪贴板有没有被还原（A20）、目标退出/没有目标/没授权时会不会降级、
+    /// 跨 App 粘完焦点有没有还回去。三层路线的**选择**逻辑在 InkfallCore 有单测，
+    /// 这里跑的是接上真实系统调用之后的行为。
+    private func runAutoPasteTest() {
+        selfTest = true
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.0) {
+            var failures: [String] = []
+            func check(_ ok: Bool, _ what: String) {
+                emit((ok ? "  ✓ " : "  ✗ ") + what)
+                if !ok { failures.append(what) }
+            }
+            let pasteboard = NSPasteboard.general
+            // 这个自测会反复改剪贴板 —— 跑完必须把用户自己的东西放回去，
+            // 不然「验证剪贴板卫生」的自测本身成了破坏剪贴板的那个人。
+            let userClipboard = pasteboard.string(forType: .string)
+            func finish(_ ok: Bool) -> Never {
+                if let userClipboard {
+                    pasteboard.clearContents()
+                    pasteboard.setString(userClipboard, forType: .string)
+                }
+                Log.flush()
+                exit(ok ? 0 : 1)
+            }
+            let trusted = AXIsProcessTrusted()
+            emit("辅助功能授权=\(trusted)")
+
+            // ——— ① 没有目标：文字必须留在剪贴板上，绝不能凭空消失。
+            emit("① 没有目标")
+            let sentinel = "哨兵\(Int.random(in: 1000...9999))"
+            pasteboard.clearContents()
+            pasteboard.setString(sentinel, forType: .string)
+            let noTargetText = "落音无目标\(Int.random(in: 1000...9999))"
+            let noTarget = MacAutomation.insert(noTargetText, into: nil)
+            check(noTarget.outcome == (trusted ? .noTarget : .accessibilityDenied),
+                  "outcome=\(noTarget.outcome.rawValue)")
+            check(pasteboard.string(forType: .string) == noTargetText,
+                  "文字留在了剪贴板上（这一条**不**还原，那正是它的意义）")
+            check(!noTarget.landedInTarget, "没被误标成已粘贴")
+
+            // ——— ② 目标已退出：死进程 activate 是空操作，之后那一下 ⌘V
+            // 会打进当时恰好在前台的别人窗口。必须在合成按键之前就拦住。
+            emit("② 目标已退出（真实的死 pid）")
+            let dying = Process()
+            dying.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+            try? dying.run()
+            dying.waitUntilExit()
+            let dead = PasteTarget(bundleID: "app.inkfall.gone",
+                                   processID: dying.processIdentifier,
+                                   appName: "已退出的 App", window: nil)
+            check(!dead.isRunning, "pid \(dead.processID) 判定为已退出")
+            let deadText = "落音已退出\(Int.random(in: 1000...9999))"
+            let deadResult = MacAutomation.insert(deadText, into: dead)
+            check(deadResult.outcome == (trusted ? .targetClosed : .accessibilityDenied),
+                  "outcome=\(deadResult.outcome.rawValue)")
+            check(deadResult.route == .clipboardOnly, "只复制，没有合成任何按键")
+            check(pasteboard.string(forType: .string) == deadText, "文字落到了剪贴板")
+            emit("  提示语：\(AutoPaste.message(deadResult.outcome, appName: dead.appName))")
+
+            // ——— ③ 开关关掉：同样只复制。
+            emit("③ 自动粘贴开关关闭")
+            let offText = "落音关闭\(Int.random(in: 1000...9999))"
+            let off = MacAutomation.insert(
+                offText, into: nil, options: PasteOptions(autoPasteEnabled: false))
+            check(off.outcome == .disabled, "outcome=\(off.outcome.rawValue)（未授权也不该盖过它）")
+            check(pasteboard.string(forType: .string) == offText, "文字落到了剪贴板")
+
+            // ——— ④ 补换行。
+            let newlineText = "落音换行\(Int.random(in: 1000...9999))"
+            _ = MacAutomation.insert(newlineText, into: nil,
+                                     options: PasteOptions(appendNewline: true))
+            check(pasteboard.string(forType: .string) == newlineText + "\n",
+                  "pasteAppendNewline 补上了行尾换行")
+
+            guard trusted else {
+                emit("⚠️ 未授权辅助功能：真实 ⌘V 的两条路线跑不了，"
+                     + "上面验的是降级行为。授权后重跑本自测。")
+                emit(failures.isEmpty ? "✅ 降级路径全部符合预期" : "❌ \(failures.count) 项不符")
+                finish(failures.isEmpty)
+            }
+
+            // ——— ⑤ 目标在前台：零激活粘贴，粘完剪贴板必须还原（A20）。
+            emit("⑤ 目标在前台（TextEdit）")
+            // ⚠️ 用 `/usr/bin/open -b` 而不是 `NSRunningApplication.activate()`：
+            // 自测跑起来时本 App 是后台的，而 macOS 14 起，非激活 App 发出的
+            // activate 会被系统直接忽略 —— 于是被测的「前台」根本没换过。
+            Self.activateViaLaunchServices("com.apple.TextEdit")
+            Thread.sleep(forTimeInterval: 1.5)
+            guard let target = PasteTarget.current(),
+                  target.bundleID == "com.apple.TextEdit" else {
+                emit("❌ 前台是「\(PasteTarget.current()?.appName ?? "?")」不是文本编辑，"
+                     + "后两阶段测不了 —— 先把它打开并置前")
+                finish(false)
+            }
+            pasteboard.clearContents()
+            pasteboard.setString(sentinel, forType: .string)
+            let inPlace = MacAutomation.insert("落音甲\(Int.random(in: 1000...9999))",
+                                               into: target)
+            check(inPlace.outcome == .inserted,
+                  "outcome=\(inPlace.outcome.rawValue) route=\(inPlace.route?.rawValue ?? "无")")
+            check(pasteboard.string(forType: .string) == sentinel,
+                  "剪贴板还原成了哨兵「\(sentinel)」")
+
+            // ——— ⑥ 跨 App：粘完剪贴板要还原，焦点要回到粘之前那个 App。
+            emit("⑥ 跨 App（前台切到访达）")
+            Self.activateViaLaunchServices("com.apple.finder")
+            Thread.sleep(forTimeInterval: 1.2)
+            let finderPID = MacAutomation.frontmostPID()
+            pasteboard.clearContents()
+            pasteboard.setString(sentinel, forType: .string)
+            let crossApp = MacAutomation.insert("落音乙\(Int.random(in: 1000...9999))",
+                                                into: target)
+            check(crossApp.landedInTarget,
+                  "outcome=\(crossApp.outcome.rawValue) route=\(crossApp.route?.rawValue ?? "无")")
+            check(pasteboard.string(forType: .string) == sentinel, "剪贴板还原成了哨兵")
+            let back = MacAutomation.frontmostPID()
+            check(back == finderPID,
+                  "焦点回到了粘之前那个 App（pid \(back.map(String.init) ?? "无") "
+                  + "vs \(finderPID.map(String.init) ?? "无")）")
+
+            // ——— ⑦ 逼出 B2（切过去粘再切回来）。访达的焦点元素是文件列表，
+            // 不吃 `AXSelectedText` 写入，所以以它为目标就会落到最后那条回落路线 ——
+            // 那也是 sleep 最多、最容易把剪贴板还原写错的一条。
+            emit("⑦ 回落路线（目标=访达，AX 写入会被拒）")
+            Self.activateViaLaunchServices("com.apple.finder")
+            Thread.sleep(forTimeInterval: 1.2)
+            let finderTarget = PasteTarget.current()
+            Self.activateViaLaunchServices("com.apple.TextEdit")
+            Thread.sleep(forTimeInterval: 1.2)
+            let textEditPID = MacAutomation.frontmostPID()
+            pasteboard.clearContents()
+            pasteboard.setString(sentinel, forType: .string)
+            let fallback = MacAutomation.insert("落音丙\(Int.random(in: 1000...9999))",
+                                                into: finderTarget)
+            emit("  route=\(fallback.route?.rawValue ?? "无") "
+                 + "outcome=\(fallback.outcome.rawValue)")
+            check(fallback.route == .activateAndPaste,
+                  "走到了 activateAndPaste（访达拒绝 AX 写入）")
+            check(pasteboard.string(forType: .string) == sentinel, "剪贴板还原成了哨兵")
+            check(MacAutomation.frontmostPID() == textEditPID, "焦点还给了粘之前的文本编辑")
+
+            emit(failures.isEmpty ? "✅ 自动粘贴全部符合预期"
+                                  : "❌ \(failures.count) 项不符：\(failures.joined(separator: "；"))")
+            finish(failures.isEmpty)
+        }
+    }
+
+    /// 把某个 App 拉到前台。只给自测用。
+    private static func activateViaLaunchServices(_ bundleID: String) {
+        let open = Process()
+        open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        open.arguments = ["-b", bundleID]
+        try? open.run()
+        open.waitUntilExit()
     }
 
     /// 读回焦点元素的全文，用来核对刚插进去的标记确实到了目标 App。
@@ -1200,10 +1413,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             noteSession.diarize.toggle()
             flash(.success, noteSession.diarize ? "区分人物 开" : "区分人物 关", seconds: 1.2)
 
+        // 右⌥ + F1…F9：切加工预设。九个预设按 `allCases` 的顺序排，
+        // 与设置页里的下拉框一致。
+        case .processingPresetDigit(let digit):
+            abortSpuriousHold()
+            switchProcessingPreset(digit)
+
         default:
             // 其余事件的消费端（转写、加工、粘贴、贾维斯）尚未接入。
             Log.write("hotkey: \(event) —— 消费端未接入")
         }
+    }
+
+    /// F1…F9 → 第 1…9 个预设。
+    ///
+    /// 加工**关着**的时候也照样切，只是要在刘海上说破 —— 否则用户按了
+    /// 一下、看见「会议纪要」四个字，然后发现输出一点没变。
+    private func switchProcessingPreset(_ digit: UInt8) {
+        let presets = PostProcessingPreset.allCases
+        guard digit >= 1, Int(digit) <= presets.count else { return }
+        let preset = presets[Int(digit) - 1]
+        store.settings.postProcessingPreset = preset
+        store.save()
+        let enabled = store.settings.postProcessingEnabled
+        Log.write("hotkey: 加工预设 → \(preset.rawValue)\(enabled ? "" : "（加工未启用）")")
+        flash(enabled ? .success : .cancelled,
+              enabled ? "加工模式：\(preset.label)" : "加工模式：\(preset.label)（加工未启用）",
+              seconds: enabled ? 1.4 : 2.0)
     }
 
     /// 手动断句的自测。
@@ -1401,13 +1637,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Self.collectText(hub.debugContentView, into: &texts)
             for line in texts { emit("  \(line)") }
             emit("共 \(texts.count) 段文字")
-            // 一页真的画出来了，至少会有页标题和若干行说明；空壳只会剩个框。
-            let ok = texts.count >= 6
-            emit(ok ? "✅ 这一页画出来了" : "❌ 这一页是空壳")
+
+            // ⚠️ 光数条数会假阳性：AX 树里塞着**菜单栏**，只开一个空壳窗口
+            // 也能数出上百段。所以判据是「这一页自己的东西在不在」。
+            let expected = Self.pageMarkers[page] ?? []
+            let missing = expected.filter { marker in
+                !texts.contains { $0.contains(marker) }
+            }
+
+            // 顺手截一张图。App 自己有屏幕录制授权（外面的 shell 没有），
+            // 而「文字捞得到」和「人看得见」并不是同一件事。
+            let shot = URL(fileURLWithPath: "/tmp/inkfall-verify-\(page.rawValue).png")
+            try? FileManager.default.removeItem(at: shot)
+            try? ScreenCapture.capture(.fullScreen, to: shot)
+            emit(FileManager.default.fileExists(atPath: shot.path)
+                 ? "截图：\(shot.path)" : "截图：没拿到（屏幕录制未授权？）")
+
+            let ok = missing.isEmpty && texts.count >= 6
+            emit(ok ? "✅ 这一页画出来了"
+                    : "❌ 缺少这几处：\(missing.joined(separator: " / "))")
             Log.flush()
             exit(ok ? 0 : 1)
         }
     }
+
+    /// 每一页「必须出现」的几处文字。少一处就说明那一块没画出来 ——
+    /// 这比数总条数靠谱得多（AX 树里还混着菜单栏）。
+    private static let pageMarkers: [HubModel.Page: [String]] = [
+        .operators: ["模型来源", "加工", "AI 加工", "预设", "引擎", "落笔的加工"],
+        .integration: ["本地 API", "MCP 桥"],
+        .general: ["录音", "粘贴", "落笔"],
+    ]
 
     /// 从 NSView 树里把 SwiftUI 渲染出来的文字捞出来。
     ///
@@ -1641,6 +1901,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (gap, step) in steps {
             delay += gap
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { step() }
+        }
+    }
+
+    // MARK: - 分离模型下载自测
+
+    /// 在「新机器」状态下下载 Pyannote 分离模型。
+    ///
+    /// 复现方式是把本机已有的那份**改名挪开**（不删 —— 下不回来的话还得还给
+    /// 用户），跑完再按结果决定是恢复还是留下新下的那份。
+    private func runDiarizationDownloadTest() {
+        selfTest = true
+        let root = LocalTranscriber.diarizationRoot
+        let backup = root.appendingPathExtension("backup")
+        let manager = FileManager.default
+
+        emit("权重目录 \(root.path)")
+        emit("起始状态：已下载=\(LocalTranscriber.isDiarizationDownloaded) "
+             + "体积=\(LocalTranscriber.diarizationBytes / 1_048_576) MB")
+
+        try? manager.removeItem(at: backup)
+        let hadLocal = manager.fileExists(atPath: root.path)
+        if hadLocal {
+            do {
+                try manager.moveItem(at: root, to: backup)
+                emit("已把本机那份挪到 \(backup.lastPathComponent)（模拟新机器）")
+            } catch {
+                emit("❌ 挪不动本机的那份：\(error)")
+                Log.flush()
+                exit(1)
+            }
+        }
+        emit("模拟新机器后：已下载=\(LocalTranscriber.isDiarizationDownloaded)")
+
+        Task {
+            let started = Date()
+            var failure: String?
+            do {
+                try await LocalTranscriber.downloadDiarization { fraction in
+                    Task { @MainActor in
+                        let percent = Int(fraction * 100)
+                        if percent % 20 == 0 { emit("  进度 \(percent)%") }
+                    }
+                }
+            } catch {
+                failure = "\(error)"
+            }
+            await MainActor.run {
+                if let failure {
+                    emit("❌ 下载抛错：\(failure)")
+                }
+                let ok = LocalTranscriber.isDiarizationDownloaded
+                emit(String(format: "耗时 %.1fs 已下载=%@ 体积=%d MB",
+                            Date().timeIntervalSince(started), ok ? "是" : "否",
+                            LocalTranscriber.diarizationBytes / 1_048_576))
+                if manager.fileExists(atPath: root.path) {
+                    let files = (try? manager.contentsOfDirectory(atPath: root.path)) ?? []
+                    emit("目录内容：\(files.sorted().joined(separator: " "))")
+                }
+
+                // 收摊：下成功就把备份删掉，失败就把用户原来那份还回去。
+                if ok {
+                    try? manager.removeItem(at: backup)
+                    emit("新下的那份留下，备份已删")
+                } else if hadLocal {
+                    try? manager.removeItem(at: root)
+                    try? manager.moveItem(at: backup, to: root)
+                    emit("下载失败 —— 已把本机原来那份还回去（已下载="
+                         + "\(LocalTranscriber.isDiarizationDownloaded)）")
+                }
+                emit(ok ? "✅ 新机器状态下能下载" : "❌ 新机器状态下下不动")
+                Log.flush()
+                exit(ok ? 0 : 1)
+            }
         }
     }
 
@@ -2797,11 +3130,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - 转写 → 加工 → 粘贴
 
-    /// 本地模型跑完就把文字送回起录时的那个窗口。
+    /// 本地模型跑完 → 加工 → 送回起录时的那个窗口。
     ///
-    /// 云端路径（#10）还没接，所以这里只有 local 一条道；加工也只有不需要联网的
-    /// 规则润色（#11 的九个预设要调 LLM）。
+    /// 云端**转写**（#10）还没接，所以这里只有 local 一条道；加工那一段
+    /// 九个预设都在（云端 API / 本机 `claude -p`），见 `PostProcessingCoordinator`。
     private func transcribeAndInsert(_ audio: RecordedAudio) {
+        let durationMs = audio.durationMs
         let modelID = store.settings.selectedLocalModelId
         let name = LocalModels.definition(id: modelID)?.name ?? modelID
         let target = pasteTarget
@@ -2836,7 +3170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let result = try await transcriber.transcribe(request)
                 await MainActor.run {
                     AppDelegate.shared?.lockSessionLanguage(result.language, policy: policy)
-                    AppDelegate.shared?.deliver(result, into: target)
+                    AppDelegate.shared?.deliver(result, into: target, durationMs: durationMs)
                 }
             } catch {
                 Log.write("transcribe: 失败 \(error)")
@@ -2856,31 +3190,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             + "（\(languageLock.votes.map(\.rawValue).joined(separator: "→"))）")
     }
 
-    private func deliver(_ result: LocalTranscriber.Result, into target: PasteTarget?) {
-        // 规则润色（去口头禅、补标点）—— 纯本地，不需要联网。
-        // 带说话人标签的结果原样放行：标签的排版是结构，不是待清理的噪声。
-        let text = result.labeled ? result.text : BasicPolisher.polish(result.text)
-        guard !text.isEmpty else {
+    private func deliver(_ result: LocalTranscriber.Result, into target: PasteTarget?,
+                         durationMs: UInt64) {
+        guard !result.text.trimmingCharacters(in: .whitespaces).isEmpty else {
             flash(.cancelled, "没听清", seconds: 1.2)
             return
         }
         Log.write(String(format: "transcribe: %.2fs lang=%@ 说话人=%@ → %d 字",
                          result.elapsed, result.language ?? "?",
-                         result.speakerCount.map(String.init) ?? "-", text.count))
+                         result.speakerCount.map(String.init) ?? "-", result.text.count))
         scheduleModelUnload()
 
-        notch.show(state: .processing, message: "粘贴中")
+        // 加工可能要一次网络往返或 fork 一个 claude，所以整条尾巴是异步的。
+        // 不加工的分支不会真的挂起，行为和以前一样立刻粘出去。
+        Task { [processing, store] in
+            let outcome = await processing.process(
+                result.text,
+                settings: store.settings,
+                durationMs: durationMs,
+                speakerLabeled: result.labeled,
+                onRemoteStart: { [weak self] preset in
+                    self?.notch.show(state: .processing, message: "\(preset.label) · 加工中")
+                },
+                onDelta: { [weak self] _ in
+                    // 流式增量目前只用来证明「它真的在动」—— 刘海太窄，
+                    // 逐 token 刷中文只会抖成一团。
+                    self?.notch.show(state: .processing, message: "加工中…")
+                })
+            self.insert(outcome, into: target)
+        }
+    }
+
+    /// 加工结果 → 剪贴板/目标窗口。降级提示先说，再粘。
+    private func insert(_ outcome: PostProcessingCoordinator.Outcome, into target: PasteTarget?) {
+        let text = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            flash(.cancelled, "没听清", seconds: 1.2)
+            return
+        }
+        // ⚠️ 提示不能在这里 flash：紧接着的「粘贴中」和粘完的「已粘回 X」
+        // 会在几十毫秒内把它盖掉，用户根本来不及看见。攒到粘贴结果那一刻
+        // 一起说（见 `reportPaste`）。
+        pendingProcessingNotice = outcome.notice.map { ($0, outcome.isProblem) }
+
+        let options = PasteOptions(settings: store.settings)
+        notch.show(state: .processing, message: options.autoPasteEnabled ? "粘贴中" : "复制中")
         // ⚠️ 插入路径里是一连串 `Thread.sleep`（等剪贴板、等激活、等目标读完）。
         // 放主线程会把刘海动画连同整个 UI 冻住半秒以上，所以丢到后台队列。
         DispatchQueue.global(qos: .userInitiated).async {
-            let route = MacAutomation.insert(text, into: target)
+            let result = MacAutomation.insert(text, into: target, options: options)
             DispatchQueue.main.async {
-                Log.write("paste: route=\(route.rawValue) target=\(target?.appName ?? "无")")
-                        let landed = target.map { "已粘回 \($0.appName)" } ?? "已复制到剪贴板"
-                AppDelegate.shared?.flash(
-                    .success, route == .clipboardOnly ? "已复制到剪贴板" : landed, seconds: 1.6)
+                Log.write("paste: route=\(result.route?.rawValue ?? "无") "
+                    + "outcome=\(result.outcome.rawValue) target=\(target?.appName ?? "无")")
+                AppDelegate.shared?.reportPaste(result, appName: target?.appName)
             }
         }
+    }
+
+    /// 粘贴结果的统一出口：刘海上说一句，必要时把用户引去授权。
+    ///
+    /// 没有辅助功能授权时合成按键会被系统**静默丢弃** —— 不主动说破的话，
+    /// 用户只会看到刘海闪一句「已粘回 Xcode」，然后发现窗口里什么都没有。
+    @MainActor
+    func reportPaste(_ result: PasteResult, appName: String?) {
+        var message = AutoPaste.message(result.outcome, appName: appName)
+        var state: OverlayState = result.outcome.landedInTarget ? .success : .cancelled
+        var seconds = result.outcome.landedInTarget ? 1.6 : 2.4
+        // 加工那一步的话攒到这里一起说 —— 单独 flash 会被粘贴消息秒盖。
+        if let notice = pendingProcessingNotice {
+            message += " · \(notice.text)"
+            if notice.isProblem {
+                state = .error
+                seconds = 3.4
+            }
+            pendingProcessingNotice = nil
+        }
+        flash(state, message, seconds: seconds)
+        guard result.outcome.needsAccessibilityPrompt else { return }
+        promptForAccessibilityOnce()
+    }
+
+    /// 引导只弹**一次**。每次听写都把系统设置怼到用户脸上比静默失败还烦人；
+    /// 关掉之后设置页的权限行仍然一直摆在那儿。
+    private func promptForAccessibilityOnce() {
+        guard !accessibilityPrompted else { return }
+        accessibilityPrompted = true
+        Log.write("paste: 未授权辅助功能，已打开系统设置")
+        permissions.request(.accessibility)
     }
 
     /// 5 分钟没再用就把模型卸掉。常驻 1.5 GB 只为省下 7 秒的重新加载，
@@ -2899,6 +3295,136 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func short(_ error: Error) -> String {
         let text = (error as? LocalizedError)?.errorDescription ?? "\(error)"
         return String(text.prefix(60))
+    }
+
+    // MARK: - 落笔的加工自测
+
+    /// 落笔的段落在加工之后**仍然按说话顺序**落进正文。
+    ///
+    /// 加工把 `finish()` 变成了异步的（要等一次往返），而落笔是并发转写的 ——
+    /// 第 3 段先加工完是常事。顺序由 `OrderedPasteQueue` 保证，这条自测就是
+    /// 守它：三段依次喂进**真实**的落地路径，正文必须还是 1-2-3。
+    ///
+    /// 不需要麦克风：只有「声音变成文字」那一步是伪造的。
+    private func runNoteProcessTest() {
+        selfTest = true
+        store.readOnly = true
+        // 覆盖只活在内存里。用 basic 预设：全本地、确定性、不花钱，
+        // 但**走的是和云端完全同一条异步路径**。
+        store.settings.noteProcessingEnabled = true
+        store.settings.noteProcessingPreset = .basic
+        let segments = ["第一段 嗯 这是开头", "第二段 呃 这是中间", "第三段 那个 这是结尾"]
+        for text in segments { noteSession.debugInjectTranscript(text) }
+
+        // 加工是异步的，所以要等 —— 但要等的是**结果**，不是一个拍脑袋的秒数。
+        var waited = 0.0
+        func check() {
+            let body = noteSession.body
+            let done = noteSession.segments.filter { $0.status == .done }.count
+            if done < segments.count, waited < 20 {
+                waited += 0.25
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: check)
+                return
+            }
+            emit("段数：\(noteSession.segments.count)（完成 \(done)）用时 \(waited)s")
+            emit("正文：\n\(body)")
+            let order = ["第一段", "第二段", "第三段"].compactMap { body.range(of: $0)?.lowerBound }
+            let ordered = order.count == 3 && order == order.sorted()
+            // 加工真的跑过了：basic 会把「嗯 / 呃」这些语气词删掉。
+            let polished = !body.contains("嗯") && !body.contains("呃")
+            emit(ordered ? "✅ 三段按说话顺序落进正文" : "❌ 顺序错了或有段丢了")
+            emit(polished ? "✅ 每段都过了加工" : "❌ 加工没跑（语气词还在）")
+            Log.flush()
+            exit(ordered && polished ? 0 : 1)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: check)
+    }
+
+    // MARK: - 加工自测
+
+    /// 加工链路的取证。
+    ///
+    /// 麦克风、转写、粘贴全绕开 —— 那几段各自有自己的自测。这里验的是中间
+    /// 那一段：九个预设的提示词拼得对不对、当前配置会走哪条路、真发一次
+    /// 请求（或真 fork 一个 `claude`）能不能回来。
+    private func runProcessTest(text: String) {
+        selfTest = true
+        // ⚠️ 自测期间禁止落盘，否则临时改的开关会写进用户的 settings.json
+        // （这条是踩过的坑：一次自测把语音命令替用户打开了）。
+        store.readOnly = true
+        let sample = text.isEmpty
+            ? "嗯 那个 我觉得吧 这个功能 呃 应该可以先做一个最小版本 然后再迭代 你觉得呢"
+            : text
+
+        // 覆盖项只活在内存里。自测要能验**这条路通不通**，
+        // 而不是只验「用户当前恰好选了什么」。
+        let arguments = ProcessInfo.processInfo.arguments
+        store.settings.postProcessingEnabled = true
+        if let raw = arguments.firstIndex(of: "--engine").flatMap({ arguments[safe: $0 + 1] }) {
+            store.settings.postProcessingEngine = raw == "cli" ? .claudeCode : .cloud
+        }
+        if let raw = arguments.firstIndex(of: "--preset").flatMap({ arguments[safe: $0 + 1] }),
+           let preset = PostProcessingPreset(rawValue: raw) {
+            store.settings.postProcessingPreset = preset
+        }
+        if let level = arguments.firstIndex(of: "--effort").flatMap({ arguments[safe: $0 + 1] }) {
+            store.settings.cliAgentEffort = level
+        }
+        if let name = arguments.firstIndex(of: "--model").flatMap({ arguments[safe: $0 + 1] }) {
+            store.settings.cliAgentModel = name
+        }
+
+        emit("加工设置：开关=\(store.settings.postProcessingEnabled ? "开" : "关") "
+             + "引擎=\(store.settings.postProcessingEngine.label) "
+             + "预设=\(store.settings.postProcessingPreset.label) "
+             + "供应商=\(store.settings.postProcessingProvider.label) "
+             + "落笔预设=\(store.settings.noteProcessingPreset.label)")
+        if let agent = store.settings.postProcessingEngine.cliAgent {
+            emit("CLI：\(agent.label) 路径=\(CLIAgentLocator.path(for: agent) ?? "没找到") "
+                 + "力度=\(store.settings.cliAgentEffort) "
+                 + "模型=\(store.settings.cliAgentModel.isEmpty ? "默认" : store.settings.cliAgentModel)")
+        }
+
+        emit("")
+        emit("九个预设的提示词：")
+        for preset in PostProcessingPreset.allCases {
+            let built = try? PostProcessingPrompt.instructions(
+                preset: preset, customPrompt: store.settings.customPostProcessingPrompt,
+                memoryContext: store.settings.processingMemoryContext)
+            guard let built else {
+                emit("  \(preset.rawValue)：（自定义 prompt 为空 → 报错，符合预期）")
+                continue
+            }
+            emit("  \(preset.rawValue)（\(preset.label)）\(built.count) 字："
+                 + String(built.prefix(64)) + "…")
+        }
+
+        emit("")
+        let decision = PostProcessingPolicy.decide(
+            settings: store.settings, durationMs: 9_000, transcript: sample, speakerLabeled: false)
+        emit("裁决（9 s / \(sample.count) 字）：\(decision)")
+
+        emit("")
+        emit("原文：\(sample)")
+        emit("本地 basic：\(BasicPolisher.polish(sample))")
+
+        Task { [processing, store] in
+            let started = CFAbsoluteTimeGetCurrent()
+            let outcome = await processing.process(
+                sample, settings: store.settings, durationMs: 9_000, speakerLabeled: false,
+                onRemoteStart: { preset in emit("→ 送出（\(preset.label)）") },
+                onDelta: { delta in
+                    // 流式：证明它是**边生成边回来**的，不是一次性吐完。
+                    FileHandle.standardError.write(Data(delta.utf8))
+                })
+            emit("")
+            emit(String(format: "路线=%@ 耗时=%.2fs", outcome.route,
+                        CFAbsoluteTimeGetCurrent() - started))
+            if let notice = outcome.notice { emit("提示：\(notice)") }
+            emit("结果：\(outcome.text)")
+            Log.flush()
+            exit(outcome.isProblem ? 1 : 0)
+        }
     }
 
     // MARK: - 本地模型

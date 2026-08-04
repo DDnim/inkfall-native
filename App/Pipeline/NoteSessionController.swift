@@ -63,6 +63,9 @@ final class NoteSessionController {
     private let transcriber: LocalTranscriber
     private let store: SettingsStore
     private let notes: NoteStore
+    /// 加工与听写共用同一套决策与降级 —— 落笔只是把全局开关换成自己的
+    /// （`noteEffective()`）。
+    private let processing: PostProcessingCoordinator
 
     private var segmenter = SilenceSegmenter()
     private var queue = OrderedPasteQueue<NoteSessionSegment>()
@@ -99,6 +102,11 @@ final class NoteSessionController {
     /// 发 false 会让宿主把刘海整个收走，用户就再也点不到「继续」了。
     var onRecordingChanged: ((Bool) -> Void)?
 
+    /// 每次插入的结果。宿主用它统一「说一句 + 必要时引导授权」——
+    /// 没有辅助功能授权时合成按键会被系统静默丢弃，落笔面板自己看不出区别，
+    /// 只有宿主那一层能把用户引到系统设置去。
+    var onPasteResult: ((PasteResult, String?) -> Void)?
+
     /// 贾维斯的扫描入口。**只喂 raw transcript**（spec/10 A13）：
     /// 加工会改写填充词和标点，能把关键词整个毁掉。
     ///
@@ -106,6 +114,10 @@ final class NoteSessionController {
     /// 扣下用户说过的话），但标成 `>> 原文` 并预标已粘贴：命令已经跑了，
     /// 没有东西可粘，所以它不该进「粘贴所有」，也不算未粘贴内容。
     var scanTranscript: ((String) -> Bool)?
+
+    /// 加工那一步最近说的一句话（「会议纪要 加工中」「加工没跑通，已用本地整理」）。
+    /// 面板与刘海读它，`nil` 表示没什么可说的。
+    private(set) var processingNotice: String?
 
     /// 关键词扫描 armed。
     ///
@@ -155,11 +167,13 @@ final class NoteSessionController {
     private static let retainTailMs: UInt64 = 300
 
     init(recorder: AudioRecorder, transcriber: LocalTranscriber,
-         store: SettingsStore, notes: NoteStore) {
+         store: SettingsStore, notes: NoteStore,
+         processing: PostProcessingCoordinator) {
         self.recorder = recorder
         self.transcriber = transcriber
         self.store = store
         self.notes = notes
+        self.processing = processing
     }
 
     // MARK: - 起停
@@ -455,12 +469,14 @@ final class NoteSessionController {
             diarize: store.settings.noteWantsSpeakerLabels
                 && LocalTranscriber.isDiarizationDownloaded)
 
+        let durationMs = audio.durationMs
         Task { [transcriber] in
             defer { try? FileManager.default.removeItem(at: url) }
             do {
                 let result = try await transcriber.transcribe(request)
                 await MainActor.run {
-                    self.finish(id: id, seq: seq, result: result, policy: policy)
+                    self.finish(id: id, seq: seq, result: result, policy: policy,
+                                durationMs: durationMs)
                 }
             } catch {
                 Log.write("note: 段 \(id) 转写失败 \(error)")
@@ -475,20 +491,43 @@ final class NoteSessionController {
 
     private func finish(id: UInt64, seq: UInt64,
                         result: LocalTranscriber.Result,
-                        policy: TranscriptionLanguagePolicy) {
+                        policy: TranscriptionLanguagePolicy,
+                        durationMs: UInt64 = 0) {
         if languageLock.observe(TranscriptionLanguage.detected(result.language),
                                 policy: policy) {
             Log.write("note: 会话语言锁定 \(languageLock.locked?.rawValue ?? "?") "
                 + "（\(languageLock.votes.map(\.rawValue).joined(separator: "→"))）")
         }
-        // 贾维斯先看一眼 **raw**。扫描是 filter、笔记是 sink，两者正交 ——
-        // 命中与否都不影响这一段会不会落进正文。
+        // A13：贾维斯先看一眼 **raw**，而且必须在加工之前 —— 加工会改写
+        // 填充词和标点，能把关键词整个毁掉。扫描是 filter、笔记是 sink，
+        // 两者正交：命中与否都不影响这一段会不会落进正文。
         let hit = scanArmed ? (scanTranscript?(result.text) ?? false) : false
-        // 带说话人标签的结果原样放行：标签的排版是结构，不是待清理的噪声。
-        let text = result.labeled ? result.text : BasicPolisher.polish(result.text)
+
+        // 加工可能要一次往返，所以这一段先留在「转写中」，回来再入队。
+        // ⚠️ 顺序仍然由 `queue` 保证：第 3 段先加工完也得等第 2 段。
+        Task { [processing, store] in
+            let outcome = await processing.process(
+                result.text,
+                // 落笔有独立的 AI 开关与预设，其余字段原样带过。
+                settings: store.settings.noteEffective(),
+                durationMs: durationMs,
+                speakerLabeled: result.labeled,
+                onRemoteStart: { [weak self] preset in
+                    self?.markProcessing(id: id, note: "\(preset.label) 加工中")
+                })
+            self.complete(id: id, seq: seq, raw: result.text, text: outcome.text, hit: hit)
+            if let notice = outcome.notice {
+                Log.write("note: 段 \(id) \(notice)")
+                self.processingNotice = notice
+            }
+        }
+    }
+
+    /// 段落最终落地：写进队列，按序流进正文。
+    private func complete(id: UInt64, seq: UInt64, raw: String, text: String, hit: Bool) {
         var segment = segments.first { $0.id == id }
             ?? NoteSessionSegment(id: id, createdAtMs: HistoryEntry.nowMs())
-        segment.rawText = result.text
+        segment.rawText = raw
         segment.finalText = hit ? SessionMachine.noteBody(transcript: text, wasCommandHit: true)
                                 : text
         // 命令已经执行了，没有东西可粘 —— 预标已粘贴，免得它挤进「粘贴所有」。
@@ -496,6 +535,13 @@ final class NoteSessionController {
         segment.status = .done
         queue.complete(seq: seq, item: segment)
         drain()
+    }
+
+    /// 这一段正在被加工。面板上那个占位块换句话，用户才知道不是卡住了。
+    private func markProcessing(id: UInt64, note: String) {
+        guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
+        segments[index].status = .processing
+        processingNotice = note
     }
 
     /// 自测用：把一段**假装转写回来的文字**喂进真实的落地路径。
@@ -589,14 +635,23 @@ final class NoteSessionController {
     /// 不算已粘贴，否则用户再按一次就什么都不出来了。
     private func insert(_ text: String, ids: [UInt64], reason: String) {
         let target = pasteTarget
+        // 落笔的插入是用户显式要的（双击 / 粘贴所有 / 落笔自动粘贴那个开关），
+        // 所以不受听写的 `autoPasteEnabled` 总开关管；末尾补换行的偏好照用。
+        let options = PasteOptions(autoPasteEnabled: true,
+                                   appendNewline: store.settings.pasteAppendNewline)
         // ⚠️ 必须走这条**串行**队列，和自动粘贴共用。插入路径里全是
         // `Thread.sleep`，放主线程会冻住面板；而并发插入会把顺序搅乱。
         pasteQueue.async { [weak self] in
-            let route = MacAutomation.insert(text, into: target)
-            Log.write("note: \(reason) route=\(route.rawValue) "
+            let result = MacAutomation.insert(text, into: target, options: options)
+            Log.write("note: \(reason) route=\(result.route?.rawValue ?? "无") "
+                + "outcome=\(result.outcome.rawValue) "
                 + "→ \(target?.appName ?? "剪贴板") \(text.count) 字")
-            guard route != .clipboardOnly else { return }
-            Task { @MainActor in self?.markPasted(ids) }
+            Task { @MainActor in
+                // ⚠️ 只有真进了目标才标 `pasted`。只落到剪贴板也标上的话，
+                // 用户再按一次「粘贴所有」就什么都不出来了。
+                if result.landedInTarget { self?.markPasted(ids) }
+                self?.onPasteResult?(result, target?.appName)
+            }
         }
     }
 

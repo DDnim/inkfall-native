@@ -247,17 +247,25 @@ actor LocalTranscriber {
 
     static func downloadDiarization(progress: @escaping @Sendable (Double) -> Void) async throws {
         try FileManager.default.createDirectory(at: modelRoot, withIntermediateDirectories: true)
-        let kit = try await SpeakerKit(
-            PyannoteConfig(downloadBase: modelRoot.path, download: false,
-                           verbose: false, logLevel: .none))
-        // SpeakerKitDiarizer 同时满足 Diarizer 和 ModelManager 两个协议，
-        // 两边都有 downloadModels(progressCallback:) —— 直接调会歧义，
-        // 必须显式指定走哪一个。
-        if let manager = kit.diarizer as? ModelManager {
-            try await manager.downloadModels(progressCallback: { progress($0.fractionCompleted) })
-        } else {
-            try await kit.ensureModelsLoaded()
-        }
+        // ⚠️ `download` 必须是 **true**。
+        //
+        // 这个 flag 不只管「构造时要不要顺手下」—— 手动调 `downloadModels` 时，
+        // 底下的 `resolveRepo(download: config.download)` 拿的还是它。写成 false
+        // 的话本地没有权重就直接抛
+        // `No local models found for repo … and download is disabled`，
+        // 于是**永远下不下来**。
+        //
+        // 这个 bug 在开发机上看不见：本地早就有那 11 MB，`resolveRepo` 命中本地
+        // 直接返回，看起来一切正常。只有干净的机器才会踩到。
+        let config = PyannoteConfig(downloadBase: modelRoot.path, download: true,
+                                    load: false, verbose: false, logLevel: .none)
+        // 刻意**不**走 `SpeakerKit(config)`：它的 init 会自己 `downloadModels()`
+        // 一遍，那一遍没有进度回调 —— 用户会对着一个不动的进度条等 11 MB。
+        // 直接拿 diarizer，下载这一步就还在我们手里。
+        // 类型标注不能省：`SpeakerKitDiarizer` 同时满足 `Diarizer` 与 `ModelManager`，
+        // 两边都有 `downloadModels(progressCallback:)`，不指定就是歧义。
+        let manager: ModelManager = SpeakerKitDiarizer.pyannote(config: config)
+        try await manager.downloadModels(progressCallback: { progress($0.fractionCompleted) })
         progress(1)
     }
 

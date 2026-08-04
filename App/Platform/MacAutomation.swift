@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import InkfallCore
 
 /// 粘贴目标：录音**开始那一刻**的前台 App 与焦点窗口。
 ///
@@ -28,6 +29,67 @@ struct PasteTarget: @unchecked Sendable {
     }
 
     var isFrontmost: Bool { MacAutomation.frontmostPID() == processID }
+
+    /// 目标进程还活着吗。
+    ///
+    /// ⚠️ 转写要几百毫秒到几秒，这段时间里目标 App 完全可能已经退出。
+    /// 死进程 `activate` 是空操作，紧接着那一下 ⌘V 会打进**当时恰好在前台**的
+    /// 别人窗口 —— 用户的口述凭空出现在一个无关的输入框里。
+    var isRunning: Bool {
+        guard let app = NSRunningApplication(processIdentifier: processID) else { return false }
+        return !app.isTerminated
+    }
+
+    /// 抓到的那个窗口，现在还是这个 App 的焦点窗口吗。
+    ///
+    /// AX 写入写的是 App 的**焦点元素**，不认我们抓的是哪个窗口。用户在同一个
+    /// App 里换过窗口的话，这一路会把文字送进另一个窗口，所以得先对一下身份。
+    /// 没抓到窗口引用时放行 —— 那本来就退化成 App 级目标了。
+    var allowsAccessibilityInsert: Bool {
+        guard let window else { return true }
+        guard let focused = MacAutomation.focusedWindow(pid: processID) else { return false }
+        return CFEqual(focused, window)
+    }
+
+    /// 交给 InkfallCore 做决策用的快照。三个探测各要一次跨进程 AX/NSWorkspace
+    /// 调用，所以一次性取齐，避免决策过程中状态自己变了。
+    var state: PasteTargetState {
+        let running = isRunning
+        return PasteTargetState(
+            isRunning: running,
+            isFrontmost: running && isFrontmost,
+            // 只在真要用到时才问 —— 目标已在前台时这一路根本不会走。
+            allowsAccessibilityInsert: running && allowsAccessibilityInsert)
+    }
+}
+
+/// 一次插入调用的可选行为。默认值 = 听写与落笔的常规插入。
+struct PasteOptions {
+    /// 用户的自动粘贴总开关。关着时只复制，一个按键都不合成。
+    var autoPasteEnabled = true
+    /// 末尾补一个换行（`pasteAppendNewline`）。
+    var appendNewline = false
+
+    init(autoPasteEnabled: Bool = true, appendNewline: Bool = false) {
+        self.autoPasteEnabled = autoPasteEnabled
+        self.appendNewline = appendNewline
+    }
+
+    /// 从设置里取这两个开关。
+    init(settings: AppSettings) {
+        self.init(autoPasteEnabled: settings.autoPasteEnabled,
+                  appendNewline: settings.pasteAppendNewline)
+    }
+}
+
+/// 一次插入的结果。`outcome` 是给用户看的那一层，`route` 是给日志看的。
+struct PasteResult {
+    /// 真正跑成的那条路。`nil` = 一条都没成。
+    let route: PasteRoute?
+    let outcome: PasteOutcome
+
+    /// 文字真的进目标了吗（决定要不要打 `pasted` 标记）。
+    var landedInTarget: Bool { outcome.landedInTarget }
 }
 
 enum MacAutomation {
@@ -62,7 +124,7 @@ enum MacAutomation {
         let oldCount = pasteboard.changeCount
 
         sendKey(keyC, command: true)
-        Thread.sleep(forTimeInterval: 0.140)
+        Thread.sleep(forTimeInterval: PasteTiming.selectionCaptureSeconds)
 
         let changed = pasteboard.changeCount != oldCount
         let new = pasteboard.string(forType: .string)
@@ -94,51 +156,43 @@ enum MacAutomation {
 
     // MARK: - 插入
 
-    enum InsertRoute: String {
-        /// 目标已经在前台：写剪贴板 + ⌘V，零激活。
-        case pasteInPlace
-        /// AX 直接写 AXSelectedText，真·零焦点。很多 App 不支持。
-        case accessibility
-        /// 回落：切过去、粘、再切回来。会闪一下焦点。
-        case activateAndPaste
-        case clipboardOnly
-    }
-
-    /// 三层插入。越靠前越不打扰用户。
+    /// 自动粘贴。三层路线，越靠前越不打扰用户；走哪条由 `InkfallCore.AutoPaste`
+    /// 决定（纯逻辑，有单测），这里只负责执行和探测。
+    ///
+    /// ⚠️ 全程阻塞（一连串 `Thread.sleep`），**必须**在后台队列上调用。
+    /// 而且同一时间只能有一次在跑：并发插入会把剪贴板的存/还原搅成一团。
     @discardableResult
-    static func insert(_ text: String, into target: PasteTarget?) -> InsertRoute {
-        guard !text.isEmpty else { return .clipboardOnly }
-        guard let target else {
-            setPasteboard(text)
-            return .clipboardOnly
-        }
+    static func insert(_ text: String, into target: PasteTarget?,
+                       options: PasteOptions = PasteOptions()) -> PasteResult {
+        let payload = AutoPaste.compose(text, appendNewline: options.appendNewline)
+        let plan = AutoPaste.plan(text: payload,
+                                  autoPasteEnabled: options.autoPasteEnabled,
+                                  // AX 授权当场问，不用缓存的值 ——
+                                  // 用户完全可能刚在系统设置里把它打开或关掉。
+                                  accessibilityTrusted: AXIsProcessTrusted(),
+                                  target: target?.state)
 
-        // A：目标已经在前台 —— 直接粘，焦点一点都不动。
-        if target.isFrontmost {
-            pasteInPlace(text)
-            return .pasteInPlace
+        for route in plan.attempts {
+            switch route {
+            case .clipboardOnly:
+                // 唯一**不还原**剪贴板的一条：把文字留在那儿就是它的全部意义。
+                setPasteboard(payload)
+                return PasteResult(route: route, outcome: plan.outcome(after: route))
+            case .pasteInPlace:
+                pasteInPlace(payload)
+                return PasteResult(route: route, outcome: plan.outcome(after: route))
+            case .accessibility:
+                guard let target, writeViaAccessibility(payload, target: target) else { continue }
+                return PasteResult(route: route, outcome: plan.outcome(after: route))
+            case .activateAndPaste:
+                guard let target else { continue }
+                activateAndPaste(payload, target: target)
+                return PasteResult(route: route, outcome: plan.outcome(after: route))
+            }
         }
-
-        // B1：AX 写选中文本。成功的话焦点完全没动过。
-        if writeViaAccessibility(text, target: target) { return .accessibility }
-
-        // B2：切过去粘完再切回来。
-        let previousPID = frontmostPID()
-        // 钉了具体窗口就先抬它，避免粘到同 App 的另一个窗口。
-        if let window = target.window {
-            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-            Thread.sleep(forTimeInterval: 0.080)
-        }
-        setPasteboard(text)
-        activate(target)
-        Thread.sleep(forTimeInterval: 0.120)
-        sendKey(keyV, command: true)
-        Thread.sleep(forTimeInterval: 0.300)
-        if let previousPID, previousPID != target.processID {
-            NSRunningApplication(processIdentifier: previousPID)?.activate()
-            Thread.sleep(forTimeInterval: 0.060)
-        }
-        return .activateAndPaste
+        // 该试的都试完了还是没成：文字仍然要留在剪贴板上，否则这一段就丢了。
+        if !plan.attempts.isEmpty { setPasteboard(payload) }
+        return PasteResult(route: nil, outcome: plan.outcome(after: nil))
     }
 
     /// 当前前台 App 的 pid。
@@ -158,11 +212,53 @@ enum MacAutomation {
         return pid
     }
 
+    /// A：目标已在前台，⌘V 直接落进去，焦点一点都不动。
     private static func pasteInPlace(_ text: String) {
+        let saved = savedClipboard()
         setPasteboard(text)
         sendKey(keyV, command: true)
-        // ⚠️ 还原剪贴板必须等目标 App 读完 pasteboard，否则粘出来的是旧内容。
-        Thread.sleep(forTimeInterval: 0.300)
+        restoreClipboard(saved)
+    }
+
+    /// B2：切过去、粘、再切回来。会闪一下焦点，是最后的回落。
+    private static func activateAndPaste(_ text: String, target: PasteTarget) {
+        let previousPID = frontmostPID()
+        // 先把目标那**一个**窗口抬起来，否则粘的可能是同 App 的另一个窗口。
+        if let window = target.window {
+            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            Thread.sleep(forTimeInterval: PasteTiming.raiseWindowSeconds)
+        }
+        let saved = savedClipboard()
+        setPasteboard(text)
+        activate(target)
+        Thread.sleep(forTimeInterval: PasteTiming.activateBeforePasteSeconds)
+        sendKey(keyV, command: true)
+        // ⚠️ 还原前的 debounce 必须先等掉，再把焦点还回去 —— 顺序反了的话，
+        // 前一个 App 拿到焦点时剪贴板里还是我们塞进去的文字。
+        Thread.sleep(forTimeInterval: PasteTiming.clipboardRestoreSeconds)
+        if let previousPID, previousPID != target.processID {
+            NSRunningApplication(processIdentifier: previousPID)?.activate()
+            Thread.sleep(forTimeInterval: PasteTiming.refocusPreviousSeconds)
+        }
+        restoreClipboard(saved, alreadyWaited: true)
+    }
+
+    // MARK: - 剪贴板卫生（不变量 A20）
+
+    /// ⌘V 前先把用户的剪贴板存下来。
+    ///
+    /// 存的是**字符串**而不是整块 pasteboard：图片/富文本还原不了是已知取舍
+    /// （Tauri 版同样如此），但绝不能因为我们粘了一次，用户的文字剪贴板就没了。
+    private static func savedClipboard() -> String? {
+        NSPasteboard.general.string(forType: .string)
+    }
+
+    /// ⚠️ 还原必须 debounce 300 ms —— 目标 App 是**异步**读 pasteboard 的，
+    /// 早还原一步，它读到的就是用户的旧内容，粘出来的文字整个不对。
+    private static func restoreClipboard(_ saved: String?, alreadyWaited: Bool = false) {
+        if !alreadyWaited { Thread.sleep(forTimeInterval: PasteTiming.clipboardRestoreSeconds) }
+        guard let saved else { return }
+        setPasteboard(saved)
     }
 
     private static func setPasteboard(_ text: String) {

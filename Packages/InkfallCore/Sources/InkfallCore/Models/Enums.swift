@@ -148,6 +148,36 @@ public enum PostProcessMode: Sendable {
     case selectionCommand
 }
 
+/// 加工走哪条路。
+///
+/// 每条路的提示词、预设、门槛完全一样，区别只在「谁来跑这一次变换」：
+/// 云端是一次 HTTPS 往返（要 key），CLI 那几条是 fork 一个本机已经装好的
+/// 编码助手（要装那个工具）。
+///
+/// 加一个工具（gemini-cli / codex-cli）= 这里加一个 case + `CLIAgentKind`
+/// 里加一个 case，别处不用动。
+public enum PostProcessingEngine: String, Codable, Sendable, CaseIterable {
+    /// OpenAI / Groq / Gemini。
+    case cloud
+    /// 本机的 `claude -p`（headless）。
+    case claudeCode
+
+    public var label: String {
+        switch self {
+        case .cloud: return "云端 API"
+        case .claudeCode: return CLIAgentKind.claudeCode.label
+        }
+    }
+
+    /// 这条路跑的是哪个命令行工具；云端那条是 nil。
+    public var cliAgent: CLIAgentKind? {
+        switch self {
+        case .cloud: return nil
+        case .claudeCode: return .claudeCode
+        }
+    }
+}
+
 // MARK: - 录音
 
 public enum RecordingMode: Sendable, Equatable {

@@ -3,13 +3,14 @@
 落音 Inkfall 的 macOS 客户端 —— **原生 Swift / SwiftUI**。按住一个键说话，
 文字落回你刚才那个窗口；说得久一点就落成笔记；说一句关键词，后台的
 Claude Code 接着干活。**转写目前全在本机跑**（云端路径还没接），
-推理运行时编译进二进制，不需要另外装 Python 环境。
+推理运行时编译进二进制，不需要另外装 Python 环境。转写完的**加工**可以交给
+云端 API（OpenAI / Groq / Gemini），也可以交给本机的 `claude -p`。
 
 这个仓库是 `inkfall-app`（Tauri 2 / Rust + WebView）的重写，目标是取代它。
 完整技术规格在 [`../inkfall-docs/spec/`](../inkfall-docs/spec/)（13 份）。
 
 > **状态：重写进行中，还没有发布版。** 核心链路（听写 / 笔记 / 语音助手 /
-> 本地集成）已经能日常用，但云端转写、AI 加工预设、自动更新、本地化还没接。
+> 本地集成 / AI 加工）已经能日常用，但云端**转写**、自动更新、本地化还没接。
 > 现在要用只能自己构建，见 [构建](#构建)。
 
 ---
@@ -84,9 +85,46 @@ MCP 桥内嵌在 App 里，每次启动重写到数据目录 —— 升级后磁
 
 ---
 
+### 加工：转写完再过一遍模型
+
+九个预设（基础整理 / 轻度整理 / 清理口语 / 润色表达 / 简短总结 / 邮件 /
+笔记 / 会议纪要 / 自定义），右 ⌥ + F1…F9 直接切。跑在哪儿有两条路：
+
+| 引擎 | 要什么 | 备注 |
+|------|--------|------|
+| 云端 API | OpenAI / Groq / Gemini 的 key（存钥匙串） | Groq 的 `gpt-oss-20b` 又快又便宜，是默认 |
+| Claude Code | 本机装了 `claude` 并且登录过 | 走 headless（`claude -p`），**流式**回来，**不需要额外的 key** |
+
+**「基础整理」是纯本地规则**（去口头禅、补标点），不联网也不要 key。
+录音短于 3 秒、不足 10 字、带说话人标签、或者根本没配 key 时，都会自动退回
+它 —— **文字永远不会因为加工失败而丢**。鉴权与额度问题不降级，会明说
+（静默重试只会掩盖一个用户必须处理的问题）。
+
+> ⚠️ **Claude Code 那条路必须显式把上下文裁干净。** 裸的 `claude -p` 会把
+> CLAUDE.md、skills、hooks、MCP、全套工具定义加载一遍 —— 本机实测一次两行的
+> 口语清理吃掉 **19 982 个 cache-creation token、$0.2006**。
+> 加上 `--tools "" --disable-slash-commands --strict-mcp-config
+> --setting-sources ""` 之后是 **256 个 input token、$0.0027**。
+>
+> 用这几个开关而**不用 `--bare`**：bare 会连 OAuth 一起跳过（反而要
+> `ANTHROPIC_API_KEY`），而裁上下文不必付这个代价。力度默认 `--effort low` ——
+> 清理口语没什么可想的。
+>
+> 模型在中文里会吐半角的 `,` `?`（裁掉上下文后尤其明显），所以结果统一过一遍
+> `CJKPunctuation` 做确定性归一，**不往 verbatim 的提示词里加话**。
+
+代码分布：决策与提示词在 `InkfallCore/Text/PostProcessing*`（有单测），
+命令行工具那一层在 `InkfallCore/Agents/`（`CLIAgentKind` + 每个工具一个目录）。
+**要加 gemini-cli / codex-cli，只需要给 `CLIAgentKind` 加一个 case**：
+补上可执行文件名、搜索路径、命令行怎么拼、JSONL 怎么解，调用方一行不用动。
+
+---
+
 ## 隐私
 
 - **转写在本机**（WhisperKit + CoreML/ANE），音频不出机器。云端转写还没接。
+- **加工会把文字发出去**（如果你开了云端 API 或 Claude Code 那条路）。
+  只想要本地的话，把预设设成「基础整理」——那一档一个字节都不出机器。
 - **贾维斯待命不留任何文字**：每段转写完只用来扫关键词，扫完就丢。
 - **助手会把内容发出去**：问句、选中的文字会经 Claude Code 发给 Anthropic。
   不想要就关掉「按住提问」与语音命令。
@@ -133,7 +171,7 @@ cd Packages/InkfallCore && \
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
-**255 个纯逻辑测试，0 失败。** 绝大部分从 `inkfall-app` 的
+**319 个纯逻辑测试，0 失败。** 绝大部分从 `inkfall-app` 的
 `regression_tests.rs` 移植 —— 重写期间唯一的安全网。
 
 ### 自测：UI 与系统集成怎么取证
@@ -158,7 +196,9 @@ open -n build/DerivedData/Build/Products/Debug/Inkfall.app --args --jarvis-test
 | `--claude-test` | `claude -p` 两轮，验第二轮**记得**第一轮；联网轮 |
 | `--ask-test` | 双击并按住的手势识别、提问态、关掉开关后退化 |
 | `--integration-test` | 两道门禁 + 五条路由 + 真起 node 跑 MCP 桥 |
-| `--verify-page <名>` | 把某个设置页**真正渲染出来的文字**读回来 |
+| `--process-test [文本]` | 九个预设的提示词 + 真发一次加工请求；`--engine cloud\|cli`、`--preset <名>`、`--effort <档>` 可覆盖 |
+| `--note-process-test` | 落笔的段落**加工之后仍然按说话顺序**落进正文 |
+| `--verify-page <名>` | 把某个设置页**真正渲染出来的文字**读回来，并截一张图 |
 
 还有一组只读的 HTTP 观测面（不需要 token，只绑回环）：
 
