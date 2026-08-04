@@ -160,6 +160,11 @@ final class NotePanelController {
         NSApp.postEvent(event, atStart: true)
     }
     var debugFrame: NSRect? { panel?.frame }
+
+    /// 取证用：`screencapture -l <窗口号>` 只截这一个窗口。
+    /// 整屏截图在多窗口/多实例的真实桌面上极易被别人盖住，而面板是
+    /// 非激活窗口，抢不到最前面 —— 只截自己这一扇才是确定的。
+    var debugWindowNumber: Int? { panel?.windowNumber }
     /// 自测取证用：SwiftUI 的宿主视图，用来确认内容真的画出来了。
     var debugContentView: NSView? { panel?.contentView }
 
@@ -428,7 +433,6 @@ struct NotePanelView: View {
                 controller.captureScreenshot(.region)
             }
             if !session.isLive {
-                fullTranscribeButton
                 toolButton("magnifyingglass", "查找 / 替换（⌘F）") { controller.showFind() }
                 toolButton("doc.on.doc", "复制全文") { controller.copyAll() }
                 toolButton("square.and.arrow.up", "导出 .md") { controller.exportMarkdown() }
@@ -437,23 +441,6 @@ struct NotePanelView: View {
                 }
             }
         }
-    }
-
-    /// 全篇转译。
-    ///
-    /// 跑不了的时候**不隐藏按钮，而是灰掉并把原因写进 tooltip** —— 「按钮
-    /// 消失了」是最难自查的一类 UI：用户根本不知道有这个功能，更不知道差什么。
-    @ViewBuilder private var fullTranscribeButton: some View {
-        let blocker = controller.fullTranscribeBlocker()
-        let running = controller.isFullTranscribing
-        toolButton(running ? "hourglass" : "person.2.wave.2",
-                   running ? "全篇转译中…"
-                           : (blocker?.errorDescription
-                              ?? "全篇转译：整篇重跑一次说话人分离，结果另存为新笔记")) {
-            controller.startFullTranscribe()
-        }
-        .disabled(blocker != nil)
-        .opacity(blocker == nil ? 1 : 0.4)
     }
 
     private func toolButton(_ symbol: String, _ hint: String,
@@ -658,6 +645,12 @@ struct NotePanelView: View {
                             in: Capsule())
             }
             Spacer()
+            // 停下来之后才出现，排在录音那几个按钮**左边**：录音期间它没有意义
+            // （音频还在往里加），而停下来的那一刻正是「这篇的人物对不上，
+            // 重跑一次」最自然的时机。
+            if !session.isLive {
+                fullTranscribeButton
+            }
             if session.isLive {
                 if session.isRecording {
                     recButton("scissors") { AppDelegate.shared?.cutNow() }
@@ -677,6 +670,38 @@ struct NotePanelView: View {
 
     private var timeText: String {
         String(format: "%02d:%02d", session.elapsedSeconds / 60, session.elapsedSeconds % 60)
+    }
+
+    /// 全篇转译。
+    ///
+    /// 汉字按钮而不是图标：这一档是**破坏性程度最低、但解释成本最高**的操作
+    /// —— 「重跑一次说话人分离」没有任何图标说得清，而旁边三个（分段/暂停/
+    /// 停止）都是无需解释的通用符号。
+    ///
+    /// 跑不了的时候**不隐藏，而是灰掉并把原因写进 tooltip** ——
+    /// 「按钮消失了」是最难自查的一类 UI：用户根本不知道有这个功能，
+    /// 更不知道差什么。
+    @ViewBuilder private var fullTranscribeButton: some View {
+        let blocker = controller.fullTranscribeBlocker()
+        let running = controller.isFullTranscribing
+        Button {
+            controller.startFullTranscribe()
+        } label: {
+            Text(running ? "转译中…" : "全篇转译")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(running ? cinnabar : paperOnInk.opacity(0.75))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(paperOnInk.opacity(0.10), in: Capsule())
+                .overlay(Capsule().stroke(paperOnInk.opacity(0.14)))
+        }
+        .buttonStyle(.plain)
+        .disabled(blocker != nil || running)
+        .opacity(blocker == nil ? 1 : 0.35)
+        .help(running ? "整篇正在重跑，完成后会新建一条笔记"
+                      : (blocker?.errorDescription
+                         ?? "整篇重跑一次说话人分离 —— 分段跑时每段各聚各的，"
+                            + "人物对不上。结果另存为新笔记，原文不动"))
     }
 
     private func recButton(_ symbol: String, destructive: Bool = false,

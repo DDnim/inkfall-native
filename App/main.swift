@@ -3407,6 +3407,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let ok = clips.count == wavs.count
             emit(ok ? "✅ 每一段的音频都留在笔记目录里了（全篇转译有料可跑）"
                     : "❌ 音频没留全 —— 全篇转译会漏段")
+            // 停下来之后的面板长什么样只能靠截图取证：App 自己有屏幕录制
+            // 授权（外面的 shell 没有），而「全篇转译」按钮正是这时候才出现。
+            // 只截面板**自己那一扇窗**：整屏截图在真实桌面上会被别的窗口
+            // （甚至另一个 Inkfall 实例的设置窗）盖住，而落笔面板是非激活
+            // 窗口，抢不到最前面。按窗口号截取的是它自己的绘制缓冲，
+            // 被谁挡着都无所谓。
+            let shot = URL(fileURLWithPath: "/tmp/inkfall-note-panel.png")
+            try? FileManager.default.removeItem(at: shot)
+            notePanel.show()
+            Thread.sleep(forTimeInterval: 0.6)
+            if let window = notePanel.debugWindowNumber {
+                let capture = Process()
+                capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                capture.arguments = ["-x", "-o", "-l\(window)", shot.path]
+                try? capture.run()
+                capture.waitUntilExit()
+            }
+            emit(FileManager.default.fileExists(atPath: shot.path)
+                 ? "截图：\(shot.path)（窗口号 \(notePanel.debugWindowNumber ?? -1)）"
+                 : "截图：没拿到（屏幕录制未授权？）")
             Log.flush()
             exit(ok ? 0 : 1)
         }
