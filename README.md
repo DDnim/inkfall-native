@@ -198,6 +198,7 @@ open -n build/DerivedData/Build/Products/Debug/Inkfall.app --args --jarvis-test
 | `--integration-test` | 两道门禁 + 五条路由 + 真起 node 跑 MCP 桥 |
 | `--process-test [文本]` | 九个预设的提示词 + 真发一次加工请求；`--engine cloud\|cli`、`--preset <名>`、`--effort <档>` 可覆盖 |
 | `--note-process-test` | 落笔的段落**加工之后仍然按说话顺序**落进正文 |
+| `--self-paste-test` | 粘贴目标是**落音自己的窗口**时不崩（2026-08-04 那次崩溃的守卫） |
 | `--verify-page <名>` | 把某个设置页**真正渲染出来的文字**读回来，并截一张图 |
 
 还有一组只读的 HTTP 观测面（不需要 token，只绑回环）：

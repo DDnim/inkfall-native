@@ -224,8 +224,10 @@ enum MacAutomation {
     private static func activateAndPaste(_ text: String, target: PasteTarget) {
         let previousPID = frontmostPID()
         // 先把目标那**一个**窗口抬起来，否则粘的可能是同 App 的另一个窗口。
+        // ⚠️ 经 `raise(window:pid:)` 走 —— 自家窗口时这一步必须回主线程，
+        // 否则 AppKit 直接 trap（见 `onMainIfSelf`）。
         if let window = target.window {
-            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            raise(window: window, pid: target.processID)
             Thread.sleep(forTimeInterval: PasteTiming.raiseWindowSeconds)
         }
         let saved = savedClipboard()
@@ -267,42 +269,80 @@ enum MacAutomation {
         pasteboard.setString(text, forType: .string)
     }
 
+    /// 自家进程也走 `onMainIfSelf`：`activate()` 对自己等价于
+    /// `NSApp.activate`，同样是主线程才该碰的东西。
     private static func activate(_ target: PasteTarget) {
-        NSRunningApplication(processIdentifier: target.processID)?.activate()
+        onMainIfSelf(target.processID) {
+            NSRunningApplication(processIdentifier: target.processID)?.activate()
+        }
     }
 
     // MARK: - AX
+
+    /// 目标是**我们自己**的进程。
+    ///
+    /// 起录那一刻前台是落笔面板或设置窗时就会这样 —— 面板开着说一段、
+    /// 逐段自动粘贴打开，这是条日常路径，不是边角情况。
+    static func targetsThisProcess(_ pid: pid_t) -> Bool { pid == getpid() }
+
+    /// 目标是自家进程时把这一步搬回主线程。
+    ///
+    /// ⚠️ 这是一次真实崩溃换来的（2026-08-04 10:04:34，`Inkfall-…-100434.ips`）：
+    /// AX 对**跨进程**目标是消息传递，后台线程调完全安全；但目标在**本进程**时
+    /// 请求会被**就地派发** —— `kAXRaiseAction` 于是变成在调用线程上跑
+    /// `-[NSWindow makeKeyAndOrderFront:]`，而整条插入路径都在后台队列上
+    /// （全是 `Thread.sleep`，不能占主线程），AppKit 当场 trap：
+    /// `Must only be used from the main thread`，整个 App 挂掉。
+    ///
+    /// 放在最底层的几个 AX 助手里而不是各个调用点：这样以后新加的 AX 调用
+    /// 自动被覆盖，不必每次都记得判一下自家进程。
+    private static func onMainIfSelf<T>(_ pid: pid_t, _ work: () -> T) -> T {
+        guard targetsThisProcess(pid), !Thread.isMainThread else { return work() }
+        // 主线程从不同步等待粘贴队列，所以这里不会死锁。
+        return DispatchQueue.main.sync(execute: work)
+    }
+
+    /// 把目标那**一个**窗口抬到前面。
+    static func raise(window: AXUIElement, pid: pid_t) {
+        onMainIfSelf(pid) { AXUIElementPerformAction(window, kAXRaiseAction as CFString) }
+    }
 
     /// 往焦点元素的 `AXSelectedText` 里写 —— 等价于「替换选中内容」，
     /// 没有选中时就是在光标处插入。
     private static func writeViaAccessibility(_ text: String, target: PasteTarget) -> Bool {
         guard let element = focusedElement(pid: target.processID) else { return false }
-        // 先确认这个元素真的可写，再动手；不做探测的话很多只读控件会静默吞掉写入。
-        var settable: DarwinBoolean = false
-        guard AXUIElementIsAttributeSettable(
-            element, kAXSelectedTextAttribute as CFString, &settable) == .success,
-            settable.boolValue else { return false }
-        return AXUIElementSetAttributeValue(
-            element, kAXSelectedTextAttribute as CFString, text as CFTypeRef) == .success
+        return onMainIfSelf(target.processID) {
+            // 先确认这个元素真的可写，再动手；不做探测的话很多只读控件会静默吞掉写入。
+            var settable: DarwinBoolean = false
+            guard AXUIElementIsAttributeSettable(
+                element, kAXSelectedTextAttribute as CFString, &settable) == .success,
+                settable.boolValue else { return false }
+            return AXUIElementSetAttributeValue(
+                element, kAXSelectedTextAttribute as CFString, text as CFTypeRef) == .success
+        }
     }
 
     static func focusedWindow(pid: pid_t) -> AXUIElement? {
-        let app = AXUIElementCreateApplication(pid)
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            app, kAXFocusedWindowAttribute as CFString, &value) == .success,
-            let value else { return nil }
-        // CFTypeRef → AXUIElement 只能靠运行时类型判定，没有编译期保证。
-        guard CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        return (value as! AXUIElement)
+        onMainIfSelf(pid) {
+            let app = AXUIElementCreateApplication(pid)
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                app, kAXFocusedWindowAttribute as CFString, &value) == .success,
+                let value else { return nil }
+            // CFTypeRef → AXUIElement 只能靠运行时类型判定，没有编译期保证。
+            guard CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+            return (value as! AXUIElement)
+        }
     }
 
     private static func focusedElement(pid: pid_t) -> AXUIElement? {
-        let app = AXUIElementCreateApplication(pid)
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            app, kAXFocusedUIElementAttribute as CFString, &value) == .success,
-            let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        return (value as! AXUIElement)
+        onMainIfSelf(pid) {
+            let app = AXUIElementCreateApplication(pid)
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                app, kAXFocusedUIElementAttribute as CFString, &value) == .success,
+                let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+            return (value as! AXUIElement)
+        }
     }
 }

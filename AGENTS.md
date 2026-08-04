@@ -72,6 +72,17 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 - 验证用 `--process-test`（可加 `--engine cloud|cli` / `--preset <名>` /
   `--effort <档>`）和 `--note-process-test`，都不需要麦克风。
 
+## 自动粘贴
+
+- **绝不在后台线程上对自家进程调 AX。** AX 对跨进程目标是消息传递（后台线程
+  安全），目标在本进程时请求会**就地派发** —— `kAXRaiseAction` 于是变成在
+  后台队列上跑 `makeKeyAndOrderFront:`，AppKit 当场 trap，整个 App 挂掉
+  （2026-08-04 实测：落笔面板开着 + 逐段自动粘贴）。
+  所有 AX 助手都从 `MacAutomation.onMainIfSelf` 过一道，新加的调用别绕开它。
+- 回归守卫是 `--self-paste-test`：**必须**用真实的自家窗口 + 后台队列 +
+  真实的 `MacAutomation.insert`，而且目标要先掉出前台（否则走 `pasteInPlace`，
+  根本碰不到出事的那条路）。
+
 ## 验证
 
 - 纯逻辑改动：`swift test` 必须全绿。
