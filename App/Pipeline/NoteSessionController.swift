@@ -205,9 +205,36 @@ final class NoteSessionController {
         elapsedSeconds = 0
         startTicking()
         persist()
+        prewarmModels()
         Log.write("note: 会话开始 \(noteID ?? "?")")
         onRecordingChanged?(true)
         return true
+    }
+
+    /// 起录的同时就把模型拉起来，别等到第一段说完才开始加载。
+    ///
+    /// 冷加载要几秒（CoreML 按芯片编译 + 权重进内存），而落笔是长录 ——
+    /// 用户在这几秒里根本不会停下来说话，这段时间是白送的。空闲 5 分钟的
+    /// 自动卸载会把模型还回去，所以「刚才用过」不代表现在还在内存里。
+    ///
+    /// ⚠️ 权重没下过就**跳过**：`prewarm` 里那条路是 `download: true`，
+    /// 起个录音就静默拉 1.5 GB 是不能接受的。
+    private func prewarmModels() {
+        let modelID = store.settings.selectedLocalModelId
+        guard let model = LocalModels.definition(id: modelID),
+              LocalTranscriber.isDownloaded(model) else { return }
+        let wantsLabels = store.settings.noteWantsSpeakerLabels
+        Task { [transcriber] in
+            let started = CFAbsoluteTimeGetCurrent()
+            await transcriber.prewarm(modelID: modelID)
+            // 开着「区分人物」时分离也要预热 —— 它是第一段的另一段等待。
+            if wantsLabels { await transcriber.prewarmDiarization() }
+            // 打出耗时：这条日志是「预热到底省下了多少」的唯一凭据 ——
+            // 模型已经在内存里时它接近 0，冷加载时是几秒。
+            Log.write(String(format: "note: 预热 %@%@ 用时 %.2fs", modelID,
+                             wantsLabels ? " + 分离" : "",
+                             CFAbsoluteTimeGetCurrent() - started))
+        }
     }
 
     /// 起麦克风。起录与「继续」共用 —— 增益提升那一步两边都要，
@@ -289,6 +316,9 @@ final class NoteSessionController {
         lastTick = now
         mode = .recording
         startTicking()
+        // 暂停可能持续很久（去开个会），期间空闲卸载已经把模型还回系统了
+        // —— 继续录音同样要先把它拉回来。
+        prewarmModels()
         Log.write("note: 继续录音 \(noteID ?? "?")")
         return true
     }
