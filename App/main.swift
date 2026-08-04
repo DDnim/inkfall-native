@@ -163,6 +163,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // 粘回自家窗口的自测：2026-08-04 那次崩溃的回归守卫。
+        if ProcessInfo.processInfo.arguments.contains("--self-paste-test") {
+            runSelfPasteTest()
+            return
+        }
+
         // 落笔加工自测：三段依次走真实落地路径，验加工之后正文仍然按序。
         if ProcessInfo.processInfo.arguments.contains("--note-process-test") {
             runNoteProcessTest()
@@ -3295,6 +3301,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func short(_ error: Error) -> String {
         let text = (error as? LocalizedError)?.errorDescription ?? "\(error)"
         return String(text.prefix(60))
+    }
+
+    // MARK: - 粘回自家窗口的自测
+
+    /// 目标是**落音自己的窗口**时，插入路径不能把 App 弄崩。
+    ///
+    /// 这是 2026-08-04 那次真实崩溃的回归守卫：AX 对跨进程目标是消息传递，
+    /// 后台线程调没问题；目标在本进程时请求**就地派发**，`kAXRaiseAction`
+    /// 变成在后台线程上跑 `makeKeyAndOrderFront:`，AppKit 直接 trap
+    /// （`Must only be used from the main thread`）。
+    ///
+    /// 复现条件必须一模一样：**真实的自家窗口** + **后台队列** + 真实的
+    /// `MacAutomation.insert`。少一样都测不出来 —— 修之前跑这条会整个进程
+    /// SIGTRAP，连一行断言都来不及打。
+    private func runSelfPasteTest() {
+        selfTest = true
+        store.readOnly = true
+        notePanel.show()
+        NSApp.activate(ignoringOtherApps: true)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
+            guard let target = PasteTarget.current() else {
+                emit("❌ 抓不到前台窗口")
+                Log.flush()
+                exit(1)
+            }
+            let mine = MacAutomation.targetsThisProcess(target.processID)
+            emit("目标：\(target.appName) pid=\(target.processID) "
+                 + "自家进程=\(mine ? "是" : "否") 窗口引用=\(target.window == nil ? "无" : "有")")
+            guard mine else {
+                emit("❌ 前台不是落音自己 —— 这条自测要的就是自家窗口")
+                Log.flush()
+                exit(1)
+            }
+
+            // ⚠️ 必须先把**别人**切到前台。目标仍在前台时插入会走
+            // `pasteInPlace`（原地 ⌘V，不抬窗口），根本碰不到出事的那条路 ——
+            // 崩溃发生在 `activateAndPaste`，而它只在目标掉出前台时才走。
+            // 这正是真实场景：说话时面板在前台，几秒后转写回来时用户已经切走了。
+            NSWorkspace.shared.runningApplications
+                .first { $0.bundleIdentifier == "com.apple.finder" }?
+                .activate(options: .activateAllWindows)
+            Thread.sleep(forTimeInterval: 1.2)
+            emit("已把 Finder 切到前台，目标现在不在前台："
+                 + "isFrontmost=\(target.isFrontmost)")
+
+            // ⚠️ 必须是后台队列：主线程上跑的话 `onMainIfSelf` 会直接执行，
+            // 那正是崩溃**不会**发生的那条路，等于什么都没验。
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = MacAutomation.insert(
+                    "落音自测：粘回自家窗口", into: target,
+                    options: PasteOptions(autoPasteEnabled: true, appendNewline: false))
+                DispatchQueue.main.async {
+                    emit("插入完成：route=\(result.route?.rawValue ?? "无") "
+                         + "outcome=\(result.outcome.rawValue)")
+                    emit("✅ 自家窗口没把 App 弄崩（修复前这里是 SIGTRAP，跑不到这一行）")
+                    Log.flush()
+                    exit(0)
+                }
+            }
+        }
     }
 
     // MARK: - 落笔的加工自测
