@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import InkfallCore
 
 /// 截图。
 ///
@@ -86,6 +87,37 @@ enum NoteAttachments {
         let dir = directory(for: noteID)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("shot-\(UUID().uuidString.prefix(8)).png")
+    }
+
+    /// 把一段录音留在笔记目录里，供「全篇转译」重跑。
+    ///
+    /// 文件名带 unix 毫秒（`voice-<ms>.wav`）：天然唯一，按名字排序就是按
+    /// 说话顺序 —— 正文里没有语音条标记时全靠这个顺序。
+    @discardableResult
+    static func saveVoiceClip(_ data: Data, noteID: String, atMs milliseconds: UInt64) -> URL? {
+        let dir = directory(for: noteID)
+        guard (try? FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true)) != nil else { return nil }
+        let url = dir.appendingPathComponent(NoteAudio.clipName(atMs: milliseconds))
+        guard (try? data.write(to: url)) != nil else { return nil }
+        return url
+    }
+
+    /// 这篇笔记留下的语音片段，**按说话顺序**。
+    ///
+    /// 正文里还有 `[audio](…)` 标记时以标记为准（用户删掉的语音条要跟着掉
+    /// 出去）；一条都没有就扫目录按文件名排序 —— 原生版目前还没有语音条 UI，
+    /// 走的就是这条回落。
+    static func voiceClips(noteID: String, body: String = "") -> [URL] {
+        let dir = directory(for: noteID)
+        let referenced = NoteAudio.references(inMarkdown: body)
+        if !referenced.isEmpty {
+            return referenced
+                .map { dir.appendingPathComponent($0) }
+                .filter { FileManager.default.fileExists(atPath: $0.path) }
+        }
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return names.filter(NoteAudio.isClipName).sorted().map { dir.appendingPathComponent($0) }
     }
 
     static func removeAll(noteID: String) {

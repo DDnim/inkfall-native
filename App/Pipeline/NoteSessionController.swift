@@ -449,8 +449,18 @@ final class NoteSessionController {
         nextSegmentID += 1
 
         // 先插一个占位段，用户立刻看到「转写中…」，而不是对着空白等。
+        let createdAtMs = HistoryEntry.nowMs()
         segments.append(NoteSessionSegment(id: id, status: .processing,
-                                           createdAtMs: HistoryEntry.nowMs()))
+                                           createdAtMs: createdAtMs))
+
+        // 把这一段留在笔记目录里，「全篇转译」要靠它重跑（spec/01 §6.8）。
+        // ⚠️ 存在**转写之前**：转写失败的段照样该留着音频，否则那句话就
+        // 彻底没了，而全篇转译本来正是补救它的手段。
+        if let noteID {
+            if NoteAttachments.saveVoiceClip(audio.data, noteID: noteID, atMs: createdAtMs) == nil {
+                Log.write("note: 段 \(id) 的音频没存下来（全篇转译会少这一段）")
+            }
+        }
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("inkfall-note-\(id)-\(UUID().uuidString).wav")
@@ -542,6 +552,18 @@ final class NoteSessionController {
         guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
         segments[index].status = .processing
         processingNotice = note
+    }
+
+    /// 自测用：把一段**真实音频**喂进真实的提交路径。
+    ///
+    /// 走的是和麦克风完全同一个 `submit()` —— 存片段、转写、按序落正文、
+    /// 落盘全都照跑，只有「麦克风采到这段声音」那一步是伪造的。
+    ///
+    /// 存在的理由：靠外放喂麦克风（`--note-test`）依赖扬声器音量、输出设备、
+    /// 环境噪声，在没人值守的机器上根本不可靠 —— 而「音频有没有被留下来」
+    /// 这件事必须能确定地验证，它是全篇转译的全部前提。
+    func debugInjectAudio(_ data: Data, durationMs: UInt64) {
+        submit(RecordedAudio(data: data, durationMs: durationMs))
     }
 
     /// 自测用：把一段**假装转写回来的文字**喂进真实的落地路径。
