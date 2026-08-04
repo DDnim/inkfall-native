@@ -24,6 +24,9 @@ final class HubWindowController {
         if let page { model.selection = page }
         // 权重可能被用户在访达里删掉了 —— 每次打开都按磁盘现状重来。
         model.models.refresh()
+        // 设置页会显示三个供应商各自配没配过 key，所以这里把它们都预热一遍
+        // （后台线程；平时的听写路径只预热真正在用的那个）。
+        model.keys.preload(Set(CloudProvider.allCases))
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
@@ -88,6 +91,9 @@ final class HubModel {
     let permissions: PermissionCoordinator
     let models: ModelCatalog
     let notes: NoteStore
+    /// 设置页要显示「配没配过 key」，所以它读的是同一个进程内缓存 ——
+    /// 不是每次重绘都去 fork 一个 `security`。
+    let keys = APIKeyStore.shared
     /// 点一条笔记要干什么。宿主（AppDelegate）注入 —— 合并窗不该自己知道
     /// 落笔面板的存在。
     var onOpenNote: ((HistoryEntry) -> Void)?
@@ -327,9 +333,20 @@ struct HubView: View {
                     + "不进安装包。推理运行时是编译进程序的，不需要另外装任何东西。"
                     + "空闲 5 分钟会把模型从内存卸掉。")
             group("加工") {
-                toggleRow("AI 加工", "转写后再过一遍大模型",
+                toggleRow("AI 加工", "转写后再过一遍大模型。关掉就是原样输出",
                           isOn: Binding(get: { model.settings.postProcessingEnabled },
                                         set: { model.settings.postProcessingEnabled = $0 }))
+                presetRow
+                engineRow
+                if model.settings.postProcessingEngine == .cloud {
+                    providerRow
+                    apiKeyRow(model.settings.postProcessingProvider)
+                } else {
+                    cliAgentRows
+                }
+                if model.settings.postProcessingPreset == .custom {
+                    customPromptRow
+                }
                 toggleRow("近期上下文", "最近 6 条作参考，保持术语一致",
                           isOn: Binding(get: { model.settings.recentContextEnabled },
                                         set: { model.settings.recentContextEnabled = $0 }))
@@ -337,9 +354,19 @@ struct HubView: View {
                           isOn: Binding(get: { model.settings.autoLocalFallbackEnabled },
                                         set: { model.settings.autoLocalFallbackEnabled = $0 }))
             }
-            // 加工与语音命令的供应商强制对齐转写供应商（本地例外），
-            // 所以这是一行只读说明，而不是一个点了没反应的下拉框。
-            caption("加工供应商跟随转写供应商：当前为 \(model.settings.postProcessingProvider.label)。本地模式例外，可独立选择。")
+            caption("「基础整理」是纯本地规则（去口头禅、补标点），不联网也不要 key；"
+                    + "其余八个预设要调模型。录音短于 3 秒或不足 10 字时自动退回本地整理，"
+                    + "没配 key 时也一样 —— 文字永远不会因为加工失败而丢。"
+                    + "右⌥ + F1…F9 直接切预设。")
+
+            group("落笔的加工") {
+                toggleRow("落笔单独加工", "笔记面板用自己的开关与预设，和听写互不影响",
+                          isOn: Binding(get: { model.settings.noteProcessingEnabled },
+                                        set: { model.settings.noteProcessingEnabled = $0 }))
+                pickerRow("落笔预设",
+                          Binding(get: { model.settings.noteProcessingPreset },
+                                  set: { model.settings.noteProcessingPreset = $0 }))
+            }
         }
     }
 
@@ -350,11 +377,29 @@ struct HubView: View {
                           isOn: Binding(get: { model.settings.micGainBoostEnabled },
                                         set: { model.settings.micGainBoostEnabled = $0 }))
             }
+            group("粘贴") {
+                toggleRow("自动粘贴", "听写完直接粘回起录时的那个窗口。"
+                          + "关掉之后只复制到剪贴板，不合成任何按键",
+                          isOn: Binding(get: { model.settings.autoPasteEnabled },
+                                        set: { model.settings.autoPasteEnabled = $0 }))
+                toggleRow("粘贴后补换行", "每段末尾加一个换行，连续听写会落在不同行上。"
+                          + "默认关：行内听写不该凭空多一个换行",
+                          isOn: Binding(get: { model.settings.pasteAppendNewline },
+                                        set: { model.settings.pasteAppendNewline = $0 }))
+                // 粘贴走的是合成 ⌘V，没有这个权限系统会把按键**静默丢掉** ——
+                // 表现为「刘海说粘好了，窗口里什么都没有」。所以这一行贴在这里，
+                // 不只是在下面的权限组里。
+                if !model.permissions.isGranted(.accessibility) {
+                    permissionRow(.accessibility)
+                    caption("没有辅助功能授权，粘贴会自动降级为「复制到剪贴板」。")
+                }
+            }
             group("落笔") {
                 toggleRow("自动断句", "停顿约 1.3 秒自动切一段",
                           isOn: Binding(get: { model.settings.noteAutoSegment },
                                         set: { model.settings.noteAutoSegment = $0 }))
-                toggleRow("自动粘贴", "每段转写完立刻插入目标窗口",
+                // 和上面「粘贴」组里那个总开关区分开：这一个管的是落笔的**每一段**。
+                toggleRow("逐段自动粘贴", "每段转写完立刻插入目标窗口",
                           isOn: Binding(get: { model.settings.noteAutoPaste },
                                         set: { model.settings.noteAutoPaste = $0 }))
                 toggleRow("启动时恢复上次会话", "未粘贴的内容不会因为重启而丢",
@@ -637,6 +682,155 @@ struct HubView: View {
         caption("这一页还没接上（里程碑 2–3）。")
     }
 
+    // MARK: - 加工的几行
+
+    private var presetRow: some View {
+        pickerRow("预设", Binding(get: { model.settings.postProcessingPreset },
+                                 set: { model.settings.postProcessingPreset = $0 }))
+    }
+
+    private func pickerRow(_ label: String,
+                           _ selection: Binding<PostProcessingPreset>) -> some View {
+        HStack(spacing: 9) {
+            Text(label).font(.system(size: 12)).foregroundStyle(Ink.ink1)
+            Spacer(minLength: 6)
+            Picker("", selection: selection) {
+                ForEach(PostProcessingPreset.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .labelsHidden().controlSize(.small).frame(width: 150)
+        }
+        .padding(.horizontal, 11).padding(.vertical, 7)
+        .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+    }
+
+    /// 谁来跑这次加工。以后加 gemini-cli / codex-cli 时这个下拉框自己会长出来。
+    private var engineRow: some View {
+        HStack(spacing: 9) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("引擎").font(.system(size: 12)).foregroundStyle(Ink.ink1)
+                Text("云端 API 要 key；Claude Code 用本机已经装好的 claude")
+                    .font(.system(size: 9.5)).foregroundStyle(Ink.ink4)
+            }
+            Spacer(minLength: 6)
+            Picker("", selection: Binding(get: { model.settings.postProcessingEngine },
+                                          set: { model.settings.postProcessingEngine = $0 })) {
+                ForEach(PostProcessingEngine.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .labelsHidden().controlSize(.small).frame(width: 150)
+        }
+        .padding(.horizontal, 11).padding(.vertical, 7)
+        .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+    }
+
+    /// 加工供应商跟随转写供应商（本地转写例外，可以独立选）。
+    @ViewBuilder private var providerRow: some View {
+        if model.settings.transcriptionMode == .local {
+            HStack(spacing: 9) {
+                Text("供应商").font(.system(size: 12)).foregroundStyle(Ink.ink1)
+                Spacer(minLength: 6)
+                Picker("", selection: Binding(
+                    get: { model.settings.postProcessingProvider },
+                    set: { model.settings.postProcessingProvider = $0 })) {
+                    ForEach(CloudProvider.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .labelsHidden().controlSize(.small).frame(width: 150)
+            }
+            .padding(.horizontal, 11).padding(.vertical, 7)
+            .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+        } else {
+            HStack {
+                Text("供应商跟随转写：\(model.settings.postProcessingProvider.label)")
+                    .font(.system(size: 10.5)).foregroundStyle(Ink.ink4)
+                Spacer()
+            }
+            .padding(.horizontal, 11).padding(.vertical, 7)
+            .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+        }
+    }
+
+    /// CLI 助手那条路：装没装 + 思考力度。**不要 key** —— 用的是那个工具
+    /// 自己的登录态。
+    @ViewBuilder private var cliAgentRows: some View {
+        if let agent = model.settings.postProcessingEngine.cliAgent {
+            let installed = CLIAgentLocator.path(for: agent) != nil
+            HStack(spacing: 9) {
+                Image(systemName: installed ? "checkmark.circle" : "exclamationmark.triangle")
+                    .font(.system(size: 12))
+                    .foregroundStyle(installed ? Ink.teal : Ink.amber)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(installed ? "已找到 \(agent.executable)"
+                                   : "没找到 \(agent.executable) —— 先装 \(agent.label)")
+                        .font(.system(size: 11)).foregroundStyle(Ink.ink2)
+                    Text("用它自己的登录态，不需要另外配 key")
+                        .font(.system(size: 9.5)).foregroundStyle(Ink.ink4)
+                }
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, 11).padding(.vertical, 7)
+            .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+
+            HStack(spacing: 9) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("思考力度").font(.system(size: 12)).foregroundStyle(Ink.ink1)
+                    Text("加工没什么可想的。往上调只会更慢更贵")
+                        .font(.system(size: 9.5)).foregroundStyle(Ink.ink4)
+                }
+                Spacer(minLength: 6)
+                Picker("", selection: Binding(get: { model.settings.cliAgentEffort },
+                                              set: { model.settings.cliAgentEffort = $0 })) {
+                    ForEach(agent.effortLevels, id: \.self) { Text($0).tag($0) }
+                }
+                .labelsHidden().controlSize(.small).frame(width: 150)
+            }
+            .padding(.horizontal, 11).padding(.vertical, 7)
+            .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+        }
+    }
+
+    // MARK: - API key
+
+    private func apiKeyRow(_ provider: CloudProvider) -> some View {
+        keyRow(title: "\(provider.label) API key",
+               hint: provider == .groq ? "以 gsk_ 开头；整段粘贴也行，会自动抠出来"
+                                       : "粘贴时带不带 Bearer 都行",
+               masked: model.keys.maskedKey(provider),
+               fromEnvironment: model.keys.isFromEnvironment(provider),
+               environmentName: APIKeyNormalization.environmentVariableName(provider),
+               save: { try model.keys.save($0, for: provider) },
+               clear: { model.keys.clear(provider) })
+    }
+
+    private func keyRow(title: String, hint: String, masked: String?,
+                        fromEnvironment: Bool, environmentName: String,
+                        save: @escaping (String) throws -> Void,
+                        clear: @escaping () -> Void) -> some View {
+        KeyRow(title: title, hint: hint, masked: masked, fromEnvironment: fromEnvironment,
+               environmentName: environmentName, save: save, clear: clear)
+    }
+
+    private var customPromptRow: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("自定义 prompt").font(.system(size: 12)).foregroundStyle(Ink.ink1)
+            TextField("例如：Translate to English, keeping the tone.",
+                      text: Binding(get: { model.settings.customPostProcessingPrompt },
+                                    set: { model.settings.customPostProcessingPrompt = $0 }),
+                      axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11))
+                .lineLimit(2...5)
+                .padding(.horizontal, 7).padding(.vertical, 4)
+                .background(Ink.paper4, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Ink.hair))
+            // 自定义预设**刻意不带**「保持原语言」那条规则 —— 用户完全可能
+            // 就是要翻译。护栏（别回答转写里的问题）仍然带着。
+            Text("自定义 prompt 不会被强制「保持原语言」，所以可以用来翻译。")
+                .font(.system(size: 9.5)).foregroundStyle(Ink.ink4)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11).padding(.vertical, 7)
+        .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+    }
+
     // MARK: - 小组件
 
     private func group<Content: View>(_ title: String,
@@ -767,6 +961,89 @@ struct HubView: View {
         .padding(.horizontal, 14).padding(.vertical, 6)
         .background(Ink.paper0)
         .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+    }
+}
+
+/// 一把 API key 的那一行：状态、输入、保存、删除。
+///
+/// 单独抽出来是为了 `@State` —— 输入框和错误提示是这一行自己的事，
+/// 不该塞进 `HubModel`（那样每敲一个字都会把整份设置写一次盘）。
+///
+/// 永远只显示遮罩后的形式：设置页会被截图、会被投屏。
+private struct KeyRow: View {
+    let title: String
+    let hint: String
+    let masked: String?
+    let fromEnvironment: Bool
+    let environmentName: String
+    let save: (String) throws -> Void
+    let clear: () -> Void
+
+    @State private var input = ""
+    @State private var error: String?
+    @State private var justSaved = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text(title).font(.system(size: 12)).foregroundStyle(Ink.ink1)
+                Spacer(minLength: 4)
+                if let masked {
+                    Text(masked)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(Ink.teal)
+                    if fromEnvironment {
+                        // 环境变量给的 key 删不掉（它不在钥匙串里），
+                        // 说破比给一个点了没反应的按钮好。
+                        Text("来自 \(environmentName)")
+                            .font(.system(size: 9)).foregroundStyle(Ink.ink4)
+                    } else {
+                        Button("删除") { clear(); justSaved = false }
+                            .font(.system(size: 10.5))
+                    }
+                } else {
+                    Text("未配置").font(.system(size: 10)).foregroundStyle(Ink.amber)
+                }
+            }
+            if !fromEnvironment {
+                HStack(spacing: 6) {
+                    SecureField("粘贴 key", text: $input)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11, design: .monospaced))
+                        .padding(.horizontal, 7).padding(.vertical, 4)
+                        .background(Ink.paper4, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Ink.hair))
+                        .onSubmit(commit)
+                    Button("保存", action: commit)
+                        .font(.system(size: 11))
+                        .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            if let error {
+                Text(error).font(.system(size: 9.5)).foregroundStyle(Ink.amber)
+            } else if justSaved {
+                Text("已存进钥匙串").font(.system(size: 9.5)).foregroundStyle(Ink.teal)
+            } else {
+                Text(hint).font(.system(size: 9.5)).foregroundStyle(Ink.ink4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11).padding(.vertical, 7)
+        .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+    }
+
+    private func commit() {
+        do {
+            try save(input)
+            // 明文一秒都不多留在内存里。
+            input = ""
+            error = nil
+            justSaved = true
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            justSaved = false
+        }
     }
 }
 

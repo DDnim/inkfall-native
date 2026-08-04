@@ -37,6 +37,10 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var focusEditorAfterInsert = true
     /// 每次自动粘贴后补一个换行。默认关 —— 行内听写不该凭空多一个换行。
     public var pasteAppendNewline = false
+    /// 听写完把文字直接粘回起录时的那个窗口。
+    /// 关掉之后只复制到剪贴板（合成按键一个都不发），落笔的自动粘贴另有开关。
+    /// 默认开 —— 这是听写的默认预期，关掉是显式选择。
+    public var autoPasteEnabled = true
 
     // 账号与云
     public var accountEmail = ""
@@ -67,8 +71,14 @@ public struct AppSettings: Codable, Sendable, Equatable {
     ]
 
     // 加工
-    public var postProcessingEnabled = false
-    public var postProcessingProvider: CloudProvider = .openai
+    /// 默认**开**。没配 key 时云端预设会静默回落到本地 basic 润色
+    /// （见 `PostProcessingPolicy`），所以开着不会让任何人踩坑；
+    /// 而默认关会让「填了 key 却什么都没变」成为第一个必踩的坑。
+    public var postProcessingEnabled = true
+    /// 默认 Groq：加工是高频小请求，它的 gpt-oss-20b 又快又便宜。
+    /// 走云端转写时这个值会被 `sanitize()` 对齐到转写供应商，
+    /// 本地转写时保留独立选择（这也是目前唯一跑得通的组合）。
+    public var postProcessingProvider: CloudProvider = .groq
     public var postProcessingPreset: PostProcessingPreset = .light
     public var postProcessingPresetModels: [String: PostProcessingPresetModelConfig] = [:]
     public var selectedOpenAiPostProcessModel = "gpt-4.1-mini"
@@ -77,6 +87,13 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var customPostProcessingPrompt = ""
     public var processingMemoryContext = ""
     public var recentContextEnabled = true
+    /// 谁来跑这次加工：云端 API，还是本机的命令行助手（`claude -p` …）。
+    public var postProcessingEngine: PostProcessingEngine = .cloud
+    /// CLI 助手的思考力度（`claude --effort`）。加工是低难度高频的活儿，
+    /// 默认 `low` —— 让它「想一想」既慢又贵，而清理口语没什么可想的。
+    public var cliAgentEffort = "low"
+    /// 空 = 用那个工具自己的默认模型。
+    public var cliAgentModel = ""
 
     // 落笔
     public var noteAutoSegment = true
@@ -125,6 +142,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
     private enum K: String, CodingKey {
         case insertNewlineBetweenSegments, focusEditorAfterInsert, pasteAppendNewline
+        case autoPasteEnabled
         case accountEmail, websiteAuthBaseUrl, accountWebsiteUrl, groqProxyUrl, groqProxyToken
         case transcriptionMode, openAiProviderEnabled, groqProviderEnabled, geminiProviderEnabled
         case selectedOpenAiModel, selectedGroqModel, selectedGeminiModel, selectedLocalModelId
@@ -135,6 +153,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case postProcessingPresetModels, selectedOpenAiPostProcessModel
         case selectedGroqPostProcessModel, selectedGeminiPostProcessModel
         case customPostProcessingPrompt, processingMemoryContext, recentContextEnabled
+        case postProcessingEngine, cliAgentEffort, cliAgentModel
         case noteAutoSegment, noteAutoPaste, noteProcessingEnabled, noteProcessingPreset
         case noteRestoreOnLaunch, noteSpeakerDiarizationEnabled
         case voiceCommandsEnabled, voiceCommands, jarvisModeEnabled
@@ -155,6 +174,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         insertNewlineBetweenSegments = f(.insertNewlineBetweenSegments, insertNewlineBetweenSegments)
         focusEditorAfterInsert = f(.focusEditorAfterInsert, focusEditorAfterInsert)
         pasteAppendNewline = f(.pasteAppendNewline, pasteAppendNewline)
+        autoPasteEnabled = f(.autoPasteEnabled, autoPasteEnabled)
 
         accountEmail = f(.accountEmail, accountEmail)
         websiteAuthBaseUrl = f(.websiteAuthBaseUrl, websiteAuthBaseUrl)
@@ -190,6 +210,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
         customPostProcessingPrompt = f(.customPostProcessingPrompt, customPostProcessingPrompt)
         processingMemoryContext = f(.processingMemoryContext, processingMemoryContext)
         recentContextEnabled = f(.recentContextEnabled, recentContextEnabled)
+        postProcessingEngine = f(.postProcessingEngine, postProcessingEngine)
+        cliAgentEffort = f(.cliAgentEffort, cliAgentEffort)
+        cliAgentModel = f(.cliAgentModel, cliAgentModel)
 
         noteAutoSegment = f(.noteAutoSegment, noteAutoSegment)
         noteAutoPaste = f(.noteAutoPaste, noteAutoPaste)
@@ -247,6 +270,11 @@ public struct AppSettings: Codable, Sendable, Equatable {
         }
         if !ProviderModels.gemini.contains(selectedGeminiPostProcessModel) {
             selectedGeminiPostProcessModel = "gemini-3.1-flash-lite-preview"
+        }
+        // 不认识的力度会被 claude 直接拒（整轮加工失败），所以收回默认档。
+        if let agent = postProcessingEngine.cliAgent,
+           !agent.effortLevels.contains(cliAgentEffort) {
+            cliAgentEffort = agent.effortLevels.first ?? "low"
         }
         if preferredTranscriptionLanguages.isEmpty {
             preferredTranscriptionLanguages = [.zh, .en, .ja]
@@ -317,10 +345,14 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
     /// 这份配置真正会调用的云供应商 —— 只碰（也只向 Keychain 索要）在用的
     /// 那几个 key，而不是每个供应商都读一遍。
+    ///
+    /// 走 Claude Code 那条路时加工不需要任何云供应商 key，所以不算进来。
     public var activeCloudProviders: Set<CloudProvider> {
         var providers = Set<CloudProvider>()
         if let t = transcriptionMode.cloudProviderForSelfTest { providers.insert(t) }
-        if postProcessingEnabled { providers.insert(postProcessingProvider) }
+        if postProcessingEnabled, postProcessingEngine == .cloud {
+            providers.insert(postProcessingProvider)
+        }
         return providers
     }
 }

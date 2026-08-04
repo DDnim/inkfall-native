@@ -40,19 +40,10 @@ final class ClaudeCodeAgent {
 
     // MARK: - 可执行文件
 
-    /// ⚠️ App 是从 Finder / `open` 起来的，PATH 里没有 homebrew，也没有
-    /// `~/.claude/local`。所有外部命令都必须自己找绝对路径。
-    private static func locate(_ name: String, extra: [String] = []) -> String? {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let candidates = extra + [
-            "/opt/homebrew/bin/\(name)", "/usr/local/bin/\(name)", "/usr/bin/\(name)",
-            "\(home)/.claude/local/\(name)", "\(home)/.local/bin/\(name)",
-        ]
-        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
-    }
-
-    static var claudePath: String? { locate("claude") }
-    static var tmuxPath: String? { locate("tmux") }
+    /// 查找逻辑在 `CLIAgentLocator`（贾维斯和加工都要找同一个 `claude`，
+    /// 而 App 从 Finder 起来时 PATH 是空的 —— 这件事只该实现一次）。
+    static var claudePath: String? { CLIAgentLocator.path(for: .claudeCode) }
+    static var tmuxPath: String? { CLIAgentLocator.locate("tmux") }
 
     /// 装没装齐。设置页拿它给一行明确的话，而不是等用户说完才失败。
     static var readiness: String {

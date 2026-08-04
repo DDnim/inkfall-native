@@ -401,6 +401,13 @@ final class SettingsDecodingTests: XCTestCase {
         XCTAssertEqual(s.fixedTranscriptionLanguage, .zh)
     }
 
+    /// 老配置里没有 `autoPasteEnabled` 这个键。缺失必须解成 **true** ——
+    /// 解成 false 就等于升级之后听写突然不粘了，而用户从没关过它。
+    func testMissingAutoPasteFlagKeepsPasting() throws {
+        XCTAssertTrue(try decode(#"{"appLanguage": "zh"}"#).autoPasteEnabled)
+        XCTAssertFalse(try decode(#"{"autoPasteEnabled": false}"#).autoPasteEnabled)
+    }
+
     /// 类型错也只影响那一个字段。
     func testWrongTypesFallBackIndividually() throws {
         let s = try decode(#"{"micGainBoostTargetPercent": "loud", "recentContextEnabled": false}"#)

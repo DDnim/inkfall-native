@@ -535,8 +535,10 @@ final class JarvisController {
 
         let target = session.target
         DispatchQueue.global(qos: .userInitiated).async {
-            let route = MacAutomation.insert(text, into: target)
-            guard route != .clipboardOnly else {
+            // 续接是发给终端会话的一条消息，不是听写正文 —— 补换行的偏好
+            // 在这里没有意义（回车由下面那一下按键负责）。
+            let result = MacAutomation.insert(text, into: target)
+            guard result.landedInTarget else {
                 Task { @MainActor in self.conversation = nil }
                 return
             }
