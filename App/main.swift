@@ -21,7 +21,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var noteSession = NoteSessionController(
         recorder: recorder, transcriber: transcriber, store: store, notes: noteStore,
         processing: processing)
-    private lazy var notePanel = NotePanelController(session: noteSession)
+    /// 全篇转译：整篇音频重跑一次说话人分离，结果另存为新笔记。
+    private lazy var fullTranscribe = FullTranscribeController(
+        store: store, notes: noteStore, transcriber: transcriber)
+    private lazy var notePanel = NotePanelController(
+        session: noteSession, fullTranscribe: fullTranscribe)
     private lazy var models = ModelCatalog(store: store, transcriber: transcriber)
     /// 关键词待命。**是 filter 不是 sink** —— 它和落笔可以同时开。
     private lazy var jarvis = JarvisController(
@@ -112,6 +116,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.reportPaste(result, appName: appName)
         }
 
+        // 全篇转译跑完（可能是几十分钟之后）要说一句 —— 用户早就切走了，
+        // 不说的话那条新笔记就是凭空冒出来的。
+        fullTranscribe.onFinished = { [weak self] task in
+            guard let self else { return }
+            switch task.status {
+            case .done:
+                let skipped = task.skippedClips > 0 ? "（跳过 \(task.skippedClips) 段）" : ""
+                flash(.success, "全篇转译完成 · \(task.usedClips) 段\(skipped)", seconds: 2.6)
+            case .failed:
+                flash(.error, "全篇转译失败：\(task.error ?? "")", seconds: 3.4)
+            case .running:
+                break
+            }
+        }
+
         // 刘海 hover 条上的三个按钮。刘海不认识会话，动作由这里注入。
         notch.hoverActions = .init(
             cut: { [weak self] in self?.cutNow() },
@@ -160,6 +179,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 开关（`--engine` 之类），不是文本。
             let next = ProcessInfo.processInfo.arguments[safe: index + 1] ?? ""
             runProcessTest(text: next.hasPrefix("--") ? "" : next)
+            return
+        }
+
+        // 造一篇带真实音频的落笔笔记（不依赖扬声器→麦克风那条不可靠的路）。
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--seed-note-test") {
+            let wavs = ProcessInfo.processInfo.arguments[(index + 1)...]
+                .prefix { !$0.hasPrefix("--") }
+            runSeedNoteTest(wavs: Array(wavs))
+            return
+        }
+
+        // 全篇转译自测：拼音频 → 跑一次带分离的转写 → 落成新笔记。
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--full-transcribe-test") {
+            let next = ProcessInfo.processInfo.arguments[safe: index + 1] ?? ""
+            runFullTranscribeTest(noteID: next.hasPrefix("--") ? "" : next)
             return
         }
 
@@ -3301,6 +3335,148 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func short(_ error: Error) -> String {
         let text = (error as? LocalizedError)?.errorDescription ?? "\(error)"
         return String(text.prefix(60))
+    }
+
+    // MARK: - 全篇转译自测
+
+    /// 造一篇**带真实音频**的落笔笔记：几个 WAV 依次走真实的提交路径。
+    ///
+    /// `--seed-note-test <wav> [wav …]`。验的是「每段的音频真的被留在笔记
+    /// 目录里」—— 那是全篇转译的前提，而它以前根本不存在（转写完就删）。
+    private func runSeedNoteTest(wavs: [String]) {
+        selfTest = true
+        store.readOnly = true
+        guard !wavs.isEmpty else {
+            emit("用法：--seed-note-test <wav> [wav …]")
+            Log.flush()
+            exit(1)
+        }
+        // ⚠️ 这两条是踩出来的：造样本时**绝不能**把文字粘进用户当时前台的
+        // 窗口（上一次跑就往别人的编辑器里插了三段），也不该顺带去调一次
+        // 云端加工（这里验的是音频有没有留下来，跟加工无关，还要花钱）。
+        // 只改内存 —— `readOnly` 保证不落盘。
+        store.settings.autoPasteEnabled = false
+        store.settings.noteAutoPaste = false
+        store.settings.noteProcessingEnabled = false
+        guard noteSession.start() else {
+            emit("❌ 起不了落笔会话（麦克风？）")
+            Log.flush()
+            exit(1)
+        }
+        guard let noteID = noteSession.noteID else {
+            emit("❌ 会话没有笔记 id")
+            Log.flush()
+            exit(1)
+        }
+        emit("会话笔记：\(noteID)")
+
+        for path in wavs {
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                  let info = WAV.parse(data) else {
+                emit("跳过读不了的 \(path)")
+                continue
+            }
+            let ms = UInt64(info.dataRange.count) * 1000
+                / (UInt64(info.sampleRate) * UInt64(info.channels) * 2)
+            emit("喂入 \(URL(fileURLWithPath: path).lastPathComponent) \(ms)ms")
+            noteSession.debugInjectAudio(data, durationMs: ms)
+            // 每段之间留一点，让毫秒级的文件名不撞车、顺序也和说话顺序一致。
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
+        // 转写是异步的，等段都落完再停 —— 停得太早会把在飞的段连同笔记一起
+        // 判成空笔记删掉。
+        var waited = 0.0
+        func settle() {
+            let done = noteSession.segments.filter { $0.status == .done }.count
+            // 失败的段也算「不再飞了」—— 只等成功会在有一段转不出来时干等到超时。
+            let settled = noteSession.segments.filter {
+                $0.status == .done || $0.status == .failed
+            }.count
+            if settled < wavs.count, waited < 120 {
+                waited += 0.5
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: settle)
+                return
+            }
+            noteSession.stop()
+            let clips = NoteAttachments.voiceClips(noteID: noteID)
+            emit("段数=\(noteSession.segments.count) 完成=\(done) 用时=\(waited)s")
+            emit("留下的语音片段：\(clips.count) 个")
+            for clip in clips { emit("  \(clip.lastPathComponent)") }
+            emit("正文：\n\(noteSession.body)")
+            let ok = clips.count == wavs.count
+            emit(ok ? "✅ 每一段的音频都留在笔记目录里了（全篇转译有料可跑）"
+                    : "❌ 音频没留全 —— 全篇转译会漏段")
+            Log.flush()
+            exit(ok ? 0 : 1)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: settle)
+    }
+
+    /// 全篇转译走一遍**真实**路径：拼音频 → 跑一次带分离的转写 → 落成新笔记。
+    ///
+    /// 不需要麦克风（音频是笔记目录里已经存下来的），但需要本地模型与分离
+    /// 权重 —— 缺什么就明说缺什么，而不是假装通过。
+    ///
+    /// `--full-transcribe-test [noteID]`，不给 id 就挑最近一篇**有语音片段**的。
+    private func runFullTranscribeTest(noteID requested: String) {
+        selfTest = true
+        store.readOnly = true
+
+        let candidates = noteStore.notes.filter {
+            !NoteAttachments.voiceClips(noteID: $0.id, body: $0.displayText).isEmpty
+        }
+        emit("有语音片段的笔记：\(candidates.count) / \(noteStore.notes.count) 篇")
+        for note in candidates.prefix(5) {
+            let clips = NoteAttachments.voiceClips(noteID: note.id, body: note.displayText)
+            emit("  \(note.id.prefix(8))… 「\(note.title)」\(clips.count) 段")
+        }
+
+        guard let note = requested.isEmpty ? candidates.first
+                                           : noteStore.note(id: requested) else {
+            emit("❌ 没有可用的笔记 —— 留音频是这个版本才加的，"
+                 + "得先用新版录一篇落笔笔记")
+            Log.flush()
+            exit(1)
+        }
+
+        if let blocker = fullTranscribe.blocker(for: note.id) {
+            emit("⏭  跑不了：\(blocker.errorDescription ?? "")")
+            emit("（本地模型 = \(store.settings.transcriptionMode == .local ? "是" : "否")，"
+                 + "分离权重 = \(LocalTranscriber.isDiarizationDownloaded ? "已下载" : "未下载")）")
+            Log.flush()
+            exit(2)
+        }
+
+        emit("开跑：「\(note.title)」")
+        let started = CFAbsoluteTimeGetCurrent()
+        fullTranscribe.onFinished = { task in
+            emit(String(format: "用时 %.1fs 状态=%@ 拼了 %d 段（跳过 %d）",
+                        CFAbsoluteTimeGetCurrent() - started,
+                        task.status.rawValue, task.usedClips, task.skippedClips))
+            guard task.status == .done, let resultID = task.resultNoteID,
+                  let result = AppDelegate.shared?.noteStore.note(id: resultID) else {
+                emit("❌ \(task.error ?? "没拿到结果")")
+                Log.flush()
+                exit(1)
+            }
+            emit("新笔记：「\(result.title)」\(result.displayText.count) 字")
+            emit("正文：\n\(result.displayText.prefix(600))")
+            // 全篇跑一次的意义就在标签上 —— 没标签说明这次分离没起作用。
+            let labeled = result.displayText.contains("：") || result.displayText.contains(":")
+            emit(labeled ? "✅ 落成新笔记且带说话人标签"
+                         : "⚠️ 落成了新笔记，但正文里看不到说话人标签"
+                           + "（可能整篇只有一个人在说）")
+            Log.flush()
+            exit(0)
+        }
+        do {
+            try fullTranscribe.start(noteID: note.id)
+        } catch {
+            emit("❌ 起不来：\((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+            Log.flush()
+            exit(1)
+        }
     }
 
     // MARK: - 粘回自家窗口的自测

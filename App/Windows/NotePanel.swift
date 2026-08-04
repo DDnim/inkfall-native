@@ -39,8 +39,35 @@ final class NotePanelController {
     /// 由 `NotePanelView` 的 introspect 回填。
     fileprivate weak var textView: NSTextView?
 
-    init(session: NoteSessionController) {
+    /// 全篇转译。宿主注入 —— 面板只管点，任务归它管。
+    private let fullTranscribe: FullTranscribeController
+
+    init(session: NoteSessionController, fullTranscribe: FullTranscribeController) {
         self.session = session
+        self.fullTranscribe = fullTranscribe
+    }
+
+    // MARK: - 全篇转译
+
+    /// 现在跑不了的原因；`nil` = 能跑。
+    func fullTranscribeBlocker() -> FullTranscribeController.Failure? {
+        guard let noteID = session.noteID else { return .noAudio }
+        return fullTranscribe.blocker(for: noteID)
+    }
+
+    var isFullTranscribing: Bool { fullTranscribe.isBusy }
+
+    func startFullTranscribe() {
+        guard let noteID = session.noteID else { return }
+        do {
+            try fullTranscribe.start(noteID: noteID)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "跑不了全篇转译"
+            alert.informativeText = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
     }
 
     func toggle() {
@@ -401,6 +428,7 @@ struct NotePanelView: View {
                 controller.captureScreenshot(.region)
             }
             if !session.isLive {
+                fullTranscribeButton
                 toolButton("magnifyingglass", "查找 / 替换（⌘F）") { controller.showFind() }
                 toolButton("doc.on.doc", "复制全文") { controller.copyAll() }
                 toolButton("square.and.arrow.up", "导出 .md") { controller.exportMarkdown() }
@@ -409,6 +437,23 @@ struct NotePanelView: View {
                 }
             }
         }
+    }
+
+    /// 全篇转译。
+    ///
+    /// 跑不了的时候**不隐藏按钮，而是灰掉并把原因写进 tooltip** —— 「按钮
+    /// 消失了」是最难自查的一类 UI：用户根本不知道有这个功能，更不知道差什么。
+    @ViewBuilder private var fullTranscribeButton: some View {
+        let blocker = controller.fullTranscribeBlocker()
+        let running = controller.isFullTranscribing
+        toolButton(running ? "hourglass" : "person.2.wave.2",
+                   running ? "全篇转译中…"
+                           : (blocker?.errorDescription
+                              ?? "全篇转译：整篇重跑一次说话人分离，结果另存为新笔记")) {
+            controller.startFullTranscribe()
+        }
+        .disabled(blocker != nil)
+        .opacity(blocker == nil ? 1 : 0.4)
     }
 
     private func toolButton(_ symbol: String, _ hint: String,
