@@ -33,6 +33,43 @@ public enum JarvisMachine {
         return .startStandby
     }
 
+    /// 把动作作用回形状上 —— 多步场景靠它走（见 `SessionMachine.apply`）。
+    public static func apply(_ action: JarvisToggleAction,
+                             to shape: SessionShape) -> SessionShape {
+        var next = shape
+        switch action {
+        case .refuse:
+            // 功能没开：**一个字段都不许动**。
+            break
+        case .stopRecording:
+            next.recording = false
+            next.scanning = false
+            next.hold = false
+            next.sink = .paste
+        case .disarmKeepRecording:
+            // 只撤过滤器 —— 别的消费者还要这条流，正交性的全部意义。
+            next.scanning = false
+        case .convertHold:
+            next.hold = false
+            next.scanning = true
+            next.sink = .discard
+        case .armOverExisting:
+            next.scanning = true
+        case .startStandby:
+            next.recording = true
+            next.hold = false
+            next.scanning = true
+            next.sink = .discard
+        }
+        return next
+    }
+
+    /// 按一次 ⌥,。
+    public static func pressJarvis(_ shape: SessionShape,
+                                   featureEnabled: Bool = true) -> SessionShape {
+        apply(toggleAction(shape: shape, featureEnabled: featureEnabled), to: shape)
+    }
+
     /// 刘海上「这一段听到了什么」那一行：截断到 24 字加省略号。
     ///
     /// 未命中原本是静默丢弃，而那恰恰是最需要把原文说出来的一种结果 ——

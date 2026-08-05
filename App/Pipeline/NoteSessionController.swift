@@ -11,15 +11,10 @@ import InkfallCore
 @Observable
 final class NoteSessionController {
 
-    enum Mode: Equatable {
-        /// 录音中，正文只读，走 markdown 预览。
-        case recording
-        /// 暂停：麦克风真的停了，但会话还开着 —— 同一篇笔记、同一个粘贴目标、
-        /// 同一把语言锁，`resume()` 接着往下录。正文仍然只读。
-        case paused
-        /// 停下来了，正文可编辑，走 markdown 编辑器。
-        case editing
-    }
+    /// 阶段与合法转移都在 Core 的 `NotePhase` / `NoteSessionMachine` 里 ——
+    /// 提上去是为了让「起录 → 暂停 → 继续 → 停止」这条多步路走得进单测
+    /// （控制器本身要活的麦克风，测不了）。
+    typealias Mode = NotePhase
 
     private(set) var segments: [NoteSessionSegment] = []
     private(set) var mode: Mode = .editing
@@ -32,14 +27,14 @@ final class NoteSessionController {
     var draft: String = ""
 
     /// 麦克风真的在收音。
-    var isRecording: Bool { mode == .recording }
+    var isRecording: Bool { NoteSessionMachine.microphoneLive(mode) }
     var isPaused: Bool { mode == .paused }
     /// 会话开着（在录，或暂停着）。
     ///
     /// ⚠️ 「只读 / 不许换篇 / 正文由段落合成」这些判据要的都是**这个**，
     /// 不是 `isRecording`。暂停期间让用户去编辑 `draft` 会在继续录音的
     /// 那一刻被 `syncDraft()` 悄悄冲掉。
-    var isLive: Bool { mode != .editing }
+    var isLive: Bool { NoteSessionMachine.isLive(mode) }
 
     /// 正文：会话开着时由段落合成，停下来之后就是用户可编辑的草稿。
     var body: String { isLive ? composed : draft }
@@ -199,7 +194,7 @@ final class NoteSessionController {
         pasteTarget = PasteTarget.current()
         noteID = UUID().uuidString.uppercased()
         title = HistoryEntry.defaultTitle(HistoryEntry.nowMs())
-        mode = .recording
+        mode = NoteSessionMachine.next(mode, on: .start) ?? .recording
         lastTick = CFAbsoluteTimeGetCurrent()
         clock.start(at: lastTick)
         elapsedSeconds = 0
@@ -294,7 +289,8 @@ final class NoteSessionController {
         stopTicking()
         drainMicrophone()
         clock.pause(at: CFAbsoluteTimeGetCurrent())
-        mode = .paused
+        guard let paused = NoteSessionMachine.next(mode, on: .pause) else { return false }
+        mode = paused
         // 暂停可能持续很久（去开个会、接个电话），期间崩了不能丢。
         flushPersist()
         Log.write("note: 已暂停，共 \(segments.count) 段")
@@ -314,7 +310,8 @@ final class NoteSessionController {
         let now = CFAbsoluteTimeGetCurrent()
         clock.resume(at: now)
         lastTick = now
-        mode = .recording
+        guard let recording = NoteSessionMachine.next(mode, on: .resume) else { return false }
+        mode = recording
         startTicking()
         // 暂停可能持续很久（去开个会），期间空闲卸载已经把模型还回系统了
         // —— 继续录音同样要先把它拉回来。
