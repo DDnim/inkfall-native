@@ -39,13 +39,24 @@ actor LocalTranscriber {
         /// 模型有输出，但整段是幻觉或空白 —— 不是错误，是「没听到话」。
         /// 带上被丢弃的原文，否则误杀了根本查不出来。
         case noSpeech(String)
+        /// ⚠️ **转写成功了，却被说话人分离弄丢了。**
+        ///
+        /// pyannote 判出 0 个说话人时贴回的结果是空的，而空结果会被幻觉
+        /// 过滤器当成「没听到话」—— 于是一段好好的文字整段消失。
+        /// 单独立一个 case 是因为它和「真的没听到话」要用户做的事完全不同：
+        /// 前者应该去关掉「区分人物」，后者不用管。
+        case speakerLabelingLostText(String)
 
         var errorDescription: String? {
             switch self {
             case .unknownModel(let id): return "未知的本地模型：\(id)"
             case .unreadableAudio: return "音频读不出来"
             case .noSpeech(let raw):
-                return raw.isEmpty ? "没听清" : "没听清（丢弃：\(raw.prefix(40))）"
+                return raw.isEmpty ? "模型没输出文字（这段可能真的没有人说话）"
+                                   : "整段被判为幻觉：\(raw.prefix(40))"
+            case .speakerLabelingLostText(let raw):
+                return "说话人分离没认出人，文字被丢了（关掉「区分人物」可避开）："
+                    + raw.prefix(30)
             }
         }
     }
@@ -155,6 +166,9 @@ actor LocalTranscriber {
             fromPath: request.wavURL.path) else {
             throw Failure.unreadableAudio
         }
+        // 裁剪**之前**量一次能量：短套话（「Thank you.」）只有在音频本身
+        // 很安静时才是幻觉，而裁剪会把安静的部分压掉、把峰值抬上去。
+        let peak = AudioLevel.windowedPeak(samples: samples, sampleRate: 16_000)
         samples = Self.trimSilence(samples)
 
         var options = DecodingOptions()
@@ -194,7 +208,9 @@ actor LocalTranscriber {
         let raw = results.map(\.text).joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         // Whisper 在没有语音的音频上会自信地吐字幕组片尾。整段是套话就丢掉。
-        guard !HallucinationFilter.isHallucination(raw) else { throw Failure.noSpeech(raw) }
+        guard !HallucinationFilter.isHallucination(raw, peakLevel: peak) else {
+            throw Failure.noSpeech(raw)
+        }
         let text = VocabularyCorrector(replacements: request.replacements).apply(raw)
         return Result(text: text, language: results.first?.language,
                       elapsed: Date().timeIntervalSince(started), speakerCount: nil)
@@ -223,6 +239,13 @@ actor LocalTranscriber {
         let segments = grouped.flatMap { $0 }
             .map { SpeakerTranscript.Segment(speaker: $0.speaker.speakerId, text: $0.text) }
         let output = SpeakerTranscript.compose(segments)
+        // 转写本身是有内容的，却被贴标签这一步弄成了空 —— 这是分离的问题，
+        // 不是「没听到话」。分开报，用户才知道该去关哪个开关。
+        let raw = results.map(\.text).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !raw.isEmpty {
+            throw Failure.speakerLabelingLostText(raw)
+        }
         guard !HallucinationFilter.isHallucination(output.text) else {
             throw Failure.noSpeech(output.text)
         }

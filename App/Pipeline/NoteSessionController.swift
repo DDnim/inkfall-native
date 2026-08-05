@@ -61,6 +61,10 @@ final class NoteSessionController {
     /// 加工与听写共用同一套决策与降级 —— 落笔只是把全局开关换成自己的
     /// （`noteEffective()`）。
     private let processing: PostProcessingCoordinator
+    /// 自动会议笔记（beta）。**完全并行**的一路：同一批段落，一边照常落进
+    /// 正文，一边在旁边维护一份会议笔记。它慢、会失败、是 beta ——
+    /// 所以主链路任何一步都不等它。
+    let meeting: MeetingNoteController
 
     private var segmenter = SilenceSegmenter()
     private var queue = OrderedPasteQueue<NoteSessionSegment>()
@@ -163,12 +167,14 @@ final class NoteSessionController {
 
     init(recorder: AudioRecorder, transcriber: LocalTranscriber,
          store: SettingsStore, notes: NoteStore,
-         processing: PostProcessingCoordinator) {
+         processing: PostProcessingCoordinator,
+         meeting: MeetingNoteController) {
         self.recorder = recorder
         self.transcriber = transcriber
         self.store = store
         self.notes = notes
         self.processing = processing
+        self.meeting = meeting
     }
 
     // MARK: - 起停
@@ -201,6 +207,7 @@ final class NoteSessionController {
         startTicking()
         persist()
         prewarmModels()
+        meeting.begin(sourceNoteID: noteID ?? "", title: title)
         Log.write("note: 会话开始 \(noteID ?? "?")")
         onRecordingChanged?(true)
         return true
@@ -270,6 +277,9 @@ final class NoteSessionController {
         // 停下来这一刻必须真的落盘，不能压在防抖里。
         flushPersist()
         history.reset(to: draft)
+        // 把攒着的最后一批交给会议笔记那一路。**不等它** —— 停止录音的
+        // 那一刻界面就该回到编辑态，那一批在后台落地。
+        meeting.finishSession()
         Log.write("note: 会话停止，共 \(segments.count) 段")
         onRecordingChanged?(false)
     }
@@ -507,19 +517,28 @@ final class NoteSessionController {
                 && LocalTranscriber.isDiarizationDownloaded)
 
         let durationMs = audio.durationMs
+        // ⚠️ 这一段属于**哪一篇**笔记，必须在提交时就钉死。
+        //
+        // 转写是异步的，几秒后才回来 —— 那时用户完全可能已经停了这场、
+        // 又点开了另一篇笔记。不钉死的话，迟到的段会落进「当前绑着的那篇」，
+        // 把它的正文覆盖掉。2026-08-05 实测：一段 26 字的迟到转写把一份
+        // 1661 字的会议笔记整个冲掉了。
+        let ownerNoteID = noteID
         Task { [transcriber] in
             defer { try? FileManager.default.removeItem(at: url) }
             do {
                 let result = try await transcriber.transcribe(request)
                 await MainActor.run {
                     self.finish(id: id, seq: seq, result: result, policy: policy,
-                                durationMs: durationMs)
+                                durationMs: durationMs, owner: ownerNoteID)
                 }
             } catch {
-                Log.write("note: 段 \(id) 转写失败 \(error)")
+                let reason = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                Log.write("note: 段 \(id) 转写失败 —— \(reason)")
                 await MainActor.run {
+                    guard self.noteID == ownerNoteID else { return }
                     self.queue.skip(seq: seq)
-                    self.markFailed(id)
+                    self.markFailed(id, reason: reason)
                     self.drain()
                 }
             }
@@ -529,7 +548,8 @@ final class NoteSessionController {
     private func finish(id: UInt64, seq: UInt64,
                         result: LocalTranscriber.Result,
                         policy: TranscriptionLanguagePolicy,
-                        durationMs: UInt64 = 0) {
+                        durationMs: UInt64 = 0,
+                        owner: String? = nil) {
         if languageLock.observe(TranscriptionLanguage.detected(result.language),
                                 policy: policy) {
             Log.write("note: 会话语言锁定 \(languageLock.locked?.rawValue ?? "?") "
@@ -552,7 +572,8 @@ final class NoteSessionController {
                 onRemoteStart: { [weak self] preset in
                     self?.markProcessing(id: id, note: "\(preset.label) 加工中")
                 })
-            self.complete(id: id, seq: seq, raw: result.text, text: outcome.text, hit: hit)
+            self.complete(id: id, seq: seq, raw: result.text, text: outcome.text, hit: hit,
+                          owner: owner)
             if let notice = outcome.notice {
                 Log.write("note: 段 \(id) \(notice)")
                 self.processingNotice = notice
@@ -561,7 +582,15 @@ final class NoteSessionController {
     }
 
     /// 段落最终落地：写进队列，按序流进正文。
-    private func complete(id: UInt64, seq: UInt64, raw: String, text: String, hit: Bool) {
+    private func complete(id: UInt64, seq: UInt64, raw: String, text: String, hit: Bool,
+                          owner: String? = nil) {
+        // 换篇了：这一段属于上一篇，**补写回那一篇**，绝不落进当前这篇。
+        // 直接丢掉也不行 —— 用户说过的话不能凭空消失。
+        if let owner, owner != noteID {
+            appendToForeignNote(owner, text: text)
+            queue.skip(seq: seq)
+            return
+        }
         var segment = segments.first { $0.id == id }
             ?? NoteSessionSegment(id: id, createdAtMs: HistoryEntry.nowMs())
         segment.rawText = raw
@@ -572,6 +601,23 @@ final class NoteSessionController {
         segment.status = .done
         queue.complete(seq: seq, item: segment)
         drain()
+        // 并行的那一路：喂进去就返回，绝不让它拖住正文落地。
+        meeting.ingest(segment.displayText)
+    }
+
+    /// 迟到的段落属于另一篇笔记：直接补到那一篇的末尾。
+    ///
+    /// 不走 `segments` / `queue` —— 那两个是**当前会话**的状态，往里塞
+    /// 别人的段只会把顺序和正文一起搅乱。
+    private func appendToForeignNote(_ id: String, text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, var entry = notes.note(id: id) else { return }
+        entry.sourceText = entry.sourceText.isEmpty ? trimmed
+                                                    : entry.sourceText + "\n\n" + trimmed
+        entry.finalText = entry.finalText.isEmpty ? trimmed
+                                                  : entry.finalText + "\n\n" + trimmed
+        notes.upsert(entry)
+        Log.write("note: 迟到的一段补回笔记 \(id.prefix(8))（已换篇，不动当前这篇）")
     }
 
     /// 这一段正在被加工。面板上那个占位块换句话，用户才知道不是卡住了。
@@ -610,9 +656,10 @@ final class NoteSessionController {
                policy: TranscriptionLanguagePolicy(settings: store.settings))
     }
 
-    private func markFailed(_ id: UInt64) {
+    private func markFailed(_ id: UInt64, reason: String? = nil) {
         guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
         segments[index].status = .failed
+        segments[index].failureReason = reason
         syncDraft()
         persist()
     }

@@ -18,9 +18,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let recorder = AudioRecorder()
     private let notch = NotchOverlayController()
     private let noteStore = NoteStore()
+    /// 自动会议笔记（beta）。与转写/加工并行的另一路。
+    private lazy var meetingNotes = MeetingNoteController(
+        store: store, notes: noteStore, processing: processing)
     private lazy var noteSession = NoteSessionController(
         recorder: recorder, transcriber: transcriber, store: store, notes: noteStore,
-        processing: processing)
+        processing: processing, meeting: meetingNotes)
     /// 全篇转译：整篇音频重跑一次说话人分离，结果另存为新笔记。
     private lazy var fullTranscribe = FullTranscribeController(
         store: store, notes: noteStore, transcriber: transcriber)
@@ -187,6 +190,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let wavs = ProcessInfo.processInfo.arguments[(index + 1)...]
                 .prefix { !$0.hasPrefix("--") }
             runSeedNoteTest(wavs: Array(wavs))
+            return
+        }
+
+        // 自动会议笔记自测（beta）：假会议走真实路径，验两份笔记 + 合批。
+        if ProcessInfo.processInfo.arguments.contains("--meeting-note-test") {
+            runMeetingNoteTest()
+            return
+        }
+
+        // 长录音自测：真实长对话走完整条链路，回答「音频去哪儿了」。
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--long-audio-test") {
+            runLongAudioTest(path: ProcessInfo.processInfo.arguments[safe: index + 1] ?? "")
             return
         }
 
@@ -591,8 +606,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 中途采一次电平，确认回调真的在跑而不是只有一个空的 WAV 头。
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds / 2) { [self] in
-            emit(String(format: "中途 level=%.4f 有效语音=%.0fms 已录=%.2fs",
-                        recorder.level, recorder.activeAudioMs, recorder.takeDurationSeconds))
+            emit(String(format: "中途 level=%.4f 段峰值=%.4f 已录=%.2fs",
+                        recorder.level, recorder.takePeak, recorder.takeDurationSeconds))
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [self] in
@@ -3335,6 +3350,269 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func short(_ error: Error) -> String {
         let text = (error as? LocalizedError)?.errorDescription ?? "\(error)"
         return String(text.prefix(60))
+    }
+
+    // MARK: - 自动会议笔记自测
+
+    /// 把一场假会议喂进**真实**的落地路径，看旁边那份会议笔记长成什么样。
+    ///
+    /// 验三件事：
+    /// 1. 转写正文照常落地（这一路绝不能影响主链路）
+    /// 2. 会议笔记真的长出来了，而且是**笔记**不是转写的复制品
+    /// 3. **合批生效** —— 六段不该跑六轮。日志里 `meeting: 送出` 的次数
+    ///    必须明显少于段数，否则就是排起了那条永远追不上的队。
+    private func runMeetingNoteTest() {
+        selfTest = true
+        store.readOnly = true
+        store.settings.meetingNotesEnabled = true
+        // 这一路验的是会议笔记，别让逐段加工和自动粘贴掺进来。
+        store.settings.noteProcessingEnabled = false
+        store.settings.autoPasteEnabled = false
+        store.settings.noteAutoPaste = false
+
+        notePanel.show()
+        guard noteSession.start() else {
+            emit("❌ 起不了会话")
+            Log.flush()
+            exit(1)
+        }
+        // `--script <文件>` 用真实转写重放（每个空行分一段），
+        // 不给就用下面这场假周会。拿真实素材重跑是唯一能判断
+        // 「提示词改动到底有没有用」的办法。
+        let arguments = ProcessInfo.processInfo.arguments
+        let scriptFile = arguments.firstIndex(of: "--script").flatMap { arguments[safe: $0 + 1] }
+        let script = scriptFile.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }
+            .map { text in
+                text.components(separatedBy: "\n\n")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            } ?? [
+            "好，我们开始今天的周会。第一件事是季度报表，小李你那边什么时候能给我？",
+            "我明天下午就能弄完，数据已经对完了，就差最后一遍检查。",
+            "行，那定在明天下午五点前给我，我周一要用。另外这次要把上季度的对比也加上。",
+            "关于新功能的排期，我建议先做最小版本，下个月初上线，然后再迭代。",
+            "同意，不过要注意供应商那边的交期还不确定，这是个风险，得盯着。",
+            "最后一件事，下周三下午两点开评审会，大家把材料提前发到群里。",
+        ]
+        for line in script {
+            noteSession.debugInjectTranscript(line)
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        emit("喂了 \(script.count) 段，共 \(script.reduce(0) { $0 + $1.count }) 字")
+
+        // 会议笔记那一路慢得多，等它把积压跑完。
+        var waited = 0.0
+        func settle() {
+            let meeting = noteSession.meeting
+            if meeting.isWorking, waited < 240 {
+                waited += 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: settle)
+                return
+            }
+            // 还没停止会话，先把收尾那一批也跑掉。
+            if noteSession.isLive {
+                noteSession.stop()
+                waited += 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: settle)
+                return
+            }
+            emit("")
+            emit("转写正文（\(noteSession.body.count) 字）：")
+            emit(noteSession.body)
+            emit("")
+            emit("会议笔记（\(meeting.note.count) 字）：")
+            emit(meeting.note.isEmpty ? "（空）" : meeting.note)
+            emit("")
+            emit("等待 \(Int(waited))s；笔记落成 \(meeting.noteID ?? "—")")
+            // 两栏布局只能靠截图取证。只截面板自己那一扇窗 —— 整屏截图
+            // 会被别的窗口盖住（实测被另一个实例的设置窗压过两次）。
+            let shot = URL(fileURLWithPath: "/tmp/inkfall-meeting-panel.png")
+            try? FileManager.default.removeItem(at: shot)
+            notePanel.show()
+            Thread.sleep(forTimeInterval: 0.6)
+            if let window = notePanel.debugWindowNumber {
+                let capture = Process()
+                capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                capture.arguments = ["-x", "-o", "-l\(window)", shot.path]
+                try? capture.run()
+                capture.waitUntilExit()
+            }
+            emit("截图：\(shot.path)")
+            let ok = !meeting.note.isEmpty && !noteSession.body.isEmpty
+            emit(ok ? "✅ 转写与会议笔记两份都在" : "❌ 少了一份")
+            emit("（合批是否生效看日志里 `meeting: 送出` 的次数 —— "
+                 + "\(script.count) 段应该明显少于 \(script.count) 轮）")
+            Log.flush()
+            exit(ok ? 0 : 1)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: settle)
+    }
+
+    // MARK: - 长录音自测
+
+    /// 拿一段**真实的长对话**走完整条落笔链路，然后回答一个问题：
+    /// **音频去哪儿了。**
+    ///
+    /// 「长对话会漏掉一部分」这种感觉，靠听结果是查不出来的 —— 得把整段音频
+    /// 的时间轴摊开，看每一秒最后落在哪一档：转写了、被断句器当静音跳过了、
+    /// 被提交策略丢了（太短/没声音）、还是被幻觉过滤器整段扔了。
+    ///
+    /// 不需要麦克风：直接按 30 Hz 把 WAV 的峰值电平喂给**真实的**断句器
+    /// （和实时那条路同一个 `SilenceSegmenter`、同一套配置），切出来的段再走
+    /// 真实的提交策略与转写。
+    ///
+    /// `--long-audio-test <wav> [--limit N] [--diarize] [--whole]`
+    private func runLongAudioTest(path: String) {
+        selfTest = true
+        store.readOnly = true
+        let arguments = ProcessInfo.processInfo.arguments
+        let limit = arguments.firstIndex(of: "--limit")
+            .flatMap { arguments[safe: $0 + 1] }.flatMap(Int.init) ?? Int.max
+        let diarize = arguments.contains("--diarize")
+        let alsoWhole = arguments.contains("--whole")
+        /// 把被丢掉的段也转一遍，量化「到底丢了多少话」。
+        let probeDropped = arguments.contains("--probe-dropped")
+
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let info = WAV.parse(data) else {
+            emit("❌ 读不了 \(path)")
+            Log.flush()
+            exit(1)
+        }
+        let rate = Int(info.sampleRate)
+        let channels = Int(info.channels)
+        let pcm = data.subdata(in: info.dataRange)
+        let totalSamples = pcm.count / 2 / channels
+        let totalSeconds = Double(totalSamples) / Double(rate)
+        emit(String(format: "音频：%.1f 分钟 %d Hz %d 声道",
+                    totalSeconds / 60, rate, channels))
+
+        // 每 1/30 秒一帧取峰值 —— 实时那条路上 `recorder.level` 就是最近一个
+        // 音频回调缓冲的峰值，tick 以 30 Hz 读它。这里是它的离线等价物。
+        let samples: [Float] = pcm.withUnsafeBytes { raw in
+            raw.bindMemory(to: Int16.self).map { Float(Int16(littleEndian: $0)) / 32767 }
+        }
+        let frame = max(1, rate / 30 * channels)
+        var segmenter = SilenceSegmenter()
+        var cuts: [Int] = []                    // 每一段的结束采样下标
+        var index = 0
+        while index < samples.count {
+            let end = min(index + frame, samples.count)
+            var peak: Float = 0
+            for i in index..<end { peak = max(peak, abs(samples[i])) }
+            if segmenter.feed(level: peak, delta: Double(end - index) / Double(rate * channels)) {
+                cuts.append(end)
+            }
+            index = end
+        }
+        if cuts.last != samples.count { cuts.append(samples.count) }
+        emit("断句器切出 \(cuts.count) 段")
+
+        // 逐段走真实的提交策略 + 转写。
+        var starts: [Int] = [0]
+        starts.append(contentsOf: cuts.dropLast())
+        let modelID = store.settings.selectedLocalModelId
+        let replacements = store.settings.transcriptionReplacements
+
+        // ⚠️ 全程异步、**绝不阻塞主线程**。第一版用 `DispatchGroup.wait()` 等
+        // 转写，结果整个进程 0% CPU 挂了十分钟 —— AppKit 的主线程正卡在
+        // `applicationDidFinishLaunching` 里，而模型加载那条路要回主线程。
+        // 自测里凡是要等异步结果，一律在 Task 内部收尾并 `exit()`。
+        Task { [transcriber] in
+            var transcribedSeconds = 0.0
+            var droppedSeconds = 0.0
+            var failedSeconds = 0.0
+            var totalWords = 0
+            var droppedWords = 0
+            let policy = RecordingSubmissionPolicy.default
+
+            for (number, (from, to)) in zip(starts, cuts).enumerated() where number < limit {
+                let slice = pcm.subdata(in: (from * 2 * channels)..<(to * 2 * channels))
+                let seconds = Double(to - from) / Double(rate)
+                let audio = RecordedAudio(data: WAV.encode(pcm: slice,
+                                                           sampleRate: UInt32(rate),
+                                                           channels: UInt16(channels)),
+                                          durationMs: UInt64(seconds * 1000))
+                let stamp = String(format: "%5.1f→%5.1fs %5.1fs",
+                                   Double(from) / Double(rate), Double(to) / Double(rate), seconds)
+
+                let verdict = policy.verdict(for: audio)
+                guard verdict == .submit else {
+                    droppedSeconds += seconds
+                    // 诊断用：被丢掉的段**照样转一遍**，看看里面到底有没有话。
+                    // 「丢了 17.8% 的音频」和「丢了 300 字真实内容」是两个
+                    // 说服力完全不同的说法，而后者才是用户真正损失的东西。
+                    if probeDropped {
+                        let url = FileManager.default.temporaryDirectory
+                            .appendingPathComponent("inkfall-drop-\(number).wav")
+                        try? audio.data.write(to: url)
+                        let text = (try? await transcriber.transcribe(.init(
+                            wavURL: url, modelID: modelID, language: nil,
+                            replacements: replacements, diarize: false)))?.text ?? ""
+                        try? FileManager.default.removeItem(at: url)
+                        droppedWords += text.count
+                        emit("  \(stamp) ⨯ \(verdict.rawValue)"
+                             + (text.isEmpty ? "（确实没话）"
+                                             : "  ← 丢掉了 \(text.count) 字：" + text.prefix(50)))
+                    } else {
+                        emit("  \(stamp) ⨯ \(verdict.rawValue)")
+                    }
+                    continue
+                }
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("inkfall-long-\(number).wav")
+                try? audio.data.write(to: url)
+                do {
+                    let result = try await transcriber.transcribe(.init(
+                        wavURL: url, modelID: modelID, language: nil,
+                        replacements: replacements, diarize: diarize))
+                    transcribedSeconds += seconds
+                    totalWords += result.text.count
+                    emit("  \(stamp) ✓ \(result.text.count) 字  " + result.text.prefix(46))
+                } catch {
+                    // 幻觉过滤器把整段判成「没听到话」也走这里 —— 那正是
+                    // 「漏掉一部分」最可能的形态：段是有的，内容被整段扔了。
+                    failedSeconds += seconds
+                    let reason = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                    emit("  \(stamp) ✗ \(reason.prefix(60))")
+                }
+                try? FileManager.default.removeItem(at: url)
+            }
+
+            let covered = transcribedSeconds + droppedSeconds + failedSeconds
+            emit("")
+            emit(String(format: "音频去向（共 %.1fs，跑了前 %d 段）：",
+                        totalSeconds, min(limit, cuts.count)))
+            emit(String(format: "  转写成功  %6.1fs  %.1f%%  → %d 字",
+                        transcribedSeconds, transcribedSeconds / totalSeconds * 100, totalWords))
+            emit(String(format: "  提交前丢弃 %6.1fs  %.1f%%（太短/没声音）%@",
+                        droppedSeconds, droppedSeconds / totalSeconds * 100,
+                        probeDropped ? "← 其中含 \(droppedWords) 字真实内容" : ""))
+            emit(String(format: "  转写失败  %6.1fs  %.1f%%（含幻觉整段丢弃）",
+                        failedSeconds, failedSeconds / totalSeconds * 100))
+            emit(String(format: "  这些段之外 %6.1fs  %.1f%%",
+                        totalSeconds - covered, (totalSeconds - covered) / totalSeconds * 100))
+
+            if alsoWhole {
+                // 对照组：整篇一次过（全篇转译走的就是这条），比字数。
+                emit("")
+                emit("对照：整篇一次转写…")
+                let started = CFAbsoluteTimeGetCurrent()
+                do {
+                    let result = try await transcriber.transcribe(.init(
+                        wavURL: URL(fileURLWithPath: path), modelID: modelID, language: nil,
+                        replacements: replacements, diarize: diarize))
+                    emit(String(format: "  一次过：%.1fs → %d 字（分段合计 %d 字）",
+                                CFAbsoluteTimeGetCurrent() - started,
+                                result.text.count, totalWords))
+                    emit("  前 300 字：" + result.text.prefix(300))
+                } catch {
+                    emit("  ✗ \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+                }
+            }
+            Log.flush()
+            exit(0)
+        }
     }
 
     // MARK: - 全篇转译自测

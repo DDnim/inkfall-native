@@ -19,6 +19,9 @@ public struct HistoryEntry: Codable, Sendable, Equatable, Identifiable {
     public var postProcessingPreset: PostProcessingPreset?
     /// 分离标签 → 真名。持久化后侧栏在标签已被替换成名字之后仍可再编辑。
     public var speakerNames: [String: String]
+    /// 这条笔记是从哪条笔记派生出来的（自动会议笔记 → 它的转写原文）。
+    /// 有了它，重开一篇笔记时还能找回旁边那份会议笔记。
+    public var linkedNoteID: String?
 
     public init(id: String = UUID().uuidString.uppercased(),
                 createdAtMs: UInt64 = HistoryEntry.nowMs(),
@@ -29,7 +32,8 @@ public struct HistoryEntry: Codable, Sendable, Equatable, Identifiable {
                 transcriptionMode: TranscriptionMode = .groqProxy,
                 postProcessingEnabled: Bool = false,
                 postProcessingPreset: PostProcessingPreset? = nil,
-                speakerNames: [String: String] = [:]) {
+                speakerNames: [String: String] = [:],
+                linkedNoteID: String? = nil) {
         self.id = id
         self.createdAtMs = createdAtMs
         self.title = title ?? HistoryEntry.defaultTitle(createdAtMs)
@@ -40,6 +44,7 @@ public struct HistoryEntry: Codable, Sendable, Equatable, Identifiable {
         self.postProcessingEnabled = postProcessingEnabled
         self.postProcessingPreset = postProcessingPreset
         self.speakerNames = speakerNames
+        self.linkedNoteID = linkedNoteID
     }
 
     /// 显示/插入用的正文：`finalText` 为空时回落 `sourceText`。
@@ -62,6 +67,7 @@ public struct HistoryEntry: Codable, Sendable, Equatable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case id, createdAtMs, title, sourceText, finalText, editorClipboardText
         case transcriptionMode, postProcessingEnabled, postProcessingPreset, speakerNames
+        case linkedNoteID
     }
 
     public init(from decoder: Decoder) throws {
@@ -76,6 +82,7 @@ public struct HistoryEntry: Codable, Sendable, Equatable, Identifiable {
         transcriptionMode = (try? c.decode(TranscriptionMode.self, forKey: .transcriptionMode)) ?? .groqProxy
         postProcessingEnabled = (try? c.decode(Bool.self, forKey: .postProcessingEnabled)) ?? false
         postProcessingPreset = try? c.decodeIfPresent(PostProcessingPreset.self, forKey: .postProcessingPreset)
+        linkedNoteID = try? c.decodeIfPresent(String.self, forKey: .linkedNoteID)
         speakerNames = (try? c.decode([String: String].self, forKey: .speakerNames)) ?? [:]
     }
 }
@@ -97,10 +104,17 @@ public struct NoteSessionSegment: Codable, Sendable, Equatable, Identifiable {
     public var createdAtMs: UInt64
     /// 全篇转译产出的那条独立笔记（面板上会多一个「打开笔记」跳转按钮）。
     public var openNoteId: String?
+    /// 这一段为什么没转出来。
+    ///
+    /// ⚠️ 面板上只写「这一段没转出来」是不够的：失败的成因至少有四种
+    /// （模型没输出、整段被判幻觉、说话人分离把文字弄丢了、音频读不出来），
+    /// 而它们要用户做的事完全不同 —— 不说清楚就只能猜。
+    public var failureReason: String?
 
     public init(id: UInt64, rawText: String = "", finalText: String = "",
                 status: NoteSegmentStatus = .processing, pasted: Bool = false,
-                createdAtMs: UInt64 = HistoryEntry.nowMs(), openNoteId: String? = nil) {
+                createdAtMs: UInt64 = HistoryEntry.nowMs(), openNoteId: String? = nil,
+                failureReason: String? = nil) {
         self.id = id
         self.rawText = rawText
         self.finalText = finalText
@@ -108,6 +122,7 @@ public struct NoteSessionSegment: Codable, Sendable, Equatable, Identifiable {
         self.pasted = pasted
         self.createdAtMs = createdAtMs
         self.openNoteId = openNoteId
+        self.failureReason = failureReason
     }
 
     /// 显示/插入用的文本：加工后的 `finalText`，为空则回落原始转写。

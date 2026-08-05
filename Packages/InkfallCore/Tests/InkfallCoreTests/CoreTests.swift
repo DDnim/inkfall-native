@@ -215,6 +215,21 @@ final class SubmissionPolicyTests: XCTestCase {
         return WAV.encode(pcm: pcm, sampleRate: sampleRate, channels: 1)
     }
 
+    /// 造一段 16 bit 单声道正弦：更接近真实语音的波形 —— 关键在于**瞬时采样
+    /// 绝大多数贴近零**，正是旧判据栽跟头的地方。
+    private func tone(totalMs: Int, amplitude: Float, sampleRate: UInt32 = 16000,
+                      frequency: Double = 220) -> Data {
+        let total = Int(sampleRate) * totalMs / 1000
+        var pcm = Data(capacity: total * 2)
+        for i in 0..<total {
+            let phase = 2 * Double.pi * frequency * Double(i) / Double(sampleRate)
+            let v = Int16(Double(amplitude) * Double(Int16.max) * sin(phase))
+            pcm.append(UInt8(UInt16(bitPattern: v) & 0xff))
+            pcm.append(UInt8((UInt16(bitPattern: v) >> 8) & 0xff))
+        }
+        return WAV.encode(pcm: pcm, sampleRate: sampleRate, channels: 1)
+    }
+
     func testShortRecordingsDoNotSubmit() {
         let p = RecordingSubmissionPolicy.default
         let short = RecordedAudio(data: wav(totalMs: 400, speechMs: 400), durationMs: 400)
@@ -234,6 +249,30 @@ final class SubmissionPolicyTests: XCTestCase {
         let p = RecordingSubmissionPolicy.default
         let spoken = RecordedAudio(data: wav(totalMs: 3000, speechMs: 900), durationMs: 3000)
         XCTAssertEqual(p.verdict(for: spoken), .submit)
+    }
+
+    /// 一段安静但**真的有人在说话**的录音必须过。
+    ///
+    /// ⚠️ 这条是真实事故换来的（2026-08-05，AMI 会议语料实测）：旧判据数的是
+    /// 「瞬时振幅 > 0.02 的采样累计 ≥150ms」，而语音波形绝大多数瞬时采样都
+    /// 贴近零 —— 17.5 分钟的真实会议里 **71 段有 34 段被判「没声音」丢掉，
+    /// 其中 23 段真的有人在说话**，包括一段 19.5 秒的需求陈述（它的「有效
+    /// 采样」只有 17 ms）。判据换成窗口 RMS 峰值之后才分得开。
+    func testQuietButRealSpeechSubmits() {
+        let p = RecordingSubmissionPolicy.default
+        // 峰值 0.05 满量程的正弦 —— 说话声不大，但远高于室内底噪。
+        let quiet = RecordedAudio(data: tone(totalMs: 3000, amplitude: 0.05),
+                                  durationMs: 3000)
+        XCTAssertEqual(p.verdict(for: quiet), .submit)
+    }
+
+    /// 而室内底噪（0.004–0.006 这一档）仍然必须被挡掉 —— 否则 Whisper 会对着
+    /// 它吐「Thank you.」「谢谢观看」这类幻觉。
+    func testRoomToneIsStillRejected() {
+        let p = RecordingSubmissionPolicy.default
+        let roomTone = RecordedAudio(data: tone(totalMs: 3000, amplitude: 0.004),
+                                     durationMs: 3000)
+        XCTAssertEqual(p.verdict(for: roomTone), .silent)
     }
 
     /// 解析不出来必须 fail-open —— 绝不能因为容器格式意外而丢掉真实语音。
@@ -693,5 +732,63 @@ final class HistoryEntryTests: XCTestCase {
     func testDisplayTextFallsBackToSource() {
         let e = HistoryEntry(sourceText: "raw", finalText: "")
         XCTAssertEqual(e.displayText, "raw")
+    }
+}
+
+// MARK: - 安静音频上的短套话
+
+final class QuietArtifactTests: XCTestCase {
+
+    /// ⚠️ 靠文本无法消歧：「Thank you.」是人真的会单独说的一句回应。
+    /// 判据必须是**音频特征** —— 只有刚刚擦着提交门限过来的安静段落里，
+    /// 这句话才是 Whisper 对着近似静音的产物。
+    func testShortBoilerplateIsOnlyAHallucinationOnQuietAudio() {
+        // 安静（刚过 0.015 的提交门限）+ 短套话 = 幻觉
+        XCTAssertTrue(HallucinationFilter.isHallucination("Thank you.", peakLevel: 0.018))
+        XCTAssertTrue(HallucinationFilter.isHallucination("谢谢", peakLevel: 0.02))
+        XCTAssertTrue(HallucinationFilter.isHallucination("you", peakLevel: 0.016))
+
+        // 同一句话，音频里确实有人在正常说话 → 是真话，必须留着
+        XCTAssertFalse(HallucinationFilter.isHallucination("Thank you.", peakLevel: 0.12))
+        XCTAssertFalse(HallucinationFilter.isHallucination("谢谢", peakLevel: 0.05))
+    }
+
+    /// 不知道音量时 fail-open —— 当成真人说的，绝不删用户说过的话。
+    func testUnknownLevelKeepsTheText() {
+        XCTAssertFalse(HallucinationFilter.isHallucination("Thank you."))
+        XCTAssertFalse(HallucinationFilter.isHallucination("Thank you.", peakLevel: nil))
+    }
+
+    /// 安静也好、大声也好，正常内容一律不动。
+    func testRealContentSurvivesAtAnyLevel() {
+        for level: Float in [0.016, 0.05, 0.4] {
+            XCTAssertFalse(HallucinationFilter.isHallucination(
+                "First is the functional, what needs need to be fulfilled",
+                peakLevel: level))
+        }
+    }
+
+    /// 字幕组片尾那一类**与音量无关**，永远丢。
+    func testSubtitleBoilerplateIsAlwaysDropped() {
+        XCTAssertTrue(HallucinationFilter.isHallucination("字幕由 Amara.org 社群提供",
+                                                          peakLevel: 0.5))
+        XCTAssertTrue(HallucinationFilter.isHallucination("thanks for watching", peakLevel: 0.5))
+    }
+}
+
+// MARK: - 幻觉名单的实战补充
+
+final class QuietArtifactFieldReportTests: XCTestCase {
+
+    /// 2026-08-05 实测：会议笔记自测跑了 60 秒，麦克风对着安静的房间，
+    /// 转写出三段「谢谢大家」并落进了正文。名单里原本只有「谢谢观看」
+    /// 这种字幕组片尾，漏了这个最常见的形态。
+    func testChineseSilenceArtifactsFromTheField() {
+        for text in ["谢谢大家", "謝謝大家", "谢谢你", "好的"] {
+            XCTAssertTrue(HallucinationFilter.isHallucination(text, peakLevel: 0.02),
+                          "\(text) 在安静音频上应判为幻觉")
+            XCTAssertFalse(HallucinationFilter.isHallucination(text, peakLevel: 0.15),
+                           "\(text) 在正常说话的音频上是真话")
+        }
     }
 }

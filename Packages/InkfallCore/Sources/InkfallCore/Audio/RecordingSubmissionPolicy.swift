@@ -28,20 +28,26 @@ public struct RecordedAudio: Sendable, Equatable {
 public struct RecordingSubmissionPolicy: Sendable, Equatable {
     public var minimumDurationMs: UInt64
     public var minimumAudioBytes: Int
-    /// 低于满量程这个比例（约 −34 dBFS）的样本算背景噪声而不是语音。
-    public var activeSampleAmplitude: Float
-    /// 值得转写所需的累计有声时长。Whisper 会对静音**产生幻觉文本**，
-    /// 所以达不到这个量的录音绝不能提交。
-    public var minimumActiveAudioMs: Double
+    /// 值得转写所需的**窗口 RMS 峰值**（`AudioLevel` 那把尺子）。
+    ///
+    /// Whisper 会对静音**产生幻觉文本**（「谢谢观看」「Thank you.」），
+    /// 所以太安静的录音绝不能提交；但判据必须分得开「安静的真人说话」和
+    /// 「室内底噪」—— 为什么是窗口峰值而不是数超阈值的采样，见 `AudioLevel`。
+    ///
+    /// 0.015 取自 iOS 端 `AudioSegmentGate` 的实测标定：室内底噪
+    /// 0.004–0.006，正常说话 0.02+。
+    public var minimumPeakLevel: Float
+    /// 峰值分析窗口。
+    public var peakWindowSeconds: Double
 
-    public init(minimumDurationMs: UInt64 = 700,
+    public init(minimumDurationMs: UInt64 = 500,
                 minimumAudioBytes: Int = 4096,
-                activeSampleAmplitude: Float = 0.02,
-                minimumActiveAudioMs: Double = 150) {
+                minimumPeakLevel: Float = 0.015,
+                peakWindowSeconds: Double = AudioLevel.defaultWindowSeconds) {
         self.minimumDurationMs = minimumDurationMs
         self.minimumAudioBytes = minimumAudioBytes
-        self.activeSampleAmplitude = activeSampleAmplitude
-        self.minimumActiveAudioMs = minimumActiveAudioMs
+        self.minimumPeakLevel = minimumPeakLevel
+        self.peakWindowSeconds = peakWindowSeconds
     }
 
     public static let `default` = RecordingSubmissionPolicy()
@@ -53,33 +59,14 @@ public struct RecordingSubmissionPolicy: Sendable, Equatable {
         return containsAudibleAudio(audio.data) ? .submit : .silent
     }
 
-    /// 扫 16 bit PCM，判断累计超阈值时长是否达到 `minimumActiveAudioMs`。
+    /// 这段音频里有没有人在说话。
     ///
     /// **解析不出来时 fail-open 返回 true** —— 绝不能因为一个意料之外的容器
-    /// 格式而把真实语音丢掉。
+    /// 格式而把真实语音丢掉（spec/10 A10）。
     func containsAudibleAudio(_ wav: Data) -> Bool {
-        guard let pcm = WAV.parse(wav) else { return true }
-
-        let threshold = Int16(activeSampleAmplitude * Float(Int16.max))
-        let samplesPerMs = Double(pcm.sampleRate) * Double(pcm.channels) / 1000.0
-        let required = Int64(minimumActiveAudioMs * samplesPerMs)
-        guard required > 0 else { return true }
-
-        var active: Int64 = 0
-        return wav.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
-            var offset = pcm.dataRange.lowerBound
-            let end = pcm.dataRange.upperBound - 1
-            while offset < end {
-                let lo = UInt16(raw[offset])
-                let hi = UInt16(raw[offset + 1])
-                let sample = Int16(bitPattern: lo | (hi << 8))
-                if sample > threshold || sample < -threshold {
-                    active += 1
-                    if active >= required { return true }
-                }
-                offset += 2
-            }
-            return false
+        guard let peak = AudioLevel.windowedPeak(wav: wav, windowSeconds: peakWindowSeconds) else {
+            return true
         }
+        return peak >= minimumPeakLevel
     }
 }

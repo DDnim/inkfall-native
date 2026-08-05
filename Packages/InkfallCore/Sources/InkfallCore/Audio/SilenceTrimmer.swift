@@ -5,17 +5,26 @@ import Foundation
 ///
 /// 少传静音 = 上传更小、Whisper 更快、幻觉更少。
 public struct SilenceTrimmer: Sendable, Equatable {
-    /// 低于满量程这个比例（约 −34 dBFS）的样本算静音。与提交策略同值。
+    /// 低于这个**窗口 RMS 峰值**的一段算静音（`AudioLevel` 那把尺子）。
+    /// 与提交策略同值 —— 两者判「有没有人说话」必须用同一把尺子，
+    /// 否则会出现「策略放行了，裁剪却把内容剪光」这种最难查的组合。
+    ///
+    /// ⚠️ 曾经是「瞬时振幅 > 0.02 的采样」，实测把安静的真人说话剪掉 92%
+    /// （日志里 `removed=29251ms kept=2620ms`）—— 原因见 `AudioLevel`。
     public var noiseFloor: Float
+    /// 活动判定的窗口长度。整窗保留，不做逐采样的碎剪。
+    public var windowSeconds: Double
     /// 第一个/最后一个有声样本之外保留的音频。
     public var edgePaddingMs: Double
     /// 超过这个长度的内部停顿会被压到这个长度，前后各留一半。
     public var maxPauseMs: Double
 
-    public init(noiseFloor: Float = 0.02,
+    public init(noiseFloor: Float = 0.015,
+                windowSeconds: Double = AudioLevel.defaultWindowSeconds,
                 edgePaddingMs: Double = 300,
                 maxPauseMs: Double = 2000) {
         self.noiseFloor = noiseFloor
+        self.windowSeconds = windowSeconds
         self.edgePaddingMs = edgePaddingMs
         self.maxPauseMs = maxPauseMs
     }
@@ -38,7 +47,6 @@ public struct SilenceTrimmer: Sendable, Equatable {
 
         guard frameCount > 0, sampleRate > 0, channelCount > 0 else { return unchanged }
 
-        let threshold = Int16(noiseFloor * Float(Int16.max))
         let padFrames = Int(edgePaddingMs / 1000 * sampleRate)
         let maxPauseFrames = Int(maxPauseMs / 1000 * sampleRate)
         let pauseKeepFrames = maxPauseFrames / 2
@@ -47,16 +55,36 @@ public struct SilenceTrimmer: Sendable, Equatable {
         var currentStart = -1
         var previousActive = -1
 
+        // 先按窗口算能量：逐采样判「超没超阈值」会把安静的真人说话判成静音，
+        // 因为语音波形绝大多数瞬时采样都贴近零（见 `AudioLevel`）。
+        let windowFrames = max(1, Int(windowSeconds * sampleRate))
+        var windowActive = [Bool](repeating: false, count: (frameCount + windowFrames - 1)
+                                  / windowFrames)
         pcm.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            for frame in 0..<frameCount {
-                var active = false
-                let base = frame * bytesPerFrame
-                for channel in 0..<channelCount {
-                    let o = base + channel * 2
-                    let sample = Int16(bitPattern: UInt16(raw[o]) | (UInt16(raw[o + 1]) << 8))
-                    if sample > threshold || sample < -threshold { active = true; break }
+            for window in windowActive.indices {
+                let start = window * windowFrames
+                let end = min(start + windowFrames, frameCount)
+                var energy: Float = 0
+                var count = 0
+                for frame in start..<end {
+                    let base = frame * bytesPerFrame
+                    for channel in 0..<channelCount {
+                        let o = base + channel * 2
+                        let value = Float(Int16(bitPattern: UInt16(raw[o])
+                                                | (UInt16(raw[o + 1]) << 8))) / Float(Int16.max)
+                        energy += value * value
+                        count += 1
+                    }
                 }
-                guard active else { continue }
+                guard count > 0 else { continue }
+                windowActive[window] =
+                    AudioLevel.normalized(rms: (energy / Float(count)).squareRoot()) >= noiseFloor
+            }
+        }
+
+        do {
+            for frame in 0..<frameCount {
+                guard windowActive[frame / windowFrames] else { continue }
 
                 if currentStart < 0 {
                     currentStart = max(frame - padFrames, 0)
