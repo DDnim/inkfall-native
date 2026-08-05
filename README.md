@@ -179,7 +179,7 @@ cd Packages/InkfallCore && \
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ```
 
-**319 个纯逻辑测试，0 失败。** 绝大部分从 `inkfall-app` 的
+**353 个纯逻辑测试，0 失败。** 绝大部分从 `inkfall-app` 的
 `regression_tests.rs` 移植 —— 重写期间唯一的安全网。
 
 ### 自测：UI 与系统集成怎么取证

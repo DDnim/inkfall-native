@@ -97,6 +97,17 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
   真实的 `MacAutomation.insert`，而且目标要先掉出前台（否则走 `pasteInPlace`，
   根本碰不到出事的那条路）。
 
+## 场景测试（多步走）
+
+- 单步的动作表只回答「这一下该干什么」，会出事的是**几步之后**的状态。
+  多步场景在 `SessionScenarioTests` / `NotePhaseTests`，对应 Tauri
+  `coordinator.rs` 里那组 `scenario_*`。
+- 状态机必须同时提供**动作表**与**把动作作用回状态**（`pressNote` /
+  `pressJarvis` / `NoteSessionMachine.next`）—— 只有前者的话多步路走不动，
+  而「共跑时停掉一个消费者，麦克风还开着吗」这类问题只有走几步才暴露。
+- 新增会话状态时，**同步给它加一条乱按序列的性质测试**：任意事件序列都
+  不能走到「不在会话里却还开着麦克风」或「还在录但没人要」。
+
 ## 验证
 
 - 纯逻辑改动：`swift test` 必须全绿。

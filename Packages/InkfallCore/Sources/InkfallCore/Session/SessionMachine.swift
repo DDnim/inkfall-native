@@ -87,6 +87,49 @@ public enum SessionMachine {
         return .start
     }
 
+    /// 把动作作用回形状上。
+    ///
+    /// 有了它多步场景才走得动：单步的动作表只回答「这一下该干什么」，
+    /// 而真正会出事的是**几步之后**的状态 —— 「共跑时停掉笔记，麦克风还开着吗」
+    /// 这种问题，一步一步断言是断言不出来的。
+    ///
+    /// ⚠️ 这不是「随便加的辅助函数」：`recording` 是引用计数的结果，
+    /// 写错就等于要么把麦克风卡在开着，要么把另一个消费者从句子中间切断。
+    public static func apply(_ toggle: NoteToggle, to shape: SessionShape) -> SessionShape {
+        var next = shape
+        switch toggle {
+        case .stop:
+            // 笔记这个消费者放手了；扫描还在的话流要留着（引用计数）。
+            if let sink = sinkAfterRelease(otherConsumerActive: shape.scanning) {
+                next.sink = sink
+            } else {
+                next.recording = false
+                next.sink = .paste
+            }
+            next.hold = false
+        case .convertHold:
+            // 刚起头的 hold 听写变成笔记录音：同一条流换个去向。
+            next.hold = false
+            next.sink = .noteWindow
+        case .attachToScan:
+            // 纯扫描会话上挂一个 sink，两者共跑。
+            next.sink = .noteWindow
+        case .busyDictating:
+            // 真听写占着麦：**一个字段都不许动**。
+            break
+        case .start:
+            next.recording = true
+            next.hold = false
+            next.sink = .noteWindow
+        }
+        return next
+    }
+
+    /// 按一次 ⌥Space。
+    public static func pressNote(_ shape: SessionShape) -> SessionShape {
+        apply(noteToggle(shape), to: shape)
+    }
+
     /// 一个消费者放开这条流之后，recorder 该怎么办 —— 就是引用计数。
     /// 写错的后果是要么把麦克风卡在开着，要么把另一个消费者从句子中间切断。
     ///
