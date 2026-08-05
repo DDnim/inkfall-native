@@ -102,6 +102,53 @@ final class PostProcessingCoordinator {
         }
     }
 
+    // MARK: - 不走预设的那条通道
+
+    /// 直接跑一段自定义的 instructions + input。
+    ///
+    /// 自动会议笔记（beta）用它 —— 那一路不是「把这段口述整理好」，而是
+    /// 「把整场会维护成一份笔记」，既没有预设也不该在失败时回落成 basic 润色
+    /// （对一份 diff 做规则润色毫无意义）。所以它绕开 `PostProcessingPolicy`，
+    /// 只复用引擎/密钥的解析与日志。
+    ///
+    /// - Returns: 模型的原始输出；`nil` = 这一轮没跑通（调用方自己决定
+    ///   重试还是丢弃，**绝不**在这里替它做主）。
+    func transform(instructions: String, input: String, label: String) async -> String? {
+        let settings = store.settings
+        guard let route = await route(for: settings) else {
+            Log.write("\(label): 没有可用的加工引擎")
+            return nil
+        }
+        Log.write("\(label): 送出（\(input.count) 字）")
+        let started = CFAbsoluteTimeGetCurrent()
+        switch await PostProcessor.run(.init(instructions: instructions, input: input,
+                                             route: route)) {
+        case .success(let success):
+            Log.write(String(format: "%@: %.2fs → %d 字%@", label, success.elapsed,
+                             success.text.count,
+                             success.costUSD.map { String(format: " $%.4f", $0) } ?? ""))
+            return success.text
+        case .failure(let failure):
+            Log.write(String(format: "%@: 失败（%@）%@ 用时 %.2fs", label, "\(failure.kind)",
+                             failure.message, CFAbsoluteTimeGetCurrent() - started))
+            return nil
+        }
+    }
+
+    /// 这份配置该往哪儿发。云端要 key，CLI 要那个命令装了。
+    private func route(for settings: AppSettings) async -> PostProcessor.Route? {
+        if let agent = settings.postProcessingEngine.cliAgent {
+            guard let executable = CLIAgentLocator.path(for: agent) else { return nil }
+            return .cli(agent: agent, effort: settings.cliAgentEffort,
+                        model: settings.cliAgentModel, executablePath: executable)
+        }
+        let provider = settings.postProcessingProvider
+        guard let key = await keys.resolve(provider) else { return nil }
+        return .cloud(provider: provider,
+                      model: settings.postProcessingModel(for: settings.postProcessingPreset),
+                      key: key)
+    }
+
     // MARK: - 发出去
 
     private func send(_ request: PostProcessor.Request,

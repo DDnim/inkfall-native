@@ -171,8 +171,11 @@ final class NotePanelController {
     private func ensurePanel() {
         guard panel == nil else { return }
 
+        // 会议笔记开着时是两栏，面板要宽一倍 —— 380 分成两半的话
+        // 两边都只剩一条缝，谁都读不了。
+        let width: CGFloat = session.meeting.isEnabled ? 760 : 380
         let p = InkfallNotePanel(
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 480),
+            contentRect: NSRect(x: 0, y: 0, width: width, height: 480),
             styleMask: [.borderless, .nonactivatingPanel, .resizable],
             backing: .buffered, defer: false)
 
@@ -195,7 +198,7 @@ final class NotePanelController {
         // 首选屏右下角，离边一段距离。
         if let screen = ScreenInfo.preferred() {
             let f = screen.visibleFrame
-            p.setFrameOrigin(NSPoint(x: f.maxX - 380 - 40, y: f.minY + 80))
+            p.setFrameOrigin(NSPoint(x: f.maxX - width - 40, y: f.minY + 80))
         } else {
             p.center()
         }
@@ -512,6 +515,22 @@ struct NotePanelView: View {
 
     @ViewBuilder
     private var content: some View {
+        // 会议笔记（beta）开着时，正文与笔记**并排** —— 左边是转写的原样，
+        // 右边是不断长出来的会议笔记。刻意不做成切换标签：这个功能的全部
+        // 意义就是让人一眼看到「说了什么」与「记下了什么」的差别。
+        if session.meeting.isEnabled {
+            HStack(spacing: 0) {
+                transcriptColumn
+                Divider().overlay(paperOnInk.opacity(0.12))
+                meetingColumn
+            }
+        } else {
+            transcriptColumn
+        }
+    }
+
+    @ViewBuilder
+    private var transcriptColumn: some View {
         // 暂停也走预览：正文仍然是段落合成的，继续录音时新段会追加进来，
         // 这时候让用户编辑 `draft` 只会被 `syncDraft()` 悄悄冲掉。
         if session.isLive {
@@ -519,6 +538,71 @@ struct NotePanelView: View {
         } else {
             editor
         }
+    }
+
+    /// 右栏：自动会议笔记（beta）。
+    private var meetingColumn: some View {
+        let meeting = session.meeting
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 5) {
+                Text("会议笔记")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(paperOnInk.opacity(0.7))
+                Text("BETA")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(cinnabar)
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(cinnabar.opacity(0.16), in: Capsule())
+                Spacer(minLength: 4)
+                // 「在整理」必须看得见：这一路比转写慢一个量级，不说破的话
+                // 用户会以为它坏了。
+                if meeting.isWorking {
+                    ProgressView().controlSize(.small).scaleEffect(0.6)
+                        .frame(width: 12, height: 12)
+                }
+            }
+            .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 6)
+
+            ScrollView {
+                if meeting.note.isEmpty {
+                    Text(meeting.isWorking ? "正在整理第一份笔记…"
+                                           : "说满 \(MeetingNoteScheduler.firstBatchCharacters) 字后开始整理")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(paperOnInk.opacity(0.35))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                } else {
+                    // 逐行渲染，而不是把整篇丢给一个 Markdown 视图 ——
+                    // 只有这样才能给「最近两轮改动」的那几行单独上底色。
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(Array(meetingLines(meeting.note).enumerated()), id: \.offset) {
+                            _, line in
+                            meetingLine(line, meeting: meeting)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 6)
+                }
+            }
+            // 图例：不说明的话两种底色只是两团颜色，没人猜得到含义。
+            if !meeting.latestChangedLines.isEmpty {
+                HStack(spacing: 8) {
+                    legendDot(meetingLatestTint, "最新一轮")
+                    if !meeting.previousChangedLines.isEmpty {
+                        legendDot(meetingPreviousTint, "上一轮")
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 5)
+            }
+            if let notice = meeting.notice {
+                Text(notice)
+                    .font(.system(size: 9))
+                    .foregroundStyle(Ink.amber)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     /// 录音中：只读的 markdown 预览。正文是段落合成的，用户此刻不该编辑它 ——
@@ -704,6 +788,50 @@ struct NotePanelView: View {
                             + "人物对不上。结果另存为新笔记，原文不动"))
     }
 
+    /// 最近一轮 = 朱砂（这套界面的强调色）；上一轮 = 青（刘海那套固定色板里的
+    /// 另一支）。两支在墨底上都够分辨，而且都不跟随系统明暗。
+    private var meetingLatestTint: Color { cinnabar }
+    private var meetingPreviousTint: Color { Color(red: 0.44, green: 0.75, blue: 0.70) }
+
+    private func legendDot(_ color: Color, _ label: String) -> some View {
+        HStack(spacing: 3) {
+            RoundedRectangle(cornerRadius: 2).fill(color.opacity(0.45))
+                .frame(width: 8, height: 8)
+            Text(label).font(.system(size: 9)).foregroundStyle(paperOnInk.opacity(0.45))
+        }
+    }
+
+    /// 会议笔记按行切。空行丢掉 —— 逐行渲染时它们只会变成一堆空隙。
+    private func meetingLines(_ note: String) -> [String] {
+        note.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    @ViewBuilder
+    private func meetingLine(_ line: String, meeting: MeetingNoteController) -> some View {
+        let tint: Color? = meeting.latestChangedLines.contains(line) ? meetingLatestTint
+            : (meeting.previousChangedLines.contains(line) ? meetingPreviousTint : nil)
+        Markdown(line)
+            .markdownTheme(.inkDark)
+            .markdownSoftBreakMode(.lineBreak)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(tint?.opacity(0.16) ?? .clear,
+                        in: RoundedRectangle(cornerRadius: 4))
+            .overlay(alignment: .leading) {
+                // 左侧一条竖线：底色在深色主题上容易被当成选中态，
+                // 加一条边才读得出「这是新增的」。
+                if let tint {
+                    RoundedRectangle(cornerRadius: 1).fill(tint.opacity(0.7))
+                        .frame(width: 2)
+                }
+            }
+            // 跳变要有过渡 —— 隔十几秒整块内容突然换掉，没有动画很像是出错了。
+            .animation(.easeOut(duration: 0.35), value: tint != nil)
+    }
+
     private func recButton(_ symbol: String, destructive: Bool = false,
                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -816,9 +944,19 @@ private struct SegmentBlock: View {
                 .font(.system(size: 10.5)).italic()
                 .foregroundStyle(paperOnInk.opacity(0.4))
         case .failed:
-            Text("这一段没转出来")
-                .font(.system(size: 10.5))
-                .foregroundStyle(Color(red: 0.94, green: 0.65, blue: 0.61).opacity(0.8))
+            // 原因必须写出来：失败的成因至少有四种，而它们要用户做的事
+            // 完全不同（去关「区分人物」？还是根本不用管？）。
+            VStack(alignment: .leading, spacing: 2) {
+                Text("这一段没转出来")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Color(red: 0.94, green: 0.65, blue: 0.61).opacity(0.85))
+                if let reason = segment.failureReason {
+                    Text(reason)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(paperOnInk.opacity(0.45))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         case .done:
             Markdown(segment.displayText)
                 .markdownTheme(.inkDark)

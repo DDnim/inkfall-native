@@ -30,10 +30,12 @@ final class AudioRecorder: @unchecked Sendable {
 
     /// 峰值电平（0...1），UI 每 50ms 读一次。
     private var peakLevel: Float = 0
-    /// 本段超过噪声门限的样本数 —— 提交策略那条「有效语音 ≥ 150ms」的实时对应物，
-    /// 让 UI 能在提交之前就知道这段值不值得转写。
-    private var activeSamples: UInt64 = 0
-    private let activeSampleAmplitude = RecordingSubmissionPolicy.default.activeSampleAmplitude
+    /// 本段到目前为止的**窗口 RMS 峰值**（`AudioLevel` 那把尺子）——
+    /// 提交策略的实时对应物，让 UI 在提交之前就知道这段值不值得转写。
+    ///
+    /// ⚠️ 和 `peakLevel` 不是一回事：那个是最近一个缓冲的**瞬时**振幅峰值
+    /// （给波形画图用），这个是整段的能量峰值（给「有没有人说话」判据用）。
+    private var takePeakLevel: Float = 0
 
     private let trimmer = SilenceTrimmer.default
 
@@ -62,14 +64,9 @@ final class AudioRecorder: @unchecked Sendable {
         }
     }
 
-    /// 本段累计的有声毫秒数。
-    var activeAudioMs: Double {
-        lock.withLock {
-            let samplesPerMs = sampleRate * Double(max(channelCount, 1)) / 1000
-            guard samplesPerMs > 0 else { return 0 }
-            return Double(activeSamples) / samplesPerMs
-        }
-    }
+    /// 本段的窗口 RMS 峰值。低于 `RecordingSubmissionPolicy.minimumPeakLevel`
+    /// 就意味着这段提交上去也会被判成静音。
+    var takePeak: Float { lock.withLock { takePeakLevel } }
 
     // MARK: - 预热
 
@@ -134,7 +131,7 @@ final class AudioRecorder: @unchecked Sendable {
         lock.lock()
         pcm.removeAll(keepingCapacity: true)
         peakLevel = 0
-        activeSamples = 0
+        takePeakLevel = 0
         startedAt = CFAbsoluteTimeGetCurrent()
         running = true
         let u = unit
@@ -205,7 +202,7 @@ final class AudioRecorder: @unchecked Sendable {
         let channels = channelCount
         startedAt = nil
         peakLevel = 0
-        activeSamples = 0
+        takePeakLevel = 0
         lock.unlock()
 
         // 诊断僵死的 unit：多秒的录音却几乎没有 PCM，说明 unit 报了「已启动」
@@ -249,7 +246,7 @@ final class AudioRecorder: @unchecked Sendable {
         let prefixMs = totalMs - clampedRetained
         // 把段起点往回拨，让保留的尾巴把已流逝的时间带进下一段。
         startedAt = now - Double(clampedRetained) / 1000
-        activeSamples = 0
+        takePeakLevel = 0
         lock.unlock()
 
         return package(pcm: Data(prefix), fallbackDurationMs: prefixMs,
@@ -265,7 +262,7 @@ final class AudioRecorder: @unchecked Sendable {
         pcm.removeAll(keepingCapacity: true)
         startedAt = nil
         peakLevel = 0
-        activeSamples = 0
+        takePeakLevel = 0
         lock.unlock()
         if wasRunning, let u { AudioOutputUnitStop(u) }
     }
@@ -428,22 +425,24 @@ final class AudioRecorder: @unchecked Sendable {
 
         var chunk = Data(capacity: samples.count * 2)
         var peak: Float = 0
-        var active: UInt64 = 0
+        var energy: Float = 0
 
         for sample in samples {
             let value = max(-1, min(1, sample))
             peak = max(peak, abs(value))
-            if abs(value) > activeSampleAmplitude { active += 1 }
+            energy += value * value
             let intSample = Int16(value * Float(Int16.max))
             let bits = UInt16(bitPattern: intSample)
             chunk.append(UInt8(bits & 0xff))
             chunk.append(UInt8((bits >> 8) & 0xff))
         }
 
+        // 一个音频回调缓冲就是一个窗口（约 10–20 ms，比判据的 50 ms 略短）。
+        let rms = (energy / Float(samples.count)).squareRoot()
         lock.lock()
         pcm.append(chunk)
         peakLevel = peak
-        activeSamples += active
+        takePeakLevel = max(takePeakLevel, AudioLevel.normalized(rms: rms))
         lock.unlock()
     }
 }

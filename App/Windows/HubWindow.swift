@@ -402,6 +402,12 @@ struct HubView: View {
                 toggleRow("逐段自动粘贴", "每段转写完立刻插入目标窗口",
                           isOn: Binding(get: { model.settings.noteAutoPaste },
                                         set: { model.settings.noteAutoPaste = $0 }))
+                toggleRow("自动会议笔记（Beta）",
+                          "边录边在正文旁边整理出一份会议笔记（议题/决定/待办），"
+                          + "另存为一条笔记，不动原转写。说满 100 字后开始，"
+                          + "每次整理都要一次模型往返，会额外花钱",
+                          isOn: Binding(get: { model.settings.meetingNotesEnabled },
+                                        set: { model.settings.meetingNotesEnabled = $0 }))
                 toggleRow("启动时恢复上次会话", "未粘贴的内容不会因为重启而丢",
                           isOn: Binding(get: { model.settings.noteRestoreOnLaunch },
                                         set: { model.settings.noteRestoreOnLaunch = $0 }))

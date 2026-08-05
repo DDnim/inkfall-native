@@ -61,8 +61,29 @@ public enum HallucinationFilter {
     private static let punctuationOnly = CharacterSet(charactersIn:
         " .。，,、!！?？…·-—~～\"'“”‘’()（）[]【】/\\*#♪♫「」『』:：;；\n\t")
 
+    /// **只在音频本身很安静时**才算幻觉的短套话。
+    ///
+    /// ⚠️ 这些话真人也会单独说 —— 「谢谢」「Thank you.」是完整的一句回应，
+    /// 无条件丢掉就是删用户说过的话。所以**靠文本消歧是不可能的**，只能拿
+    /// 音频特征来判：一段刚刚够过门限的安静音频里冒出这几个字，那是
+    /// Whisper 对着近似静音的典型产物（训练数据里全是 YouTube 字幕）。
+    private static let quietArtifacts: Set<String> = Set([
+        "thank you", "thanks", "you", "bye", "bye bye", "okay", "hmm",
+        "谢谢", "謝謝", "谢谢大家", "謝謝大家", "谢谢你", "谢谢您", "好的", "嗯", "啊",
+        "*laughs*", "(laughs)", "[laughter]", "♪",
+    ].map(normalize))
+
+    /// 高过这个窗口 RMS 峰值就当作「确实有人在正常说话」，短套话照单全收。
+    /// 取在提交门限（0.015）与正常说话（0.02+）之间偏上，
+    /// 这样只有**刚刚擦着门限过来**的段落才会被这条规则管到。
+    public static let confidentSpeechPeak: Float = 0.03
+
     /// - Returns: 这一整段是不是幻觉，该整条丢弃。
-    public static func isHallucination(_ text: String) -> Bool {
+    ///
+    /// - Parameter peakLevel: 这段音频的窗口 RMS 峰值（`AudioLevel` 那把尺子）。
+    ///   给了它才能对「Thank you.」这类**只在静音上才是幻觉**的短句做判断；
+    ///   `nil` 表示不知道，那就一律当成真人说的（fail-open）。
+    public static func isHallucination(_ text: String, peakLevel: Float? = nil) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return true }
         // 纯标点/纯符号 —— 没有任何可粘贴的内容。
@@ -71,6 +92,11 @@ public enum HallucinationFilter {
         // 同一句短语被重复刷屏是解码陷进循环的典型形态
         //（「好的好的好的好的…」）。真人不会这么说。
         if isDegenerateRepetition(trimmed) { return true }
+        // 安静的音频 + 一句短套话 = 幻觉。两个条件缺一不可。
+        if let peakLevel, peakLevel < confidentSpeechPeak,
+           quietArtifacts.contains(normalize(trimmed)) {
+            return true
+        }
         return false
     }
 

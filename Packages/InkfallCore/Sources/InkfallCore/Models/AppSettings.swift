@@ -101,6 +101,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
     /// 落笔有**独立于全局听写**的 AI 开关与预设。
     public var noteProcessingEnabled = true
     public var noteProcessingPreset: PostProcessingPreset = .notes
+    /// 自动会议笔记（**beta**）。与现有的转写/加工完全并行，另存一份笔记。
+    /// 默认关：它慢、要联网、还会额外花钱，得由用户显式打开。
+    public var meetingNotesEnabled = false
     public var noteRestoreOnLaunch = true
     public var noteSpeakerDiarizationEnabled = false
 
@@ -155,7 +158,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case customPostProcessingPrompt, processingMemoryContext, recentContextEnabled
         case postProcessingEngine, cliAgentEffort, cliAgentModel
         case noteAutoSegment, noteAutoPaste, noteProcessingEnabled, noteProcessingPreset
-        case noteRestoreOnLaunch, noteSpeakerDiarizationEnabled
+        case noteRestoreOnLaunch, noteSpeakerDiarizationEnabled, meetingNotesEnabled
         case voiceCommandsEnabled, voiceCommands, jarvisModeEnabled
         case selectionCommandModeEnabled, askModeEnabled
         case appLanguage, screenshotFeatureEnabled, screenshotQuoteMarkerEnabled
@@ -219,6 +222,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         noteProcessingEnabled = f(.noteProcessingEnabled, noteProcessingEnabled)
         noteProcessingPreset = f(.noteProcessingPreset, noteProcessingPreset)
         noteRestoreOnLaunch = f(.noteRestoreOnLaunch, noteRestoreOnLaunch)
+        meetingNotesEnabled = f(.meetingNotesEnabled, meetingNotesEnabled)
         noteSpeakerDiarizationEnabled = f(.noteSpeakerDiarizationEnabled,
                                           noteSpeakerDiarizationEnabled)
 
