@@ -199,6 +199,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // 会议笔记**面板**自测：两栏宽度、二级缩进、开关翻来翻去笔记还在。
+        // 不碰模型也不开麦克风。
+        if ProcessInfo.processInfo.arguments.contains("--meeting-panel-test") {
+            runMeetingPanelTest()
+            return
+        }
+
         // 长录音自测：真实长对话走完整条链路，回答「音频去哪儿了」。
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--long-audio-test") {
             runLongAudioTest(path: ProcessInfo.processInfo.arguments[safe: index + 1] ?? "")
@@ -3467,6 +3474,140 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(ok ? 0 : 1)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: settle)
+    }
+
+    // MARK: - 会议笔记面板自测
+
+    /// 会议笔记那一栏在**面板上**的三件事：
+    ///
+    /// 1. 开着是两栏宽，关掉回单栏，而且**右边缘钉住**（面板停在屏幕右下角，
+    ///    从右边长出去会顶到屏幕外）；
+    /// 2. 二级列表真的缩进了 —— 模型吐的那两个空格必须变成看得见的左边距；
+    /// 3. 开关翻来翻去**不会把已经整理出来的笔记弄丢**（A11）。
+    ///
+    /// 不碰模型也不开麦克风：直接塞一份带二级列表的笔记进去，然后量面板。
+    /// 截图取证在这里是死路 —— `screencapture` 要屏幕录制授权，从终端起的进程
+    /// 一律拿不到（自测里那张 `/tmp/inkfall-meeting-panel.png` 就从来没生成过）。
+    /// 所以量窗口几何 + 量 AX 里每一行的横坐标：缩进有没有生效，在坐标上是硬的。
+    private static let meetingPanelSample = """
+    ## 定价
+    - 两个方案在比
+      - A：按席位算
+      - B：按用量算
+    """
+
+    private func runMeetingPanelTest() {
+        selfTest = true
+        store.readOnly = true
+        store.settings.meetingNotesEnabled = true
+        var failures = 0
+        func check(_ label: String, _ ok: Bool) {
+            emit(ok ? "  ✓ \(label)" : "  ✗ \(label)")
+            if !ok { failures += 1 }
+        }
+
+        noteSession.meeting.debugInject(note: Self.meetingPanelSample)
+        notePanel.show()
+
+        // SwiftUI 要一个 runloop 转身才把布局落到 AX 上，量早了全是零。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            let wide = self.notePanel.debugFrame ?? .zero
+            emit("两栏：\(Int(wide.width))×\(Int(wide.height)) @ x=\(Int(wide.minX))")
+            check("开着是两栏宽（\(Int(wide.width))）",
+                  abs(wide.width - NotePanelController.twoColumnWidth) < 1)
+
+            // 缩进取证：父项与子项的横坐标必须差出一级。
+            let rows = Self.axTextRows(pid: ProcessInfo.processInfo.processIdentifier)
+            emit("AX 读到 \(rows.count) 行")
+            let parent = rows.first { $0.text.contains("两个方案在比") }
+            let childA = rows.first { $0.text.contains("按席位算") }
+            let childB = rows.first { $0.text.contains("按用量算") }
+            if let parent, let childA, let childB {
+                emit("父项 x=\(Int(parent.x))；子项 x=\(Int(childA.x)) / \(Int(childB.x))")
+                check("二级项确实缩进在父项右边", childA.x > parent.x + 6 && childB.x > parent.x + 6)
+                check("同级的两条对齐", abs(childA.x - childB.x) < 1)
+            } else {
+                check("AX 里读得到那三行（父项/两个子项）", false)
+                emit("  读到的：\(rows.map(\.text).prefix(24).joined(separator: " ／ "))")
+            }
+            check("面板上有「会议笔记」这个开关",
+                  rows.contains { $0.text.contains("会议笔记") })
+
+            // 关掉：回单栏，右边缘不动。
+            self.noteSession.meetingNotes = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                let narrow = self.notePanel.debugFrame ?? .zero
+                emit("单栏：\(Int(narrow.width))×\(Int(narrow.height)) @ x=\(Int(narrow.minX))")
+                check("关掉回单栏宽（\(Int(narrow.width))）",
+                      abs(narrow.width - NotePanelController.singleColumnWidth) < 1)
+                check("右边缘钉住没动", abs(narrow.maxX - wide.maxX) < 1)
+
+                // 单栏只有 380 宽，而开关那一行现在是**四个** chip。
+                // 挤出面板右边的话，新加的这个就等于没有。
+                let narrowRows = Self.axTextRows(pid: ProcessInfo.processInfo.processIdentifier)
+                if let chip = narrowRows.first(where: { $0.text.contains("会议笔记") }) {
+                    emit("单栏下「会议笔记」chip x=\(Int(chip.x))，面板右边 \(Int(narrow.maxX))")
+                    check("四个 chip 在 380 宽里没挤出面板", chip.x < narrow.maxX - 24)
+                } else {
+                    check("单栏下还找得到「会议笔记」这个开关", false)
+                }
+
+                // 再打开：宽度回来，而且**笔记还在**。
+                self.noteSession.meetingNotes = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    let again = self.notePanel.debugFrame ?? .zero
+                    check("再打开又是两栏宽（\(Int(again.width))）",
+                          abs(again.width - NotePanelController.twoColumnWidth) < 1)
+                    check("翻来翻去之后笔记还在（\(self.noteSession.meeting.note.count) 字）",
+                          self.noteSession.meeting.note == Self.meetingPanelSample)
+                    emit(failures == 0 ? "✅ 会议笔记面板通" : "❌ \(failures) 项不过")
+                    Log.flush()
+                    exit(failures == 0 ? 0 : 1)
+                }
+            }
+        }
+    }
+
+    /// 走 AX 把本进程窗口里的文字连同**横坐标**读出来。
+    ///
+    /// ⚠️ 只能在主线程调：对自家进程的 AX 请求是就地派发的（spec/10 自动粘贴那条）。
+    private static func axTextRows(pid: pid_t) -> [(text: String, x: CGFloat)] {
+        var out: [(text: String, x: CGFloat)] = []
+        func walk(_ element: AXUIElement, depth: Int) {
+            guard depth < 24 else { return }
+            func string(_ attribute: String) -> String? {
+                var value: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(
+                    element, attribute as CFString, &value) == .success,
+                    let text = value as? String,
+                    !text.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+                return text
+            }
+            let labels = [string(kAXValueAttribute), string(kAXTitleAttribute),
+                          string(kAXDescriptionAttribute)].compactMap { $0 }
+            if !labels.isEmpty {
+                var point = CGPoint.zero
+                var raw: CFTypeRef?
+                if AXUIElementCopyAttributeValue(
+                    element, kAXPositionAttribute as CFString, &raw) == .success,
+                    let value = raw, CFGetTypeID(value) == AXValueGetTypeID() {
+                    AXValueGetValue(unsafeBitCast(value, to: AXValue.self), .cgPoint, &point)
+                }
+                out.append((labels.joined(separator: " | "), point.x))
+            }
+            var children: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+                element, kAXChildrenAttribute as CFString, &children) == .success,
+                let list = children as? [AXUIElement] else { return }
+            for child in list { walk(child, depth: depth + 1) }
+        }
+        var windows: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            AXUIElementCreateApplication(pid),
+            kAXWindowsAttribute as CFString, &windows) == .success,
+            let list = windows as? [AXUIElement] else { return [] }
+        for window in list { walk(window, depth: 0) }
+        return out
     }
 
     // MARK: - 长录音自测

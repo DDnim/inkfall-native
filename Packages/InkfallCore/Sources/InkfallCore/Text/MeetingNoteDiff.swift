@@ -90,12 +90,18 @@ public enum MeetingNoteDiff {
             let replacement = block.replacement.trimmingCharacters(in: .whitespacesAndNewlines)
 
             if block.isAppend {
-                guard !replacement.isEmpty else { continue }
-                guard !contains(text, replacement) else { skipped += 1; continue }
-                text = append(replacement, to: text)
+                // 追加保留首行缩进：缩进就是层级，`- 子项` 前面那两个空格被剃掉
+                // 之后，二级列表在笔记里就变回了一级，谁也看不出它属于谁。
+                let addition = trimmingBlankEdges(block.replacement)
+                guard !addition.isEmpty else { continue }
+                guard !contains(text, addition) else { skipped += 1; continue }
+                text = append(addition, to: text)
                 applied += 1
                 continue
             }
+            // 替换这条路**不能**保留首行缩进：SEARCH 是剃过缩进去匹配的，命中的
+            // 范围从 `-` 开始，原文那两个空格还留在前面 —— 替换文本再带一份缩进
+            // 就成了四个空格，每改写一次深一级。
 
             let search = block.search.trimmingCharacters(in: .whitespacesAndNewlines)
             if let range = text.range(of: search) {
@@ -132,6 +138,22 @@ public enum MeetingNoteDiff {
         text.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+    }
+
+    /// 去掉首尾的空行与每行的行尾空白，**但保住首行的缩进**。
+    ///
+    /// `trimmingCharacters(in: .whitespacesAndNewlines)` 在这里不能用：它会把
+    /// 首行的缩进一起剃掉，而缩进正是层级本身。
+    static func trimmingBlankEdges(_ text: String) -> String {
+        var lines = text.components(separatedBy: .newlines)
+            .map { line -> String in
+                var line = line
+                while let last = line.last, last.isWhitespace { line.removeLast() }
+                return line
+            }
+        while let first = lines.first, first.isEmpty { lines.removeFirst() }
+        while let last = lines.last, last.isEmpty { lines.removeLast() }
+        return lines.joined(separator: "\n")
     }
 
     private static func append(_ addition: String, to note: String) -> String {
