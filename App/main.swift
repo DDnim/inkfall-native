@@ -2437,6 +2437,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             check("MCP 读的是原生版的 token 路径",
                   body.contains("app.inkfall.native/integration_token"))
             emit("注册命令：\(IntegrationStore.registerCommand)")
+            // 下面 driveMCP 直接把路径当**一个** Process 参数传，永远不过 shell ——
+            // 而用户是把这行贴进终端的。少个引号，`Application Support` 中间那个空格
+            // 就把路径劈成两段，node 启动即退，客户端只报 -32000。所以真的分一次词。
+            let words = Self.shellSplit(IntegrationStore.registerCommand)
+            check("注册命令分词后路径还是一整段",
+                  words.last == IntegrationStore.mcpScriptPath.path)
 
             // 真的把桥跑起来：node 起进程 → JSON-RPC 握手 → tools/call。
             // 只验「文件写出去了」证明不了编码助手接得上。
@@ -2469,6 +2475,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func nodePath() -> String? {
         ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
             .first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    /// 让真的 `/bin/sh` 给一条命令分词，返回分出来的每一段。
+    private static func shellSplit(_ command: String) -> [String] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "printf '%s\\n' \(command)"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return [] }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (String(data: data, encoding: .utf8) ?? "")
+            .split(separator: "\n").map(String.init)
     }
 
     /// 起一个真的 MCP 桥进程，走一遍 initialize → tools/list → tools/call。
