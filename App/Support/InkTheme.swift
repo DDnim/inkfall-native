@@ -28,10 +28,23 @@ public enum Ink {
     public static let amber = Color(hex: 0xB4770E, dark: 0xD9A441)      // 需注意，不危险
     public static let danger = Color(hex: 0xB23B2E, dark: 0xE06A5C)     // 删除 / 清空
 
-    /// 墨锭 —— 悬浮层固定深色，**不随系统主题翻转**（它浮在别人的窗口上）。
-    /// 刘海胶囊必须是纯黑：任何偏暖的近黑都会在硬件刘海边缘露出接缝。
+    /// 墨锭 —— **贴着刘海的那一套固定深色，不随系统主题翻转**。
+    /// 胶囊必须是纯黑：任何偏暖的近黑都会在硬件刘海边缘露出一条接缝。
+    /// （`NotchOverlay` 自己写死了同样的黑与米，不走这两个常量；引导页走。）
     public static let inkBlock = Color.black
     public static let paperOnInk = Color(hex: 0xF1E8D6, dark: 0xF1E8D6)
+
+    /// 落笔面板（那扇悬浮窗）的表面与前景。
+    ///
+    /// 和上面那套**分开**：面板不贴着刘海，就是一扇正常的窗，跟随系统明暗。
+    /// 深色的两个值是原来那道渐变的原值，浅色下是暖纸。
+    public static let panelTop = Color(hex: 0xFDF8EC, dark: 0x16110C)
+    public static let panelBottom = Color(hex: 0xF0E6D2, dark: 0x0A0805)
+
+    /// 面板上的前景色。面板里所有层级都是**这一个值加不同的 opacity** 叠出来的
+    /// （正文 1.0、次要 0.5、分隔线 0.12…），所以只要它翻转，整套明暗就都成立 ——
+    /// 不需要给每一处再配一个浅色值。
+    public static let panelInk = Color(hex: 0x241F18, dark: 0xF1E8D6)
 
     // 圆角
     public static let rSM: CGFloat = 5
