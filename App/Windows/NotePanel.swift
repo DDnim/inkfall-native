@@ -411,22 +411,21 @@ struct NotePanelView: View {
     @Bindable var session: NoteSessionController
     let controller: NotePanelController
 
-    private let paperOnInk = Color(red: 0.945, green: 0.91, blue: 0.84)
-    private let cinnabar = Color(red: 0.84, green: 0.35, blue: 0.29)
+    private let panelInk = Ink.panelInk
+    private let cinnabar = Ink.cinnabar
 
     var body: some View {
         VStack(spacing: 0) {
             titlebar
-            Divider().overlay(paperOnInk.opacity(0.1))
+            Divider().overlay(panelInk.opacity(0.1))
             switches
-            Divider().overlay(paperOnInk.opacity(0.1))
+            Divider().overlay(panelInk.opacity(0.1))
             content
-            Divider().overlay(paperOnInk.opacity(0.1))
+            Divider().overlay(panelInk.opacity(0.1))
             recbar
         }
         .background(
-            LinearGradient(colors: [Color(red: 0.086, green: 0.067, blue: 0.047),
-                                    Color(red: 0.039, green: 0.031, blue: 0.02)],
+            LinearGradient(colors: [Ink.panelTop, Ink.panelBottom],
                            startPoint: .top, endPoint: .bottom))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .onChange(of: session.isLive) { _, _ in controller.syncFocusPolicy() }
@@ -440,10 +439,10 @@ struct NotePanelView: View {
         HStack(spacing: 7) {
             Image(systemName: session.isRecording ? "waveform" : "square.and.pencil")
                 .font(.system(size: 10))
-                .foregroundStyle(session.isRecording ? cinnabar : paperOnInk.opacity(0.72))
+                .foregroundStyle(session.isRecording ? cinnabar : panelInk.opacity(0.72))
                 .frame(width: 19, height: 19)
                 .background(session.isRecording ? cinnabar.opacity(0.24)
-                                                : paperOnInk.opacity(0.09),
+                                                : panelInk.opacity(0.09),
                             in: RoundedRectangle(cornerRadius: 5))
 
             // 录音中标题不可改：正文都还没定，改名没有意义，
@@ -451,13 +450,13 @@ struct NotePanelView: View {
             if session.isLive {
                 Text(session.title.isEmpty ? "落笔" : session.title)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(paperOnInk)
+                    .foregroundStyle(panelInk)
                     .lineLimit(1)
             } else {
                 TextField("未命名", text: $session.title)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(paperOnInk)
+                    .foregroundStyle(panelInk)
                     .lineLimit(1)
             }
 
@@ -490,8 +489,8 @@ struct NotePanelView: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 9.5))
-                .foregroundStyle(destructive ? Color(red: 0.94, green: 0.65, blue: 0.61)
-                                             : paperOnInk.opacity(0.6))
+                .foregroundStyle(destructive ? Ink.danger
+                                             : panelInk.opacity(0.6))
                 .frame(width: 20, height: 20)
         }
         .buttonStyle(.plain)
@@ -541,11 +540,11 @@ struct NotePanelView: View {
                 Image(systemName: symbol).font(.system(size: 9))
                 Text(label).font(.system(size: 10, weight: on ? .semibold : .regular))
             }
-            .foregroundStyle(!enabled ? paperOnInk.opacity(0.25)
-                             : on ? cinnabar : paperOnInk.opacity(0.5))
+            .foregroundStyle(!enabled ? panelInk.opacity(0.25)
+                             : on ? cinnabar : panelInk.opacity(0.5))
             .padding(.horizontal, 7)
             .padding(.vertical, 3.5)
-            .background(on ? cinnabar.opacity(0.16) : paperOnInk.opacity(0.06),
+            .background(on ? cinnabar.opacity(0.16) : panelInk.opacity(0.06),
                         in: RoundedRectangle(cornerRadius: 5))
             .overlay(RoundedRectangle(cornerRadius: 5)
                 .stroke(on ? cinnabar.opacity(0.45) : .clear, lineWidth: 1))
@@ -565,7 +564,7 @@ struct NotePanelView: View {
         if session.meeting.isEnabled {
             HStack(spacing: 0) {
                 transcriptColumn
-                Divider().overlay(paperOnInk.opacity(0.12))
+                Divider().overlay(panelInk.opacity(0.12))
                 meetingColumn
             }
         } else {
@@ -591,7 +590,7 @@ struct NotePanelView: View {
             HStack(spacing: 5) {
                 Text("会议笔记")
                     .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(paperOnInk.opacity(0.7))
+                    .foregroundStyle(panelInk.opacity(0.7))
                 Text("BETA")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(cinnabar)
@@ -612,7 +611,7 @@ struct NotePanelView: View {
                     Text(meeting.isWorking ? "正在整理第一份笔记…"
                                            : "说满 \(MeetingNoteScheduler.firstBatchCharacters) 字后开始整理")
                         .font(.system(size: 10.5))
-                        .foregroundStyle(paperOnInk.opacity(0.35))
+                        .foregroundStyle(panelInk.opacity(0.35))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 10)
                 } else {
@@ -709,11 +708,12 @@ struct NotePanelView: View {
                 scroll?.backgroundColor = .clear
                 scroll?.contentView.drawsBackground = false
                 scroll?.contentView.backgroundColor = .clear
-                // 兜底：即使将来某一层又自己画背景，深色外观下也是深的，不是白的。
-                scroll?.appearance = NSAppearance(named: .darkAqua)
-                view.appearance = NSAppearance(named: .darkAqua)
+                // ⚠️ 这里**不能**再钉 `NSAppearance(named: .darkAqua)`。面板现在跟随
+                // 系统明暗，钉死外观会让浅色下的选中高亮、查找栏、滚动条全都还是
+                // 深色的一套，浮在浅色正文上。上面那三层背景已经全关掉了，
+                // 不需要靠钉外观兜底。
                 view.insertionPointColor = NSColor(cinnabar)
-                view.textColor = NSColor(paperOnInk)
+                view.textColor = NSColor(panelInk)
                 view.font = .systemFont(ofSize: 11.5)
                 view.textContainerInset = NSSize(width: 8, height: 9)
                 // ⌘F 的查找栏。用查找栏而不是老的查找面板 —— 面板是独立窗口，
@@ -734,7 +734,7 @@ struct NotePanelView: View {
                      "每次开始录音都会新建一篇笔记"], id: \.self) { line in
                 Text(line)
                     .font(.system(size: 11))
-                    .foregroundStyle(paperOnInk.opacity(0.42))
+                    .foregroundStyle(panelInk.opacity(0.42))
             }
         }
         .padding(.top, 8)
@@ -748,14 +748,14 @@ struct NotePanelView: View {
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 // 暂停时计时是冻住的，颜色也要跟着退下去 ——
                 // 一个亮着朱砂却不走的数字读起来像卡死。
-                .foregroundStyle(session.isPaused ? paperOnInk.opacity(0.45) : cinnabar)
+                .foregroundStyle(session.isPaused ? panelInk.opacity(0.45) : cinnabar)
             Text("\(session.wordCount) 字")
                 .font(.system(size: 10))
-                .foregroundStyle(paperOnInk.opacity(0.4))
+                .foregroundStyle(panelInk.opacity(0.4))
             if session.isPaused {
                 Text("已暂停")
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(paperOnInk.opacity(0.55))
+                    .foregroundStyle(panelInk.opacity(0.55))
             }
             // 共跑指示：贾维斯 armed 时每段既留下又扫描。必须看得见 ——
             // 「待命」单独跑时承诺的是「什么都不留」，这里正好相反，
@@ -767,9 +767,9 @@ struct NotePanelView: View {
                     Text("待命").font(.system(size: 9.5, weight: .medium))
                 }
                 // 面板是墨底的，用刘海那套固定色板里的青，不跟随系统明暗。
-                .foregroundStyle(Color(red: 0.44, green: 0.75, blue: 0.70))
+                .foregroundStyle(Ink.teal)
                 .padding(.horizontal, 5).padding(.vertical, 1.5)
-                .background(Color(red: 0.44, green: 0.75, blue: 0.70).opacity(0.14),
+                .background(Ink.teal.opacity(0.14),
                             in: Capsule())
             }
             Spacer()
@@ -817,11 +817,11 @@ struct NotePanelView: View {
         } label: {
             Text(running ? "转译中…" : "全篇转译")
                 .font(.system(size: 10.5, weight: .medium))
-                .foregroundStyle(running ? cinnabar : paperOnInk.opacity(0.75))
+                .foregroundStyle(running ? cinnabar : panelInk.opacity(0.75))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(paperOnInk.opacity(0.10), in: Capsule())
-                .overlay(Capsule().stroke(paperOnInk.opacity(0.14)))
+                .background(panelInk.opacity(0.10), in: Capsule())
+                .overlay(Capsule().stroke(panelInk.opacity(0.14)))
         }
         .buttonStyle(.plain)
         .disabled(blocker != nil || running)
@@ -835,13 +835,13 @@ struct NotePanelView: View {
     /// 最近一轮 = 朱砂（这套界面的强调色）；上一轮 = 青（刘海那套固定色板里的
     /// 另一支）。两支在墨底上都够分辨，而且都不跟随系统明暗。
     private var meetingLatestTint: Color { cinnabar }
-    private var meetingPreviousTint: Color { Color(red: 0.44, green: 0.75, blue: 0.70) }
+    private var meetingPreviousTint: Color { Ink.teal }
 
     private func legendDot(_ color: Color, _ label: String) -> some View {
         HStack(spacing: 3) {
             RoundedRectangle(cornerRadius: 2).fill(color.opacity(0.45))
                 .frame(width: 8, height: 8)
-            Text(label).font(.system(size: 9)).foregroundStyle(paperOnInk.opacity(0.45))
+            Text(label).font(.system(size: 9)).foregroundStyle(panelInk.opacity(0.45))
         }
     }
 
@@ -883,7 +883,7 @@ struct NotePanelView: View {
         let tint: Color? = meeting.latestChangedLines.contains(line.text) ? meetingLatestTint
             : (meeting.previousChangedLines.contains(line.text) ? meetingPreviousTint : nil)
         Markdown(line.text)
-            .markdownTheme(.inkDark)
+            .markdownTheme(.ink)
             .markdownSoftBreakMode(.lineBreak)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -910,11 +910,11 @@ struct NotePanelView: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 9))
-                .foregroundStyle(destructive ? Color(red: 0.94, green: 0.65, blue: 0.61)
-                                             : paperOnInk)
+                .foregroundStyle(destructive ? Ink.danger
+                                             : panelInk)
                 .frame(width: 22, height: 22)
-                .background(destructive ? Color(red: 0.7, green: 0.23, blue: 0.18).opacity(0.4)
-                                        : paperOnInk.opacity(0.1),
+                .background(destructive ? Ink.danger.opacity(0.4)
+                                        : panelInk.opacity(0.1),
                             in: RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
@@ -947,14 +947,16 @@ extension ImageProvider where Self == LocalFileImageProvider {
 }
 
 extension MarkdownUI.Theme {
-    /// 面板是深墨底，`.basic` 与 `.gitHub` 都是给浅底做的，所以从 `.basic`
-    /// 派生并只覆盖颜色与字号。
+    /// 面板的 markdown 主题。从 `.basic` 派生并只覆盖颜色与字号。
+    ///
+    /// 三个颜色全是 `Ink` 里的动态色，所以这一套明暗通用 —— 不需要两个主题，
+    /// 也不能有：`Theme` 是在 body 外面构造的，那时拿不到环境里的明暗。
     ///
     /// ⚠️ 不碰 `.heading1 { }` 这类 block-style 闭包 —— 它们要求返回
     /// `some View`，而 `View` 的修饰符是 MainActor 隔离的，Swift 6 的严格并发
     /// 不让把结果交给一个 nonisolated 闭包。标题的相对字号 `.basic` 已经有了。
-    static var inkDark: MarkdownUI.Theme {
-        let paper = Color(red: 0.945, green: 0.91, blue: 0.84)
+    static var ink: MarkdownUI.Theme {
+        let paper = Ink.panelInk
         return MarkdownUI.Theme.basic
             .text {
                 ForegroundColor(paper)
@@ -963,9 +965,9 @@ extension MarkdownUI.Theme {
             .code {
                 FontFamilyVariant(.monospaced)
                 FontSize(10.5)
-                ForegroundColor(Color(red: 0.5, green: 0.82, blue: 0.75))
+                ForegroundColor(Ink.teal)
             }
-            .link { ForegroundColor(Color(red: 0.84, green: 0.35, blue: 0.29)) }
+            .link { ForegroundColor(Ink.cinnabar) }
             .strong { FontWeight(.semibold) }
     }
 }
@@ -983,8 +985,8 @@ private struct SegmentBlock: View {
 
     @State private var hovering = false
 
-    private let paperOnInk = Color(red: 0.945, green: 0.91, blue: 0.84)
-    private let cinnabar = Color(red: 0.84, green: 0.35, blue: 0.29)
+    private let panelInk = Ink.panelInk
+    private let cinnabar = Ink.cinnabar
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
@@ -994,14 +996,14 @@ private struct SegmentBlock: View {
             if segment.pasted {
                 Image(systemName: "arrow.turn.down.right")
                     .font(.system(size: 8))
-                    .foregroundStyle(paperOnInk.opacity(0.3))
+                    .foregroundStyle(panelInk.opacity(0.3))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(hovering && segment.status == .done
-                    ? paperOnInk.opacity(0.07) : .clear,
+                    ? panelInk.opacity(0.07) : .clear,
                     in: RoundedRectangle(cornerRadius: 6))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -1015,24 +1017,24 @@ private struct SegmentBlock: View {
         case .processing:
             Text("转写中…")
                 .font(.system(size: 10.5)).italic()
-                .foregroundStyle(paperOnInk.opacity(0.4))
+                .foregroundStyle(panelInk.opacity(0.4))
         case .failed:
             // 原因必须写出来：失败的成因至少有四种，而它们要用户做的事
             // 完全不同（去关「区分人物」？还是根本不用管？）。
             VStack(alignment: .leading, spacing: 2) {
                 Text("这一段没转出来")
                     .font(.system(size: 10.5))
-                    .foregroundStyle(Color(red: 0.94, green: 0.65, blue: 0.61).opacity(0.85))
+                    .foregroundStyle(Ink.danger.opacity(0.85))
                 if let reason = segment.failureReason {
                     Text(reason)
                         .font(.system(size: 9.5))
-                        .foregroundStyle(paperOnInk.opacity(0.45))
+                        .foregroundStyle(panelInk.opacity(0.45))
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         case .done:
             Markdown(segment.displayText)
-                .markdownTheme(.inkDark)
+                .markdownTheme(.ink)
                 .markdownImageProvider(.localFile)
                 // ⚠️ 必须是 .lineBreak。CommonMark 里单个 `\n` 是 soft break，
                 // 默认渲染成**一个空格** —— 说话人标签用的正是单换行分行

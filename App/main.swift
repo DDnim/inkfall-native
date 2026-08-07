@@ -206,6 +206,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // 明暗主题自测：两套外观下的对比度 + 刘海不许跟着翻。
+        if ProcessInfo.processInfo.arguments.contains("--theme-test") {
+            runThemeTest()
+            return
+        }
+
         // 长录音自测：真实长对话走完整条链路，回答「音频去哪儿了」。
         if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--long-audio-test") {
             runLongAudioTest(path: ProcessInfo.processInfo.arguments[safe: index + 1] ?? "")
@@ -3474,6 +3480,138 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(ok ? 0 : 1)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: settle)
+    }
+
+    // MARK: - 明暗主题自测
+
+    /// 面板跟随系统明暗之后最容易出的事是**浅色下浅字浮在浅纸上**：
+    /// 面板里所有层级都是 `Ink.panelInk` 加不同 opacity 叠出来的，只要它没跟着
+    /// 翻，整扇窗就糊成一片 —— 而这种糊在深色下试不出来，得两套都量。
+    ///
+    /// 顺带把另一半钉死：刘海那一套**不许**跟着翻。`inkBlock` 必须是纯黑，
+    /// 任何偏暖的近黑都会在硬件刘海边缘露出一条接缝。
+    private func runThemeTest() {
+        var failures = 0
+        func check(_ label: String, _ ok: Bool) {
+            emit(ok ? "  ✓ \(label)" : "  ✗ \(label)")
+            if !ok { failures += 1 }
+        }
+
+        for (name, appearance) in [("浅色", NSAppearance(named: .aqua)),
+                                   ("深色", NSAppearance(named: .darkAqua))] {
+            guard let appearance else { continue }
+            let ink = Self.resolve(Ink.panelInk, in: appearance)
+            let top = Self.resolve(Ink.panelTop, in: appearance)
+            let bottom = Self.resolve(Ink.panelBottom, in: appearance)
+            emit("\(name)：正文 \(Self.hex(ink))，底 \(Self.hex(top)) → \(Self.hex(bottom))")
+
+            // 正文是要一直读的，按 WCAG AA 的 4.5:1 卡。
+            let body = min(Self.contrast(ink, top), Self.contrast(ink, bottom))
+            check("\(name)下正文对底色 \(String(format: "%.1f", body)):1", body >= 4.5)
+
+            // 强调色是画在同一片底上的（录音红、开启青、警告琥珀）。
+            // 它们是图形与短标签，按 3:1 卡。
+            for (label, color) in [("朱砂", Ink.cinnabar), ("青", Ink.teal),
+                                   ("琥珀", Ink.amber), ("危险", Ink.danger)] {
+                let ratio = min(Self.contrast(Self.resolve(color, in: appearance), top),
+                                Self.contrast(Self.resolve(color, in: appearance), bottom))
+                check("\(name)下\(label) \(String(format: "%.1f", ratio)):1", ratio >= 3.0)
+            }
+        }
+
+        // 刘海那一套：两套外观下必须**一模一样**。
+        guard let light = NSAppearance(named: .aqua), let dark = NSAppearance(named: .darkAqua)
+        else { exit(1) }
+        let blockLight = Self.resolve(Ink.inkBlock, in: light)
+        let blockDark = Self.resolve(Ink.inkBlock, in: dark)
+        emit("刘海底色：浅色下 \(Self.hex(blockLight))，深色下 \(Self.hex(blockDark))")
+        check("刘海底色两套外观都是纯黑",
+              Self.hex(blockLight) == "#000000" && Self.hex(blockDark) == "#000000")
+        check("刘海前景两套外观一致",
+              Self.hex(Self.resolve(Ink.paperOnInk, in: light))
+                == Self.hex(Self.resolve(Ink.paperOnInk, in: dark)))
+
+        // 色板对了不等于面板真的跟着翻。
+        //
+        // ⚠️ 这一条守的是刚被删掉的那两行：编辑器那三层背景关不干净时，很容易
+        // 顺手补一句 `appearance = NSAppearance(named: .darkAqua)` 了事 ——
+        // 那样浅色下选中高亮、查找栏、滚动条会整套还是深的，浮在浅色正文上，
+        // 而**深色下试不出来**。所以直接查：面板里不许有任何一层钉死外观。
+        selfTest = true
+        store.readOnly = true
+        notePanel.show()
+
+        // 真的翻一次明暗，两边都查一遍。只在当前外观下查等于没查 ——
+        // 钉死 darkAqua 那个毛病在深色机器上永远试不出来。
+        func inspect(_ label: String, _ named: NSAppearance.Name, then: @escaping () -> Void) {
+            NSApp.appearance = NSAppearance(named: named)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                let effective = self.notePanel.debugContentView?.effectiveAppearance.name
+                emit("\(label)：面板 \(effective?.rawValue ?? "—")")
+                check("\(label)下面板跟着翻", effective == named)
+                // SwiftUI 自己会把当前外观盖在它的 AppKit 宿主层上，那是正常的；
+                // 要抓的是**钉成跟系统不一样**的那种（正是被删掉的 darkAqua）。
+                let wrong = Self.mismatchedAppearances(self.notePanel.debugContentView,
+                                                       expected: named)
+                check("\(label)下没有哪一层钉成别的外观"
+                      + (wrong.isEmpty ? "" : "（\(wrong.joined(separator: "、"))）"),
+                      wrong.isEmpty)
+                then()
+            }
+        }
+
+        inspect("深色", .darkAqua) {
+            inspect("浅色", .aqua) {
+                NSApp.appearance = nil          // 还给系统
+                emit(failures == 0 ? "✅ 明暗两套都成立" : "❌ \(failures) 项不过")
+                Log.flush()
+                exit(failures == 0 ? 0 : 1)
+            }
+        }
+    }
+
+    /// 视图树里**钉了外观、而且跟期望的那套不一样**的层。
+    private static func mismatchedAppearances(_ view: NSView?,
+                                              expected: NSAppearance.Name) -> [String] {
+        guard let view else { return [] }
+        var out: [String] = []
+        if let pinned = view.appearance, pinned.name != expected {
+            out.append("\(type(of: view))→\(pinned.name.rawValue)")
+        }
+        for child in view.subviews { out += mismatchedAppearances(child, expected: expected) }
+        return out
+    }
+
+    /// 把一个动态色在**指定外观下**解出来。
+    private static func resolve(_ color: Color, in appearance: NSAppearance) -> NSColor {
+        var out = NSColor.black
+        appearance.performAsCurrentDrawingAppearance {
+            out = NSColor(color).usingColorSpace(.sRGB) ?? .black
+        }
+        return out
+    }
+
+    private static func hex(_ color: NSColor) -> String {
+        String(format: "#%02X%02X%02X",
+               Int((color.redComponent * 255).rounded()),
+               Int((color.greenComponent * 255).rounded()),
+               Int((color.blueComponent * 255).rounded()))
+    }
+
+    /// WCAG 的相对亮度与对比度。
+    private static func luminance(_ color: NSColor) -> Double {
+        func channel(_ value: CGFloat) -> Double {
+            let v = Double(value)
+            return v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * channel(color.redComponent)
+            + 0.7152 * channel(color.greenComponent)
+            + 0.0722 * channel(color.blueComponent)
+    }
+
+    private static func contrast(_ a: NSColor, _ b: NSColor) -> Double {
+        let la = luminance(a), lb = luminance(b)
+        return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
     }
 
     // MARK: - 会议笔记面板自测
