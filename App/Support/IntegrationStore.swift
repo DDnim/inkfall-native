@@ -75,7 +75,11 @@ enum IntegrationStore {
     }
 
     /// 注册命令，设置页直接给用户复制。
+    ///
+    /// 路径**必须带引号** —— 它固定落在 `Library/Application Support/` 下，中间那个
+    /// 空格会被 shell 劈成两段参数，node 于是去找 `…/Library/Application`，启动即退，
+    /// 客户端只看得到 `MCP error -32000: Connection closed`，看不出是路径问题。
     static var registerCommand: String {
-        "claude mcp add inkfall -- node \(mcpScriptPath.path)"
+        "claude mcp add inkfall -- node \"\(mcpScriptPath.path)\""
     }
 }
