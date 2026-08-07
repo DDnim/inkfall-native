@@ -213,6 +213,48 @@ final class MeetingNoteDiffTests: XCTestCase {
                                              into: note).text, note)
     }
 
+    // MARK: - 二级层级
+
+    /// 追加块必须**保住缩进**：缩进就是层级。被剃掉之后二级列表在笔记里
+    /// 塌回一级，读的人看不出这几条属于哪一条。
+    func testAppendPreservesIndentationOfSubBullets() {
+        let blocks = MeetingNoteDiff.parse(
+            block("", "## 定价\n- 两个方案在比\n  - A：按席位\n  - B：按用量"))
+        let result = MeetingNoteDiff.merge(blocks, into: "")
+        XCTAssertTrue(result.text.contains("\n  - A：按席位"))
+        XCTAssertTrue(result.text.contains("\n  - B：按用量"))
+    }
+
+    /// 单独追加一条本身就带缩进的行（模型偶尔这么干），缩进照样留着。
+    func testAppendKeepsTheIndentOfALoneSubBullet() {
+        let result = MeetingNoteDiff.merge(MeetingNoteDiff.parse(block("", "  - 子项")),
+                                           into: "## 议题")
+        XCTAssertTrue(result.text.hasSuffix("  - 子项"))
+    }
+
+    /// ⚠️ 改写一条二级项**不能越改越深**：SEARCH 是剃掉缩进去匹配的，命中的
+    /// 范围从 `-` 开始，原文那两个空格还留在前面 —— 替换文本再自带一份缩进，
+    /// 每被改写一次就深一级。
+    func testRewritingASubBulletDoesNotDoubleItsIndent() {
+        let note = "## 定价\n- 两个方案在比\n  - A：按席位"
+        let blocks = MeetingNoteDiff.parse(block("  - A：按席位", "  - A：按席位，年付九折"))
+        let result = MeetingNoteDiff.merge(blocks, into: note)
+        XCTAssertTrue(result.text.contains("\n  - A：按席位，年付九折"))
+        XCTAssertFalse(result.text.contains("    - "), "缩进不能翻倍")
+        XCTAssertEqual(result.applied, 1)
+    }
+
+    /// 行尾空白照旧要清掉 —— 只有**首行的缩进**是要保的那一份。
+    func testTrailingWhitespaceAndBlankEdgesAreStillTrimmed() {
+        XCTAssertEqual(MeetingNoteDiff.trimmingBlankEdges("\n\n  - 子项   \n\n"), "  - 子项")
+    }
+
+    /// 面板按「两个空格 = 一级」算缩进深度，提示词里那句话是这个约定的另一半。
+    /// 哪边改了这条都会红。
+    func testPromptPinsTheTwoSpaceIndentContract() {
+        XCTAssertTrue(MeetingNotePrompt.instructions().contains("exactly two spaces"))
+    }
+
     /// 残缺的块（只有开头没有结尾）不能把已有笔记搞坏。
     func testTruncatedBlockIsIgnored() {
         let broken = "<<<<<<< SEARCH\n## 议题\n=======\n## 议题\n- 新的"

@@ -23,7 +23,12 @@ public enum MeetingNotePrompt {
     - When new material develops a point that is already in the note, REWRITE that line so it carries the fuller understanding. Do not add a second line next to it.
     - When several lines under one heading say variations of the same thing, replace them with one sharper line.
     - Keep only what someone would still care about after the meeting. Drop greetings, thinking aloud, restatements, and asides that lead nowhere.
-    - One line per point, no sub-bullets under bullets.
+
+    Give a point sub-bullets when it genuinely has parts — the options that were weighed, the steps of something agreed, the specifics behind a decision. Indent a sub-bullet exactly two spaces under its parent. Nest one level only: if a point needs a third level, it has outgrown a bullet and should become its own heading.
+
+    Nesting is for structure that is really there, not decoration. A parent with a single child, or children that only restate the parent, belong on one line. When a topic runs long enough that its bullets no longer read as one list, split it into sub-headings rather than letting the list sprawl.
+
+    When you add sub-bullets under a line that is already in the note, rewrite the parent line and its children together in ONE change block — the parent line as the SEARCH text, the parent plus its indented children as the replacement. A sub-bullet appended on its own lands at the end of the note, detached from the point it belongs to.
 
     Never invent facts, owners, dates, or numbers the transcript does not support. When a sentence is cut off or a term is unclear, keep the speaker's own wording and mark it, rather than guessing at what they meant.
     """

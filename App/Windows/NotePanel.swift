@@ -168,12 +168,48 @@ final class NotePanelController {
     /// 自测取证用：SwiftUI 的宿主视图，用来确认内容真的画出来了。
     var debugContentView: NSView? { panel?.contentView }
 
+    /// 会议笔记开着时是两栏，面板要宽一倍 —— 380 分成两半的话
+    /// 两边都只剩一条缝，谁都读不了。
+    static let singleColumnWidth: CGFloat = 380
+    static let twoColumnWidth: CGFloat = 760
+
+    private var preferredWidth: CGFloat {
+        session.meeting.isEnabled ? Self.twoColumnWidth : Self.singleColumnWidth
+    }
+
+    /// 两栏时的下限也要跟着抬：否则用户能把两栏面板拖回 320 宽，
+    /// 那正是这个宽度想避开的两条缝。
+    private var minimumWidth: CGFloat {
+        session.meeting.isEnabled ? 620 : 320
+    }
+
+    /// 会议笔记开关翻了：面板宽度跟着变。面板在那儿开着的时候翻开关，
+    /// 不改宽度的话右栏要么挤成一条缝，要么关掉之后留下一大片空白。
+    ///
+    /// **钉住右边缘往左长**：面板默认停在屏幕右下角，从右边长出去会顶到屏幕外。
+    func syncMeetingWidth() {
+        guard let panel else { return }
+        let target = preferredWidth
+        panel.minSize = NSSize(width: minimumWidth, height: 340)
+        guard abs(panel.frame.width - target) > 0.5 else { return }
+
+        var frame = panel.frame
+        frame.origin.x = frame.maxX - target
+        frame.size.width = target
+        if let screen = panel.screen ?? ScreenInfo.preferred() {
+            let visible = screen.visibleFrame
+            if frame.maxX > visible.maxX { frame.origin.x = visible.maxX - target }
+            if frame.minX < visible.minX { frame.origin.x = visible.minX }
+        }
+        // 录音中不做动画：`setFrame(animate:)` 会**阻塞主线程**跑完整个动画，
+        // 而主线程上正跑着 30 Hz 的面板刷新与段落落地。
+        panel.setFrame(frame, display: true, animate: !session.isLive)
+    }
+
     private func ensurePanel() {
         guard panel == nil else { return }
 
-        // 会议笔记开着时是两栏，面板要宽一倍 —— 380 分成两半的话
-        // 两边都只剩一条缝，谁都读不了。
-        let width: CGFloat = session.meeting.isEnabled ? 760 : 380
+        let width = preferredWidth
         let p = InkfallNotePanel(
             contentRect: NSRect(x: 0, y: 0, width: width, height: 480),
             styleMask: [.borderless, .nonactivatingPanel, .resizable],
@@ -187,7 +223,7 @@ final class NotePanelController {
         p.hidesOnDeactivate = false
         p.isMovableByWindowBackground = true
         p.isFloatingPanel = true
-        p.minSize = NSSize(width: 320, height: 340)
+        p.minSize = NSSize(width: minimumWidth, height: 340)
         p.onKeyDown = { [weak self] event in self?.handleKey(event) ?? false }
 
         let host = NSHostingView(rootView: NotePanelView(session: session, controller: self))
@@ -394,6 +430,8 @@ struct NotePanelView: View {
                            startPoint: .top, endPoint: .bottom))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .onChange(of: session.isLive) { _, _ in controller.syncFocusPolicy() }
+        // 设置页那个开关翻的是同一个值，所以从哪边翻都会走到这里。
+        .onChange(of: session.meetingNotes) { _, _ in controller.syncMeetingWidth() }
     }
 
     // MARK: - 标题栏
@@ -460,14 +498,14 @@ struct NotePanelView: View {
         .help(hint)
     }
 
-    // MARK: - 三个开关
+    // MARK: - 四个开关
 
-    /// 自动分段 / 区分人物 / 自动粘贴。
+    /// 自动分段 / 区分人物 / 自动粘贴 / 会议笔记。
     ///
-    /// 放在面板里而不是只留在设置页：这三件事是**逐场**决定的 —— 这次是会议就
-    /// 开区分人物，这次是往编辑器里口述就开自动粘贴。要为此翻一次设置窗口，
-    /// 就等于没有这个开关。它们写的仍然是同一份 `AppSettings`，
-    /// 和设置页里的那三行是同一个值。
+    /// 放在面板里而不是只留在设置页：这几件事是**逐场**决定的 —— 这次是会议就
+    /// 开区分人物和会议笔记，这次是往编辑器里口述就开自动粘贴。要为此翻一次
+    /// 设置窗口，就等于没有这个开关。它们写的仍然是同一份 `AppSettings`，
+    /// 和设置页里的那几行是同一个值。
     private var switches: some View {
         HStack(spacing: 6) {
             chip("scissors", "自动分段",
@@ -483,6 +521,12 @@ struct NotePanelView: View {
             chip("text.insert", "自动粘贴",
                  on: session.autoPaste,
                  hint: "每段转写完立刻插进起录时的那个窗口") { session.autoPaste = $0 }
+            chip("list.bullet.rectangle", "会议笔记",
+                 on: session.meetingNotes,
+                 hint: "边录边在右栏整理议题/决定/待办，另存为一条笔记（Beta，"
+                     + "每轮整理都要一次模型往返）") {
+                session.meetingNotes = $0
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 9)
@@ -801,18 +845,44 @@ struct NotePanelView: View {
         }
     }
 
+    /// 一行会议笔记：缩进深度 + 剃掉缩进的正文。
+    ///
+    /// 两件事必须分开存：缩进是**层级**（渲染成左边距），而正文是**身份**
+    /// —— `MeetingNoteDiff.changedLines` 存的就是剃过缩进的行，高亮要拿它去查。
+    private struct MeetingLine {
+        let depth: Int
+        let text: String
+    }
+
     /// 会议笔记按行切。空行丢掉 —— 逐行渲染时它们只会变成一堆空隙。
-    private func meetingLines(_ note: String) -> [String] {
-        note.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+    ///
+    /// ⚠️ 这里**不能**把缩进连同两端空白一起剃掉了事：逐行渲染时每行都是独立的
+    /// 一个 Markdown 块，二级列表全靠这个缩进画出来，剃了就全塌成一级。
+    private func meetingLines(_ note: String) -> [MeetingLine] {
+        note.components(separatedBy: .newlines).compactMap { raw in
+            let text = raw.trimmingCharacters(in: .whitespaces)
+            guard !text.isEmpty else { return nil }
+            // 提示词要求两个空格一级，但模型不一定听话；到二级为止，
+            // 再深的缩进一律按二级画 —— 面板只有一半宽，画不下更深的层级。
+            return MeetingLine(depth: min(indentColumns(of: raw) / 2, 2), text: text)
+        }
+    }
+
+    /// 缩进宽度。制表符按 4 列算 —— 模型偶尔会吐 tab 而不是空格。
+    private func indentColumns(of line: String) -> Int {
+        var columns = 0
+        for character in line {
+            if character == "\t" { columns += 4 } else if character == " " { columns += 1 }
+            else { break }
+        }
+        return columns
     }
 
     @ViewBuilder
-    private func meetingLine(_ line: String, meeting: MeetingNoteController) -> some View {
-        let tint: Color? = meeting.latestChangedLines.contains(line) ? meetingLatestTint
-            : (meeting.previousChangedLines.contains(line) ? meetingPreviousTint : nil)
-        Markdown(line)
+    private func meetingLine(_ line: MeetingLine, meeting: MeetingNoteController) -> some View {
+        let tint: Color? = meeting.latestChangedLines.contains(line.text) ? meetingLatestTint
+            : (meeting.previousChangedLines.contains(line.text) ? meetingPreviousTint : nil)
+        Markdown(line.text)
             .markdownTheme(.inkDark)
             .markdownSoftBreakMode(.lineBreak)
             .textSelection(.enabled)
@@ -830,6 +900,9 @@ struct NotePanelView: View {
             }
             // 跳变要有过渡 —— 隔十几秒整块内容突然换掉，没有动画很像是出错了。
             .animation(.easeOut(duration: 0.35), value: tint != nil)
+            // 缩进画在最外层：底色与左侧那条竖线要跟着一起缩，
+            // 只缩文字的话高亮块仍然顶在左边，看不出层级。
+            .padding(.leading, CGFloat(line.depth) * 13)
     }
 
     private func recButton(_ symbol: String, destructive: Bool = false,

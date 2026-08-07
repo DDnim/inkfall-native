@@ -70,6 +70,25 @@ final class MeetingNoteController {
         Log.write("meeting: 开始（源笔记 \(sourceNoteID)）")
     }
 
+    /// 录到一半才在面板上打开时补一次开场。
+    ///
+    /// ⚠️ **已经在记同一场了就什么都不做**。直接调 `begin()` 会把 `note` 清空 ——
+    /// 用户关掉再打开（比如嫌它慢，过一会儿又想要了）就会把已经整理出来的笔记
+    /// 整篇抹掉，而那是模型跑了好几轮才攒出来的（A11：落笔绝不丢数据）。
+    func beginIfNeeded(sourceNoteID: String, title: String) {
+        guard self.sourceNoteID != sourceNoteID || note.isEmpty else { return }
+        begin(sourceNoteID: sourceNoteID, title: title)
+    }
+
+    /// 自测用：直接塞一份笔记进来，跳过模型那一整轮。
+    ///
+    /// 面板怎么画这份笔记（两栏宽度、二级缩进）跟模型无关，为了验它去跑一趟
+    /// 真模型既慢又要花钱，而且每次跑出来的内容还不一样 —— 断言无从写起。
+    func debugInject(note text: String, sourceNoteID: String = "debug") {
+        self.sourceNoteID = sourceNoteID
+        note = text
+    }
+
     /// 一段转写落地了。**同步返回**，绝不让主链路等这一路。
     func ingest(_ text: String) {
         guard isEnabled else { return }

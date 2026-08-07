@@ -155,6 +155,25 @@ final class NoteSessionController {
         set { store.settings.noteSpeakerDiarizationEnabled = newValue; store.save() }
     }
 
+    /// 自动会议笔记（beta）。和上面三个一样是**逐场**的决定 —— 这次是会就开，
+    /// 口述稿就关（它每轮都要一次模型往返，是要花钱的）。
+    ///
+    /// 录到一半开：从这一刻起的段才进会议笔记，之前说过的不补 —— 补的话要把
+    /// 整场重跑一遍，那正是这一路刻意避开的成本。
+    var meetingNotes: Bool {
+        get { store.settings.meetingNotesEnabled }
+        set {
+            store.settings.meetingNotesEnabled = newValue
+            store.save()
+            // 录到一半才开的话，`begin()` 早就跑过了（而且当时是关着的，
+            // 什么都没做）。这里补一次，否则源笔记 id 是空的，
+            // 会议笔记落盘时挂不回它对应的那篇转写。
+            if newValue, isLive, let noteID {
+                meeting.beginIfNeeded(sourceNoteID: noteID, title: title)
+            }
+        }
+    }
+
     /// 分离模型下载了没有。没下就只能把「区分人物」置灰 —— 让用户翻一个
     /// 翻了也不会生效的开关，比不给这个开关更糟。
     var diarizationReady: Bool { LocalTranscriber.isDiarizationDownloaded }
