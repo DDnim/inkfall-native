@@ -36,6 +36,7 @@ final class PostProcessingCoordinator {
     /// 现 fork 一个 `security`。
     func preloadKeys() {
         keys.preload(store.settings.activeCloudProviders)
+        if store.settings.transcriptionMode == .groqProxy { keys.preloadSessionToken() }
     }
 
     /// 跑一次加工。**不加工**的分支也从这里走 —— 调用方不需要知道有几种情况。

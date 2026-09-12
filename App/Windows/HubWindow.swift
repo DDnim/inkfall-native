@@ -312,10 +312,21 @@ struct HubView: View {
         VStack(alignment: .leading, spacing: 9) {
             group("模型来源") {
                 HStack(spacing: 6) {
-                    sourceCard("落音云", "推荐 · 无需 key", on: model.settings.transcriptionMode == .groqProxy)
-                    sourceCard("自定义", "BYOK", on: [.openai, .groq, .gemini].contains(model.settings.transcriptionMode))
-                    sourceCard("本地", "离线 · CoreML", on: model.settings.transcriptionMode == .local)
+                    sourceCard("落音云", "推荐 · 无需 key",
+                               on: model.settings.transcriptionMode == .groqProxy) {
+                        model.settings.transcriptionMode = .groqProxy
+                    }
+                    sourceCard("自定义", "BYOK", on: byokProvider != nil) {
+                        // 已经配了 key 的供应商优先；一个都没配就默认 Groq（又快又便宜）。
+                        let preferred = CloudProvider.allCases.first { model.keys.isConfigured($0) } ?? .groq
+                        model.settings.transcriptionMode = preferred.transcriptionMode
+                    }
+                    sourceCard("本地", "离线 · CoreML",
+                               on: model.settings.transcriptionMode == .local) {
+                        model.settings.transcriptionMode = .local
+                    }
                 }
+                transcriptionSourceRows
             }
             group("本地模型") {
                 ForEach(model.models.entries) { entry in
@@ -368,6 +379,92 @@ struct HubView: View {
                                   set: { model.settings.noteProcessingPreset = $0 }))
             }
         }
+    }
+
+    /// 自定义（BYOK）时选的是哪家；落音云 / 本地时为 nil。
+    private var byokProvider: CloudProvider? {
+        model.settings.transcriptionMode.cloudProviderForSelfTest
+    }
+
+    /// 三张卡下面跟着的那几行：落音云要地址，BYOK 要供应商 + 模型 + key，本地什么都不要。
+    @ViewBuilder private var transcriptionSourceRows: some View {
+        switch model.settings.transcriptionMode {
+        case .groqProxy:
+            textRow("落音云地址", placeholder: "https://…（环境变量 INKFALL_GROQ_PROXY_URL 优先）",
+                    text: Binding(get: { model.settings.groqProxyUrl },
+                                  set: { model.settings.groqProxyUrl = $0 }))
+            textRow("代理令牌（可选）", placeholder: "自托管部署用的 X-Proxy-Token",
+                    text: Binding(get: { model.settings.groqProxyToken },
+                                  set: { model.settings.groqProxyToken = $0 }))
+            caption("鉴权顺序：登录会话（钥匙串里的 inkfall_session_token）→ 代理令牌 → 匿名。"
+                    + "服务端持 Groq key，音频只经过落音云。")
+        case .openai, .groq, .gemini:
+            let provider = byokProvider ?? .groq
+            HStack(spacing: 9) {
+                Text("供应商").font(.system(size: 12)).foregroundStyle(Ink.ink1)
+                Spacer(minLength: 6)
+                Picker("", selection: Binding(
+                    get: { provider },
+                    set: { model.settings.transcriptionMode = $0.transcriptionMode })) {
+                    ForEach(CloudProvider.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .labelsHidden().controlSize(.small).frame(width: 150)
+            }
+            .padding(.horizontal, 11).padding(.vertical, 7)
+            .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+            transcriptionModelRow(provider)
+            apiKeyRow(provider)
+            caption(provider == .gemini
+                    ? "Gemini 没有转写端点，音频作为 inline_data 走 generateContent；不报检测语言。"
+                    : "音频直接发给 \(provider.label)；专有名词表作为 prompt 一起送。"
+                      + "网络 / 5xx 时降级到本地模型，鉴权与配额问题会浮出来。")
+        case .local:
+            EmptyView()
+        }
+    }
+
+    private func transcriptionModelRow(_ provider: CloudProvider) -> some View {
+        let options: [String]
+        let selection: Binding<String>
+        switch provider {
+        case .openai:
+            options = ProviderModels.openAITranscription
+            selection = Binding(get: { model.settings.selectedOpenAiModel },
+                                set: { model.settings.selectedOpenAiModel = $0 })
+        case .groq:
+            options = ProviderModels.groqTranscription
+            selection = Binding(get: { model.settings.selectedGroqModel },
+                                set: { model.settings.selectedGroqModel = $0 })
+        case .gemini:
+            options = ProviderModels.gemini
+            selection = Binding(get: { model.settings.selectedGeminiModel },
+                                set: { model.settings.selectedGeminiModel = $0 })
+        }
+        return HStack(spacing: 9) {
+            Text("转写模型").font(.system(size: 12)).foregroundStyle(Ink.ink1)
+            Spacer(minLength: 6)
+            Picker("", selection: selection) {
+                ForEach(options, id: \.self) { Text($0).tag($0) }
+            }
+            .labelsHidden().controlSize(.small).frame(width: 220)
+        }
+        .padding(.horizontal, 11).padding(.vertical, 7)
+        .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
+    }
+
+    private func textRow(_ title: String, placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.system(size: 12)).foregroundStyle(Ink.ink1)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11))
+                .padding(.horizontal, 7).padding(.vertical, 4)
+                .background(Ink.paper4, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Ink.hair))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 11).padding(.vertical, 7)
+        .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
     }
 
     private var generalPage: some View {
@@ -938,7 +1035,8 @@ struct HubView: View {
         .onTapGesture { model.models.select(entry.id) }
     }
 
-    private func sourceCard(_ title: String, _ subtitle: String, on: Bool) -> some View {
+    private func sourceCard(_ title: String, _ subtitle: String, on: Bool,
+                            action: @escaping () -> Void) -> some View {
         VStack(spacing: 2) {
             Text(title).font(.system(size: 10.5, weight: .medium)).foregroundStyle(Ink.ink1)
             Text(subtitle).font(.system(size: 9)).foregroundStyle(Ink.ink4)
@@ -947,6 +1045,8 @@ struct HubView: View {
         .background(on ? Ink.paper4 : Ink.paper2, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8)
             .stroke(on ? Ink.cinnabar.opacity(0.6) : Ink.hair, lineWidth: on ? 1.5 : 1))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: action)
         .padding(.horizontal, 11).padding(.bottom, 9)
     }
 

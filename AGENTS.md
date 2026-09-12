@@ -72,6 +72,23 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 - 验证用 `--process-test`（可加 `--engine cloud|cli` / `--preset <名>` /
   `--effort <档>`）和 `--note-process-test`，都不需要麦克风。
 
+## 转写（云端与本地）
+
+- 入口只有一个：`Transcriber`（App 侧）。听写 / 提问 / 落笔都从它过，按
+  `transcriptionMode` 走 OpenAI / Groq / 落音云 / Gemini / 本地。**别在调用方
+  自己判模式** —— 降级提示、缺 key 的处理、日志格式又会长成三份。
+- 请求体与解析在 InkfallCore 的 `TranscriptionAPI` + `MultipartForm`（有单测，
+  multipart 是**字节级**钉住的）；App 侧 `CloudTranscriber` 只管发出去与分类失败。
+- 降级同 A15：只有网络 / 5xx 才回落本地模型，而且要求选中的本地模型**已下载**；
+  鉴权 / 配额 / 没配 key / 落音云地址没配都要浮出来（本地模型在的话先顶上并提醒）。
+- 落音云鉴权顺序：钥匙串 `inkfall_session_token` → `X-Proxy-Token` → 匿名；
+  地址与令牌的环境变量（`INKFALL_GROQ_PROXY_URL` / `_TOKEN`）优先于设置项。
+  落音云的错误里**不带模型名**（服务端用什么是实现细节）。
+- 贾维斯的关键词扫描与全篇转译**不走云端**：前者是「一直听着、不留文字」，
+  后者要说话人标签。
+- 验证用 `--cloud-transcribe-test <wav> [--mode …]`，不需要麦克风；没 key 时
+  起一个本地假代理指给 `INKFALL_GROQ_PROXY_URL` 就能走完整条路。
+
 ## 全篇转译
 
 - 落笔的每一段音频**必须**存进 `attachments/<笔记 id>/voice-<ms>.wav`，

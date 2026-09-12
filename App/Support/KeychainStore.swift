@@ -48,6 +48,20 @@ enum KeychainStore {
         _ = run(["delete-generic-password", "-s", service, "-a", account(for: provider)])
     }
 
+    /// 落音云的登录会话 token。与 Tauri 版同一条目（`inkfall_session_token`），
+    /// 用户在那边登录过，原生版直接读得到。原生版自己的登录（#29）还没接，
+    /// 所以这里**只读不写**。
+    static let sessionAccount = "inkfall_session_token"
+
+    static func readSessionToken() -> String? {
+        guard let output = run(["find-generic-password",
+                                "-s", service, "-a", sessionAccount, "-w"]) else {
+            return nil
+        }
+        let value = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
     /// exit 44 = 条目不存在，对删除来说等于成功；这里统一按「没拿到输出」处理。
     private static func run(_ arguments: [String]) -> String? {
         let process = Process()
@@ -79,6 +93,9 @@ final class APIKeyStore {
     private var cache: [CloudProvider: String] = [:]
     /// 已经问过钥匙串的供应商（问过但没有，和没问过，是两回事）。
     private var probed: Set<CloudProvider> = []
+    /// 落音云会话 token 的缓存；`probedSession` 同上。
+    private var sessionToken: String?
+    private var probedSession = false
 
     private init() {}
 
@@ -104,6 +121,29 @@ final class APIKeyStore {
         }.value
         adopt(value, for: provider)
         return cache[provider]
+    }
+
+    /// 落音云走的是会话 token 而不是供应商 key；同样先热缓存再用。
+    func preloadSessionToken() {
+        guard !probedSession else { return }
+        Task.detached(priority: .utility) {
+            let value = KeychainStore.readSessionToken()
+            await MainActor.run { APIKeyStore.shared.adoptSession(value) }
+        }
+    }
+
+    func resolveSessionToken() async -> String? {
+        if probedSession { return sessionToken }
+        let value = await Task.detached(priority: .userInitiated) {
+            KeychainStore.readSessionToken()
+        }.value
+        adoptSession(value)
+        return sessionToken
+    }
+
+    private func adoptSession(_ value: String?) {
+        probedSession = true
+        sessionToken = value
     }
 
     /// 界面用：这个供应商配没配过 key。**不触发**钥匙串读取 ——

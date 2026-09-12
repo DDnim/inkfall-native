@@ -43,6 +43,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onOpenNote: { [weak self] entry in self?.openNote(entry) })
 
     private let transcriber = LocalTranscriber()
+    /// 转写的唯一入口：按设置走云端或本地，云端不可达时降级到本地（#10）。
+    private lazy var router = Transcriber(local: transcriber)
     /// 转写完到落笔/粘贴之间的那一步：预设、提示词、云端或 `claude -p`、降级。
     /// 听写与落笔共用同一个实例，提示与日志才只有一套。
     private lazy var processing = PostProcessingCoordinator(store: store, notes: noteStore)
@@ -50,6 +52,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 加工那一步要跟用户说的话。攒到粘贴结果那一刻一起说 —— 单独闪一下
     /// 会被紧接着的「粘贴中 / 已粘回 X」在几十毫秒内盖掉。
     private var pendingProcessingNotice: (text: String, isProblem: Bool)?
+    /// 转写那一步的提示（云端没连上、没配 key 时的降级）。加工没话说时才轮到它。
+    private var pendingTranscriptionNotice: String?
 
     /// 录音**开始那一刻**的前台窗口。等转写回来再看前台是谁，就粘到别人窗口里了。
     private var pasteTarget: PasteTarget?
@@ -182,6 +186,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 开关（`--engine` 之类），不是文本。
             let next = ProcessInfo.processInfo.arguments[safe: index + 1] ?? ""
             runProcessTest(text: next.hasPrefix("--") ? "" : next)
+            return
+        }
+
+        // 云端转写自测：拿一个 wav 走真实的 Transcriber（含降级），不需要麦克风。
+        // `--mode openai|groq|gemini|groqProxy|local` 覆盖设置里的转写模式。
+        if let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--cloud-transcribe-test") {
+            let wav = ProcessInfo.processInfo.arguments[safe: index + 1] ?? ""
+            runCloudTranscribeTest(wav: wav.hasPrefix("--") ? "" : wav)
             return
         }
 
@@ -3189,11 +3201,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             replacements: store.settings.transcriptionReplacements,
             diarize: false)
 
-        Task { [transcriber] in
+        let settings = store.settings
+        Task { [router] in
             defer { try? FileManager.default.removeItem(at: url) }
             do {
-                let result = try await transcriber.transcribe(request)
-                await MainActor.run { AppDelegate.shared?.deliverAsk(result.text) }
+                let outcome = try await router.transcribe(audio: audio, local: request,
+                                                          settings: settings, policy: policy)
+                Log.write("ask: 转写 \(outcome.route)\(outcome.notice.map { "（\($0)）" } ?? "")")
+                await MainActor.run { AppDelegate.shared?.deliverAsk(outcome.result.text) }
             } catch {
                 Log.write("ask: 转写失败 \(error)")
                 await MainActor.run {
@@ -3219,14 +3234,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - 转写 → 加工 → 粘贴
 
-    /// 本地模型跑完 → 加工 → 送回起录时的那个窗口。
-    ///
-    /// 云端**转写**（#10）还没接，所以这里只有 local 一条道；加工那一段
-    /// 九个预设都在（云端 API / 本机 `claude -p`），见 `PostProcessingCoordinator`。
+    /// 转写（云端或本地，见 `Transcriber`）→ 加工 → 送回起录时的那个窗口。
+    /// 加工那一段九个预设都在（云端 API / 本机 `claude -p`），见 `PostProcessingCoordinator`。
     private func transcribeAndInsert(_ audio: RecordedAudio) {
         let durationMs = audio.durationMs
-        let modelID = store.settings.selectedLocalModelId
-        let name = LocalModels.definition(id: modelID)?.name ?? modelID
+        let settings = store.settings
+        let modelID = settings.selectedLocalModelId
+        let name = Transcriber.label(for: settings)
         let target = pasteTarget
         let diarizing = store.settings.noteWantsSpeakerLabels
             && LocalTranscriber.isDiarizationDownloaded
@@ -3253,13 +3267,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             diarize: store.settings.noteWantsSpeakerLabels
                 && LocalTranscriber.isDiarizationDownloaded)
 
-        Task { [transcriber] in
+        Task { [router] in
             defer { try? FileManager.default.removeItem(at: url) }
             do {
-                let result = try await transcriber.transcribe(request)
+                let outcome = try await router.transcribe(audio: audio, local: request,
+                                                          settings: settings, policy: policy)
                 await MainActor.run {
-                    AppDelegate.shared?.lockSessionLanguage(result.language, policy: policy)
-                    AppDelegate.shared?.deliver(result, into: target, durationMs: durationMs)
+                    AppDelegate.shared?.lockSessionLanguage(outcome.result.language, policy: policy)
+                    AppDelegate.shared?.pendingTranscriptionNotice = outcome.notice
+                    AppDelegate.shared?.deliver(outcome.result, into: target, durationMs: durationMs,
+                                                route: outcome.route)
                 }
             } catch {
                 Log.write("transcribe: 失败 \(error)")
@@ -3280,13 +3297,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func deliver(_ result: LocalTranscriber.Result, into target: PasteTarget?,
-                         durationMs: UInt64) {
+                         durationMs: UInt64, route: String = "local") {
         guard !result.text.trimmingCharacters(in: .whitespaces).isEmpty else {
             flash(.cancelled, "没听清", seconds: 1.2)
             return
         }
-        Log.write(String(format: "transcribe: %.2fs lang=%@ 说话人=%@ → %d 字",
-                         result.elapsed, result.language ?? "?",
+        Log.write(String(format: "transcribe: %@ %.2fs lang=%@ 说话人=%@ → %d 字",
+                         route, result.elapsed, result.language ?? "?",
                          result.speakerCount.map(String.init) ?? "-", result.text.count))
         scheduleModelUnload()
 
@@ -3321,6 +3338,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 会在几十毫秒内把它盖掉，用户根本来不及看见。攒到粘贴结果那一刻
         // 一起说（见 `reportPaste`）。
         pendingProcessingNotice = outcome.notice.map { ($0, outcome.isProblem) }
+            ?? pendingTranscriptionNotice.map { ($0, false) }
+        pendingTranscriptionNotice = nil
 
         let options = PasteOptions(settings: store.settings)
         notch.show(state: .processing, message: options.autoPasteEnabled ? "粘贴中" : "复制中")
@@ -4188,6 +4207,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 麦克风、转写、粘贴全绕开 —— 那几段各自有自己的自测。这里验的是中间
     /// 那一段：九个预设的提示词拼得对不对、当前配置会走哪条路、真发一次
     /// 请求（或真 fork 一个 `claude`）能不能回来。
+    /// 云端转写自测：真发一次当前配置的转写请求（或按 `--mode` 覆盖）。
+    /// 验的是「这条路通不通」：key、地址、multipart、解析、降级。
+    private func runCloudTranscribeTest(wav: String) {
+        selfTest = true
+        store.readOnly = true
+        guard !wav.isEmpty, let data = try? Data(contentsOf: URL(fileURLWithPath: wav)) else {
+            emit("用法：--cloud-transcribe-test <wav> [--mode openai|groq|gemini|groqProxy|local]")
+            exit(2)
+        }
+        let arguments = ProcessInfo.processInfo.arguments
+        if let raw = arguments.firstIndex(of: "--mode").flatMap({ arguments[safe: $0 + 1] }) {
+            guard let mode = TranscriptionMode(rawValue: raw) else {
+                emit("未知的转写模式：\(raw)")
+                exit(2)
+            }
+            store.settings.transcriptionMode = mode
+        }
+        // 自测里语言自动 —— 要验的正是 verbose_json 带回来的语言。
+        store.settings.transcriptionLanguageMode = .auto
+        let settings = store.settings
+        // 秒数从 wav 头算；算不出来就按 0（只影响日志）。
+        let durationMs: UInt64 = WAV.parse(data).map { info in
+            let bytesPerSecond = Int(info.sampleRate) * Int(info.channels) * 2
+            return bytesPerSecond > 0 ? UInt64(info.dataRange.count * 1000 / bytesPerSecond) : 0
+        } ?? 0
+        let audio = RecordedAudio(filename: (wav as NSString).lastPathComponent,
+                                  data: data, durationMs: durationMs)
+        let policy = TranscriptionLanguagePolicy(settings: settings)
+        let request = LocalTranscriber.Request(
+            wavURL: URL(fileURLWithPath: wav), modelID: settings.selectedLocalModelId,
+            language: policy.requested(), replacements: settings.transcriptionReplacements)
+
+        emit("转写模式=\(settings.transcriptionMode.rawValue) "
+             + "模型=\(TranscriptionAPI.model(for: settings.transcriptionMode, settings: settings)) "
+             + "本地模型就绪=\(Transcriber.localModelReady(settings) ? "是" : "否") "
+             + "自动降级=\(settings.autoLocalFallbackEnabled ? "开" : "关") "
+             + "音频=\(data.count) 字节 \(durationMs) ms")
+        if settings.transcriptionMode == .groqProxy {
+            emit("落音云地址=\(TranscriptionAPI.proxyURL(settings: settings)?.absoluteString ?? "（没配）")")
+        }
+
+        Task { [router] in
+            let started = CFAbsoluteTimeGetCurrent()
+            do {
+                let outcome = try await router.transcribe(audio: audio, local: request,
+                                                          settings: settings, policy: policy)
+                emit(String(format: "路线=%@ 耗时=%.2fs lang=%@", outcome.route,
+                            CFAbsoluteTimeGetCurrent() - started, outcome.result.language ?? "?"))
+                if let notice = outcome.notice { emit("提示：\(notice)") }
+                emit("结果：\(outcome.result.text)")
+                Log.flush()
+                exit(outcome.isProblem ? 1 : 0)
+            } catch {
+                emit("失败：\((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+                Log.flush()
+                exit(1)
+            }
+        }
+    }
+
     private func runProcessTest(text: String) {
         selfTest = true
         // ⚠️ 自测期间禁止落盘，否则临时改的开关会写进用户的 settings.json
