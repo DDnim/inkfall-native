@@ -101,6 +101,17 @@ public enum TextGenerationAPI {
         return ""
     }
 
+    /// 服务端错误里给人看的那句话（`{"error":{"message":"API key not valid…"}}`）。
+    /// 取不到就是空串 —— 调用方再决定要不要把整个响应体截一段出来。
+    public static func errorMessage(in data: Data) -> String {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let nested = object["error"] as? [String: Any],
+              let message = nested["message"] as? String else {
+            return ""
+        }
+        return message.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: - 解析
 
     /// Responses API：`output[]` 里挑出 message 项，再挑出 output_text 段拼起来。

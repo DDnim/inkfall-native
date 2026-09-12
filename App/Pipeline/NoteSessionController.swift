@@ -56,6 +56,8 @@ final class NoteSessionController {
 
     private let recorder: AudioRecorder
     private let transcriber: LocalTranscriber
+    /// 云端或本地，按设置走（#10）。落笔每一段都从这里过。
+    private let router: Transcriber
     private let store: SettingsStore
     private let notes: NoteStore
     /// 加工与听写共用同一套决策与降级 —— 落笔只是把全局开关换成自己的
@@ -190,6 +192,7 @@ final class NoteSessionController {
          meeting: MeetingNoteController) {
         self.recorder = recorder
         self.transcriber = transcriber
+        self.router = Transcriber(local: transcriber)
         self.store = store
         self.notes = notes
         self.processing = processing
@@ -543,12 +546,15 @@ final class NoteSessionController {
         // 把它的正文覆盖掉。2026-08-05 实测：一段 26 字的迟到转写把一份
         // 1661 字的会议笔记整个冲掉了。
         let ownerNoteID = noteID
-        Task { [transcriber] in
+        let settings = store.settings
+        Task { [router] in
             defer { try? FileManager.default.removeItem(at: url) }
             do {
-                let result = try await transcriber.transcribe(request)
+                let outcome = try await router.transcribe(audio: audio, local: request,
+                                                          settings: settings, policy: policy)
+                if let notice = outcome.notice { Log.write("note: 段 \(id) \(notice)") }
                 await MainActor.run {
-                    self.finish(id: id, seq: seq, result: result, policy: policy,
+                    self.finish(id: id, seq: seq, result: outcome.result, policy: policy,
                                 durationMs: durationMs, owner: ownerNoteID)
                 }
             } catch {
