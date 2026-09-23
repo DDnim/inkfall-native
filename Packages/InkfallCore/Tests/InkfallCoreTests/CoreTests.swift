@@ -4,200 +4,6 @@ import XCTest
 // 从 inkfall-app 的 regression_tests.rs 移植过来的纯逻辑回归。
 // 这些是重写期间唯一的安全网 —— 它们必须先绿，实现才谈得上等价。
 
-// MARK: - 会话状态机
-
-final class SessionMachineTests: XCTestCase {
-
-    func testDictationPastesAndDoesNotScan() {
-        XCTAssertEqual(SessionMachine.routeTake(sink: .paste, scanning: false),
-                       TakeRouting(scanForCommand: false, destination: .paste))
-    }
-
-    func testNoteModeKeepsTextAndDoesNotScan() {
-        XCTAssertEqual(SessionMachine.routeTake(sink: .noteWindow, scanning: false),
-                       TakeRouting(scanForCommand: false, destination: .note))
-    }
-
-    /// 扫描与 sink 正交：以前这个组合根本到不了。
-    func testScanningWithNoteStillKeepsTheText() {
-        XCTAssertEqual(SessionMachine.routeTake(sink: .noteWindow, scanning: true),
-                       TakeRouting(scanForCommand: true, destination: .note))
-    }
-
-    /// 退化但可达（会话拆除过程中）：必须静默，不能落回粘贴。
-    func testDiscardWithoutScanningKeepsNothingAndPastesNothing() {
-        XCTAssertEqual(SessionMachine.routeTake(sink: .discard, scanning: false),
-                       TakeRouting(scanForCommand: false, destination: .discard))
-    }
-
-    func testNoteTogglePicksTheRightAction() {
-        XCTAssertEqual(SessionMachine.noteToggle(.idle), .start)
-
-        let noteRunning = SessionShape(recording: true, sink: .noteWindow)
-        XCTAssertEqual(SessionMachine.noteToggle(noteRunning), .stop)
-
-        let hold = SessionShape(recording: true, hold: true, sink: .paste)
-        XCTAssertEqual(SessionMachine.noteToggle(hold), .convertHold)
-
-        let scanOnly = SessionShape(recording: true, sink: .discard, scanning: true)
-        XCTAssertEqual(SessionMachine.noteToggle(scanOnly), .attachToScan)
-
-        // 真听写占着麦：说明原因，别静默失败。
-        let dictating = SessionShape(recording: true, sink: .paste)
-        XCTAssertEqual(SessionMachine.noteToggle(dictating), .busyDictating)
-    }
-
-    /// 释放一个 sink 时，只有没人要了才真正停 recorder。
-    /// 停早了会把另一个消费者从句子中间切断。
-    func testReleasingASinkStopsOnlyWhenNobodyIsLeft() {
-        XCTAssertEqual(SessionMachine.sinkAfterRelease(otherConsumerActive: true), .discard)
-        XCTAssertNil(SessionMachine.sinkAfterRelease(otherConsumerActive: false))
-    }
-
-    /// 切段是关键词可见的前提，所以扫描活着时切段器不能拆。
-    func testSegmenterOutlivesTheNoteSinkWhileScanning() {
-        XCTAssertFalse(SessionMachine.mayStopSegmenter(scanning: true))
-        XCTAssertTrue(SessionMachine.mayStopSegmenter(scanning: false))
-    }
-
-    func testCommandUtterancesAreMarkedInTheNote() {
-        XCTAssertEqual(SessionMachine.noteBody(transcript: "  小明 打开终端 ", wasCommandHit: true),
-                       ">> 小明 打开终端")
-        XCTAssertEqual(SessionMachine.noteBody(transcript: "  今天的会议纪要 ", wasCommandHit: false),
-                       "今天的会议纪要")
-    }
-}
-
-// MARK: - 有序粘贴队列
-
-final class OrderedPasteQueueTests: XCTestCase {
-
-    func testLoneSubmissionPastesImmediately() {
-        var q = OrderedPasteQueue<String>()
-        let s = q.enqueue()
-        q.complete(seq: s, item: "only")
-        XCTAssertEqual(q.takeReadyPrefix(), ["only"])
-        XCTAssertEqual(q.outstanding, 0)
-    }
-
-    /// 核心 bug：短录音（seq2）比长录音（seq1）先完成。
-    /// seq1 没好之前什么都不能粘，然后两者按顺序粘。
-    func testOutOfOrderCompletionHoldsUntilHeadThenDrainsInOrder() {
-        var q = OrderedPasteQueue<String>()
-        let s1 = q.enqueue()   // 1 分钟的录音
-        let s2 = q.enqueue()   // 2 秒的录音，后提交
-
-        q.complete(seq: s2, item: "short")
-        XCTAssertTrue(q.takeReadyPrefix().isEmpty, "绝不能插到 seq1 前面")
-
-        q.complete(seq: s1, item: "long")
-        XCTAssertEqual(q.takeReadyPrefix(), ["long", "short"])
-        XCTAssertEqual(q.outstanding, 0)
-    }
-
-    func testSkipDoesNotBlockFollowingPaste() {
-        var q = OrderedPasteQueue<String>()
-        let s1 = q.enqueue()
-        let s2 = q.enqueue()
-        q.complete(seq: s2, item: "second")
-        XCTAssertTrue(q.takeReadyPrefix().isEmpty)
-        q.skip(seq: s1)                       // 编辑前发送 / 失败
-        XCTAssertEqual(q.takeReadyPrefix(), ["second"])
-    }
-
-    /// 恢复的段沿用上一轮的 id；新队列必须跳过去，
-    /// 否则撞车会让新 take 原地覆盖一个已恢复的旧块。
-    func testAdvancePastPreventsRestoredIDReuse() {
-        var q = OrderedPasteQueue<String>()
-        q.advancePast(7)
-        let s = q.enqueue()
-        XCTAssertEqual(s, 8)
-        q.complete(seq: s, item: "fresh")
-        XCTAssertEqual(q.takeReadyPrefix(), ["fresh"], "队头要跟着一起前移")
-    }
-
-    func testHeadAdvancesAcrossMultipleDrains() {
-        var q = OrderedPasteQueue<String>()
-        let s1 = q.enqueue(), s2 = q.enqueue(), s3 = q.enqueue()
-        q.complete(seq: s1, item: "a")
-        XCTAssertEqual(q.takeReadyPrefix(), ["a"])
-        q.complete(seq: s3, item: "c")
-        XCTAssertTrue(q.takeReadyPrefix().isEmpty)
-        q.complete(seq: s2, item: "b")
-        XCTAssertEqual(q.takeReadyPrefix(), ["b", "c"])
-    }
-}
-
-// MARK: - 自动断句
-
-final class SilenceSegmenterTests: XCTestCase {
-
-    private let frame = 0.05          // 50 ms 采样，与协调器一致
-    private let speech: Float = 0.05
-    private let silence: Float = 0.0
-
-    /// 恒定电平喂 `seconds` 秒，返回这期间有没有切过。
-    private func feed(_ seg: inout SilenceSegmenter, _ level: Float, _ seconds: Double) -> Bool {
-        var cut = false
-        for _ in 0..<Int((seconds / frame).rounded()) {
-            if seg.feed(level: level, delta: frame) { cut = true }
-        }
-        return cut
-    }
-
-    func testLeadingSilenceNeverCuts() {
-        var seg = SilenceSegmenter()
-        XCTAssertFalse(feed(&seg, silence, 30))
-    }
-
-    func testPauseAfterSpeechCutsExactlyOnce() {
-        var seg = SilenceSegmenter()
-        _ = seg.feed(level: silence, delta: frame)      // 冷启动播种
-        XCTAssertFalse(feed(&seg, speech, 1.0))
-        XCTAssertTrue(feed(&seg, silence, 1.5))         // ~1.3 s 静音切一次
-        XCTAssertFalse(feed(&seg, silence, 10))         // 持续静音不再触发
-    }
-
-    func testShortPauseMidSpeechDoesNotCut() {
-        var seg = SilenceSegmenter()
-        _ = seg.feed(level: silence, delta: frame)
-        XCTAssertFalse(feed(&seg, speech, 1.0))
-        XCTAssertFalse(feed(&seg, silence, 0.8))        // < 1.3 s
-        XCTAssertFalse(feed(&seg, speech, 1.0))
-        XCTAssertFalse(feed(&seg, silence, 0.8))
-    }
-
-    func testSpeechAfterCutRearmsForTheNextPause() {
-        var seg = SilenceSegmenter()
-        _ = seg.feed(level: silence, delta: frame)
-        _ = feed(&seg, speech, 1.0)
-        XCTAssertTrue(feed(&seg, silence, 1.5))
-        _ = feed(&seg, speech, 1.0)
-        XCTAssertTrue(feed(&seg, silence, 1.5))
-    }
-
-    func testStrayNoiseBelowMinSpeechDoesNotArm() {
-        var seg = SilenceSegmenter()
-        _ = seg.feed(level: silence, delta: frame)
-        XCTAssertFalse(feed(&seg, speech, 0.2))         // < minSpeechSeconds
-        XCTAssertFalse(feed(&seg, silence, 5))
-    }
-
-    func testResetSegmentClearsArming() {
-        var seg = SilenceSegmenter()
-        _ = seg.feed(level: silence, delta: frame)
-        _ = feed(&seg, speech, 1.0)
-        seg.resetSegment()
-        XCTAssertFalse(feed(&seg, silence, 5), "手动切段后，静音不该在空段上再切")
-    }
-
-    func testNonPositiveDeltaIsIgnored() {
-        var seg = SilenceSegmenter()
-        XCTAssertFalse(seg.feed(level: speech, delta: 0))
-        XCTAssertFalse(seg.feed(level: speech, delta: -1))
-    }
-}
-
 // MARK: - 提交策略 / WAV
 
 final class SubmissionPolicyTests: XCTestCase {
@@ -433,9 +239,9 @@ final class SettingsDecodingTests: XCTestCase {
 
     /// 缺失字段只回落**那一个**，用户其他设置必须活下来。
     func testMissingFieldsFallBackIndividually() throws {
-        let s = try decode(#"{"postProcessingEnabled": true, "noteAutoPaste": true}"#)
+        let s = try decode(#"{"postProcessingEnabled": true, "pasteAppendNewline": true}"#)
         XCTAssertTrue(s.postProcessingEnabled)
-        XCTAssertTrue(s.noteAutoPaste)
+        XCTAssertTrue(s.pasteAppendNewline)
         XCTAssertTrue(s.focusEditorAfterInsert, "没提到的字段用默认值")
         XCTAssertEqual(s.fixedTranscriptionLanguage, .zh)
     }
@@ -449,9 +255,9 @@ final class SettingsDecodingTests: XCTestCase {
 
     /// 类型错也只影响那一个字段。
     func testWrongTypesFallBackIndividually() throws {
-        let s = try decode(#"{"micGainBoostTargetPercent": "loud", "recentContextEnabled": false}"#)
+        let s = try decode(#"{"micGainBoostTargetPercent": "loud", "autoPasteEnabled": false}"#)
         XCTAssertEqual(s.micGainBoostTargetPercent, 80)
-        XCTAssertFalse(s.recentContextEnabled)
+        XCTAssertFalse(s.autoPasteEnabled)
     }
 
     /// ⚠️ 与其他字段相反：缺 `hasCompletedOnboarding` 说明是老用户，
@@ -505,22 +311,6 @@ final class SettingsDecodingTests: XCTestCase {
         XCTAssertEqual(s.postProcessingProvider, .groq, "本地不能加工，保留独立选择")
     }
 
-    /// 落笔的 AI 开关/预设覆盖全局的，其余字段原样带过。
-    func testNoteEffectiveOverridesOnlyPostProcessing() {
-        var s = AppSettings()
-        s.postProcessingEnabled = false
-        s.postProcessingPreset = .summary
-        s.noteProcessingEnabled = true
-        s.noteProcessingPreset = .notes
-        s.focusEditorAfterInsert = false
-
-        let derived = s.noteEffective()
-        XCTAssertTrue(derived.postProcessingEnabled)
-        XCTAssertEqual(derived.postProcessingPreset, .notes)
-        XCTAssertFalse(derived.focusEditorAfterInsert, "无关字段原样带过")
-        XCTAssertFalse(s.postProcessingEnabled, "源设置不被改动")
-    }
-
     /// 说话人标签只在本地 MOSS 管线上存在。
     /// 分离在原生版是独立能力（Pyannote），任何本地模型都能配；
     /// 云端路径仍然出不了标签。
@@ -547,46 +337,50 @@ final class ShortcutsTests: XCTestCase {
         try JSONDecoder().decode(ShortcutsConfig.self, from: Data(json.utf8))
     }
 
-    private var noteSpace: Set<UInt16> { [61, 49] }
+    private var optionSpace: Set<UInt16> { [61, 49] }
 
-    func testNoteModeDefaultIsOptionSpace() {
-        XCTAssertEqual(ShortcutsConfig().noteMode.normalizedKeycodes, noteSpace)
+    func testDefaults() {
+        let cfg = ShortcutsConfig()
+        XCTAssertEqual(cfg.overlayHold.normalizedKeycodes, [61])
+        XCTAssertEqual(cfg.toggleRecording.normalizedKeycodes, optionSpace)
     }
 
-    /// 早于落笔的配置：只有 overlayToggle，没有 noteMode。
-    /// 死掉的 overlayToggle 被忽略，落笔落到 ⌥Space。
-    func testOldConfigWithoutNoteModeMigrates() throws {
+    /// 减法之前的配置：只有旧槽位，没有 toggleRecording。旧槽静默忽略。
+    func testOldConfigWithoutToggleFallsBackToDefault() throws {
         let cfg = try decode(#"""
-        {"overlayToggle":{"keys":[{"keycode":61,"label":"Right Option"},{"keycode":43,"label":","}]}}
+        {"overlayToggle":{"keys":[{"keycode":61,"label":"Right Option"},{"keycode":43,"label":","}]},
+         "historyPicker":{"keys":[{"keycode":61,"label":"Right Option"},{"keycode":33,"label":"["}]}}
         """#)
-        XCTAssertEqual(cfg.noteMode.normalizedKeycodes, noteSpace)
+        XCTAssertEqual(cfg.toggleRecording.normalizedKeycodes, optionSpace)
+        XCTAssertEqual(cfg.overlayHold.normalizedKeycodes, [61])
     }
 
-    /// 中间版本把 noteMode 存成了旧的 ⌥, —— 也要迁走（⌥, 靠别名继续可用）。
-    func testInterimNoteModeOnCommaMigrates() throws {
-        let cfg = try decode(#"""
-        {"noteMode":{"keys":[{"keycode":61,"label":"Right Option"},{"keycode":43,"label":","}]}}
-        """#)
-        XCTAssertEqual(cfg.noteMode.normalizedKeycodes, noteSpace)
-    }
-
-    /// 用户自定义的绑定必须尊重。
-    func testCustomNoteModeBindingIsRespected() throws {
+    /// 用户给「落笔」自定义过的绑定迁到切换录音上。
+    func testCustomNoteModeMigratesToToggle() throws {
         let cfg = try decode(#"""
         {"noteMode":{"keys":[{"keycode":61,"label":"Right Option"},{"keycode":47,"label":"."}]}}
         """#)
-        XCTAssertEqual(cfg.noteMode.normalizedKeycodes, [61, 47])
+        XCTAssertEqual(cfg.toggleRecording.normalizedKeycodes, [61, 47])
     }
 
-    /// 真实用户的 shortcuts.json：自定义的 historyPicker 要保住。
-    func testRealUserConfigKeepsCustomHistoryBinding() throws {
+    /// 中间版本把 noteMode 存成了旧的 ⌥, —— 那不是用户的选择，不迁。
+    func testInterimCommaNoteModeIsNotMigrated() throws {
         let cfg = try decode(#"""
-        {"cancelRecording":{"keys":[{"keycode":61,"label":"Right Option"},{"keycode":53,"label":"Esc"}]},
-         "historyPicker":{"keys":[{"keycode":56,"label":"Shift"},{"keycode":55,"label":"Command"},{"keycode":5,"label":"G"}]},
-         "overlayToggle":{"keys":[{"keycode":61,"label":"Right Option"},{"keycode":43,"label":","}]}}
+        {"noteMode":{"keys":[{"keycode":61,"label":"Right Option"},{"keycode":43,"label":","}]}}
         """#)
-        XCTAssertEqual(cfg.noteMode.normalizedKeycodes, noteSpace)
-        XCTAssertEqual(cfg.historyPicker.normalizedKeycodes, [56, 55, 5])
+        XCTAssertEqual(cfg.toggleRecording.normalizedKeycodes, optionSpace)
+    }
+
+    /// 写盘只有两个槽；读回来必须一致。
+    func testRoundTrip() throws {
+        var cfg = ShortcutsConfig()
+        cfg.overlayHold = Shortcut([(63, "Fn")])
+        cfg.toggleRecording = Shortcut([(63, "Fn"), (49, "Space")])
+        let data = try JSONEncoder().encode(cfg)
+        let back = try JSONDecoder().decode(ShortcutsConfig.self, from: data)
+        XCTAssertEqual(back, cfg)
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(Set(obj.keys), ["overlayHold", "toggleRecording"])
     }
 
     func testNormalizationFoldsLeftRightButNotRightOption() {
@@ -598,12 +392,10 @@ final class ShortcutsTests: XCTestCase {
 
     func testConflictDetection() {
         let cfg = ShortcutsConfig()
-        // ⌥[ 已经被 historyPicker 占了。
-        XCTAssertEqual(cfg.conflictingSlot(Shortcut([(61, "Right Option"), (33, "[")])),
-                       "historyPicker")
-        // 跳过自己就不算冲突。
-        XCTAssertNil(cfg.conflictingSlot(Shortcut([(61, "Right Option"), (33, "[")]),
-                                         skip: "historyPicker"))
+        XCTAssertEqual(cfg.conflictingSlot(Shortcut([(61, "Right Option"), (49, "Space")])),
+                       "toggleRecording")
+        XCTAssertNil(cfg.conflictingSlot(Shortcut([(61, "Right Option"), (49, "Space")]),
+                                         skip: "toggleRecording"))
         XCTAssertNil(cfg.conflictingSlot(.empty), "空快捷键永不冲突")
     }
 
@@ -616,122 +408,8 @@ final class ShortcutsTests: XCTestCase {
     func testUsesFnScansEveryShortcutSlot() {
         var cfg = ShortcutsConfig()
         XCTAssertFalse(cfg.usesFn)
-        cfg.editBeforeSendPresets.polish = Shortcut([(63, "Fn"), (35, "P")])
-        XCTAssertTrue(cfg.usesFn, "per-preset 的快捷键也要算进去")
-    }
-
-    func testPredatesNoteSpaceDetection() {
-        XCTAssertTrue(ShortcutsConfig.predatesNoteSpace(
-            json: Data(#"{"overlayToggle":{"keys":[]}}"#.utf8)))
-        XCTAssertTrue(ShortcutsConfig.predatesNoteSpace(json: Data("{}".utf8)))
-        XCTAssertTrue(ShortcutsConfig.predatesNoteSpace(json: Data(#"""
-            {"noteMode":{"keys":[{"keycode":61},{"keycode":43}]}}
-            """#.utf8)))
-        XCTAssertFalse(ShortcutsConfig.predatesNoteSpace(json: Data(#"""
-            {"noteMode":{"keys":[{"keycode":61},{"keycode":49}]}}
-            """#.utf8)))
-    }
-}
-
-// MARK: - 落笔会话
-
-final class NoteSessionTests: XCTestCase {
-
-    func testUpsertUpdatesInPlaceAndPreservesPasted() {
-        var s = NoteSession()
-        s.upsert(id: 1, raw: "", final: "", status: .processing)
-        s.markPasted([1])
-        s.upsert(id: 1, raw: "raw", final: "final", status: .done)
-        XCTAssertEqual(s.segments.count, 1, "占位块应该原地变成 done")
-        XCTAssertEqual(s.segments[0].finalText, "final")
-        XCTAssertTrue(s.segments[0].pasted, "pasted 标记要活过更新")
-    }
-
-    func testPasteAllSelectsUnpastedDoneInIDOrder() {
-        var s = NoteSession()
-        s.upsert(id: 3, raw: "c", final: "c", status: .done)
-        s.upsert(id: 1, raw: "a", final: "a", status: .done)
-        s.upsert(id: 2, raw: "b", final: "b", status: .failed)
-        s.upsert(id: 4, raw: "d", final: "d", status: .done)
-        s.markPasted([1])
-        let items = s.unpastedDoneInOrder()
-        XCTAssertEqual(items.map(\.id), [3, 4])
-        XCTAssertEqual(items.map(\.text), ["c", "d"])
-    }
-
-    func testNthFromLastDoneCountsAllDoneSegments() {
-        var s = NoteSession()
-        s.upsert(id: 1, raw: "a", final: "a", status: .done)
-        s.upsert(id: 2, raw: "b", final: "b", status: .failed)
-        s.upsert(id: 3, raw: "c", final: "c", status: .done)
-        s.markPasted([1])                              // 已粘贴的仍然计数
-        XCTAssertEqual(s.nthFromLastDone(1)?.text, "c")
-        XCTAssertEqual(s.nthFromLastDone(2)?.text, "a")
-        XCTAssertNil(s.nthFromLastDone(3))
-        XCTAssertNil(s.nthFromLastDone(0))
-    }
-
-    func testIsSettledTracksUnpastedDone() {
-        var s = NoteSession()
-        XCTAssertTrue(s.isSettled)
-        s.upsert(id: 1, raw: "a", final: "a", status: .done)
-        XCTAssertFalse(s.isSettled)
-        s.markPasted([1])
-        XCTAssertTrue(s.isSettled)
-        s.upsert(id: 2, raw: "", final: "", status: .failed)
-        XCTAssertTrue(s.isSettled, "失败的段没有东西可粘")
-    }
-
-    /// `processing` 永不落盘 —— 重启不可能续上一次在飞的转写。
-    func testPersistableDropsProcessingSegments() throws {
-        var s = NoteSession()
-        s.sessionEntryId = "NOTE-1"
-        s.upsert(id: 1, raw: "a", final: "a", status: .done)
-        s.upsert(id: 2, raw: "", final: "", status: .processing)
-
-        let data = try JSONEncoder().encode(s.persistable())
-        var reloaded = try JSONDecoder().decode(NoteSession.self, from: data)
-        reloaded.dropProcessing()
-        XCTAssertEqual(reloaded.segments.count, 1)
-        XCTAssertEqual(reloaded.segments[0].id, 1)
-        XCTAssertEqual(reloaded.sessionEntryId, "NOTE-1")
-    }
-
-    func testDisplayTextFallsBackToRaw() {
-        let seg = NoteSessionSegment(id: 1, rawText: "raw", finalText: "", status: .done)
-        XCTAssertEqual(seg.displayText, "raw")
-    }
-
-    func testClearResetsStartedAt() {
-        var s = NoteSession()
-        s.upsert(id: 1, raw: "a", final: "a", status: .done)
-        XCTAssertNotNil(s.startedAtMs)
-        s.clear()
-        XCTAssertNil(s.startedAtMs)
-        XCTAssertTrue(s.segments.isEmpty)
-    }
-}
-
-// MARK: - 笔记条目
-
-final class HistoryEntryTests: XCTestCase {
-
-    /// 老条目没有 title / speakerNames，必须能加载并补上默认标题。
-    func testTolerantDecodingBackfillsTitle() throws {
-        let json = #"""
-        {"id":"X","createdAtMs":1750000000000,"sourceText":"raw","finalText":"final",
-         "transcriptionMode":"groq","postProcessingEnabled":true}
-        """#
-        let e = try JSONDecoder().decode(HistoryEntry.self, from: Data(json.utf8))
-        XCTAssertEqual(e.id, "X")
-        XCTAssertFalse(e.title.isEmpty, "空标题要补成创建时刻")
-        XCTAssertEqual(e.displayText, "final")
-        XCTAssertTrue(e.speakerNames.isEmpty)
-    }
-
-    func testDisplayTextFallsBackToSource() {
-        let e = HistoryEntry(sourceText: "raw", finalText: "")
-        XCTAssertEqual(e.displayText, "raw")
+        cfg.toggleRecording = Shortcut([(63, "Fn"), (49, "Space")])
+        XCTAssertTrue(cfg.usesFn)
     }
 }
 

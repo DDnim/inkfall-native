@@ -143,41 +143,6 @@ public enum PostProcessingPreset: String, Codable, Sendable, CaseIterable {
     }
 }
 
-public enum PostProcessMode: Sendable {
-    case transcript
-    case selectionCommand
-}
-
-/// 加工走哪条路。
-///
-/// 每条路的提示词、预设、门槛完全一样，区别只在「谁来跑这一次变换」：
-/// 云端是一次 HTTPS 往返（要 key），CLI 那几条是 fork 一个本机已经装好的
-/// 编码助手（要装那个工具）。
-///
-/// 加一个工具（gemini-cli / codex-cli）= 这里加一个 case + `CLIAgentKind`
-/// 里加一个 case，别处不用动。
-public enum PostProcessingEngine: String, Codable, Sendable, CaseIterable {
-    /// OpenAI / Groq / Gemini。
-    case cloud
-    /// 本机的 `claude -p`（headless）。
-    case claudeCode
-
-    public var label: String {
-        switch self {
-        case .cloud: return "云端 API"
-        case .claudeCode: return CLIAgentKind.claudeCode.label
-        }
-    }
-
-    /// 这条路跑的是哪个命令行工具；云端那条是 nil。
-    public var cliAgent: CLIAgentKind? {
-        switch self {
-        case .cloud: return nil
-        case .claudeCode: return .claudeCode
-        }
-    }
-}
-
 // MARK: - 录音
 
 public enum RecordingMode: Sendable, Equatable {
@@ -185,13 +150,6 @@ public enum RecordingMode: Sendable, Equatable {
     case hold
     /// 按一次开、再按一次停。落笔与（未来的）待命扫描在用。
     case toggle
-}
-
-public enum CompletionAction: Sendable, Equatable {
-    case paste
-    case editBeforeSend
-    /// 把口述问题（连同选区上下文）交给 LLM 作答，展示而不是粘贴。
-    case answer
 }
 
 // MARK: - 本地模型

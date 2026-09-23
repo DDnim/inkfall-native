@@ -36,22 +36,19 @@ public enum PostProcessingPolicy {
         case local(LocalReason)
         /// 送云端 API。
         case cloud(preset: PostProcessingPreset, provider: CloudProvider, model: String)
-        /// 交给本机的命令行助手（`claude -p` …）。
-        case cli(agent: CLIAgentKind, preset: PostProcessingPreset,
-                 effort: String, model: String)
 
         /// 这次要走网络/子进程（而不是本地几条正则）。刘海要不要显示
         /// 「加工中」看的是它。
         public var isRemote: Bool {
             switch self {
-            case .cloud, .cli: return true
+            case .cloud: return true
             case .raw, .local: return false
             }
         }
 
         public var preset: PostProcessingPreset? {
             switch self {
-            case .cloud(let preset, _, _), .cli(_, let preset, _, _): return preset
+            case .cloud(let preset, _, _): return preset
             case .raw, .local: return nil
             }
         }
@@ -78,13 +75,9 @@ public enum PostProcessingPolicy {
             return .local(.tooFewCharacters)
         }
 
-        guard let agent = settings.postProcessingEngine.cliAgent else {
-            return .cloud(preset: preset,
-                          provider: settings.postProcessingProvider,
-                          model: settings.postProcessingModel(for: preset))
-        }
-        return .cli(agent: agent, preset: preset,
-                    effort: settings.cliAgentEffort, model: settings.cliAgentModel)
+        return .cloud(preset: preset,
+                      provider: settings.postProcessingProvider,
+                      model: settings.postProcessingModel(for: preset))
     }
 }
 

@@ -3,7 +3,7 @@ import AVFoundation
 import ApplicationServices
 import CoreGraphics
 
-/// 三个 TCC 权限的检测、请求与设置面板跳转。
+/// 两个 TCC 权限的检测、请求与设置面板跳转。
 ///
 /// ⚠️ 两条与签名相关的硬约束（见 inkfall-docs/spec/10 A17）：
 /// 1. 必须带 entitlement `com.apple.security.device.audio-input`，否则签名版的
@@ -12,13 +12,11 @@ import CoreGraphics
 public enum Permission: String, CaseIterable, Sendable {
     case accessibility
     case microphone
-    case screenRecording
 
     public var title: String {
         switch self {
         case .accessibility: return "辅助功能"
         case .microphone: return "麦克风"
-        case .screenRecording: return "屏幕录制"
         }
     }
 
@@ -28,20 +26,17 @@ public enum Permission: String, CaseIterable, Sendable {
             return "监听全局快捷键，并把转写结果粘贴到你正在用的窗口。没有它，热键和粘贴都无法工作。"
         case .microphone:
             return "录制你说的话。音频只在转写时离开这台机器。"
-        case .screenRecording:
-            return "截图并嵌进笔记。可选 —— 不开启也不影响听写。"
         }
     }
 
-    /// 必需项没拿到就不该放用户往下走。屏幕录制是可选的。
-    public var isRequired: Bool { self != .screenRecording }
+    /// 两项都是必需的：没有热键就没有入口，没有麦克风就没有声音。
+    public var isRequired: Bool { true }
 
     var settingsURL: URL {
         let anchor: String
         switch self {
         case .accessibility: anchor = "Privacy_Accessibility"
         case .microphone: anchor = "Privacy_Microphone"
-        case .screenRecording: anchor = "Privacy_ScreenCapture"
         }
         return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)")!
     }
@@ -70,11 +65,10 @@ public final class PermissionCoordinator {
         granted = [
             .accessibility: AXIsProcessTrusted(),
             .microphone: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
-            .screenRecording: CGPreflightScreenCaptureAccess(),
         ]
     }
 
-    /// 请求授权。辅助功能与屏幕录制只能「提示 + 打开设置面板」，
+    /// 请求授权。辅助功能只能「提示 + 打开设置面板」，
     /// 麦克风可以走系统弹窗。
     public func request(_ p: Permission) {
         switch p {
@@ -90,11 +84,6 @@ public final class PermissionCoordinator {
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] _ in
                 Task { @MainActor in self?.refresh() }
             }
-        case .screenRecording:
-            // 从没授权过时，这一步会让 App 出现在「屏幕录制」列表里，
-            // 系统才可能弹窗。
-            CGRequestScreenCaptureAccess()
-            openSettings(p)
         }
     }
 
