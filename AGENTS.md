@@ -1,29 +1,25 @@
 # Inkfall Native AI Instructions
 
-原生 Swift / SwiftUI 重写的 macOS 客户端。规格集在 `../inkfall-docs/spec/`。
+原生 Swift / SwiftUI 重写的 macOS 客户端。**减法版**（2026-09-23 起）：只保留
+「按住说话」与「切换录音」两个快捷键功能，其余（落笔、贾维斯、问助手、截图、
+笔记、本地集成 API、Claude Code 引擎）已删除。范围见 GitHub milestone「减法版」。
 
 ## 仓库结构
 
-- `Packages/InkfallCore/` — 纯 Swift、无平台依赖。断句、提交策略、静音压缩、
-  有序粘贴队列、本地润色、会话状态机、容错解码的数据模型、降级判定、
-  加工的提示词与裁决。**与 inkfall-mobile 共用的那一半**，
-  不许在这里 import AppKit。
-- `Packages/InkfallCore/Sources/InkfallCore/Agents/` — 命令行编码助手那一层。
-  `CLIAgent.swift` 定的是共同形状（可执行文件名、搜索路径、命令行怎么拼、
-  JSONL 怎么解），每个工具一个子目录（现在只有 `ClaudeCode/`）。
-  **加 gemini-cli / codex-cli 就是加一个 `CLIAgentKind` 的 case + 一个目录**，
-  调用方（`PostProcessingCoordinator` / `CLIAgentRunner`）一行不用动。
-- `App/` — macOS 宿主：AppKit 窗口/菜单栏 + SwiftUI 视图 + 系统集成。
-  `App/Agents/` 是上面那一层的宿主侧（找可执行文件、起子进程、流式读）。
+- `Packages/InkfallCore/` — 纯 Swift、无平台依赖。热键匹配、提交策略、静音压缩、
+  本地润色、容错解码的数据模型、降级判定、加工的提示词与裁决、云端请求体。
+  **与 inkfall-mobile 共用的那一半**，不许在这里 import AppKit。
+- `App/` — macOS 宿主：AppKit 菜单栏 + SwiftUI 设置窗 + 系统集成。
+  `App/main.swift` 是协调器：两个手势、转写 → 加工 → 粘贴、自测入口。
 - `project.yml` — XcodeGen 的唯一真相源。改了它必须重新 `xcodegen generate`。
 
 ## 操作规则
 
-- **改任何行为之前先读 `../inkfall-docs/spec/10-debt-and-invariants.md`**。
-  那 20 条是线上事故换来的不变量，重写最容易一条不落地重新踩一遍。
 - 纯逻辑一律放 InkfallCore 并**先写测试**。协调器需要活的 App 环境，测不了；
   能测的部分就必须测。
-- 时间常数、提示词、keycode 一律以 spec 为准，不要凭记忆写。
+- 时间常数、提示词、keycode 一律以既有代码与单测为准，不要凭记忆写。
+- **不要把砍掉的功能加回来。** 落笔 / 贾维斯 / 问助手 / 截图 / 笔记 / 集成 API
+  的代码在 git 历史里（commit 1f2f8c1 之前），需要时从那里看，不要重写。
 
 ## 构建
 
@@ -58,33 +54,29 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 ## 加工（转写之后那一步）
 
 - 决策一律走 `PostProcessingPolicy.decide` + `PostProcessingCoordinator`，
-  **听写与落笔共用同一个实例**。分开写过一次，结果是降级提示、缺 key 的处理、
+  **两个手势共用同一个实例**。分开写过一次，结果是降级提示、缺 key 的处理、
   日志格式三处各写一遍，然后慢慢长歪 —— 而这一层的分支只在真机上看得见。
-- spec/05 §6 的提示词是 **verbatim 区块**：逐字复制，不要凭记忆重写。
-- **加工失败绝不能丢文字**：一律回落本地 basic 润色。鉴权/额度问题要浮出来
-  （A15），网络/5xx 才算「降级」。
-- CLI 那条路**必须把上下文裁干净**（`--tools "" --disable-slash-commands
-  --strict-mcp-config --setting-sources ""`）。裸调实测 **19 982 token /
-  $0.2006**，裁完 **256 token / $0.0027**。**不要用 `--bare`** —— 它连 OAuth
-  一起跳过，反而要 API key。力度默认 `--effort low`。
+- 预设的提示词是 **verbatim 区块**：逐字复制，不要凭记忆重写。
+- **加工失败绝不能丢文字**：一律回落本地 basic 润色。鉴权/额度问题要浮出来，
+  网络/5xx 才算「降级」。
 - 模型在中文里会吐半角标点，结果统一过 `CJKPunctuation.normalize` ——
   **不往 verbatim 的提示词里加话**（同 `VocabularyCorrector` 的道理）。
-- 验证用 `--process-test`（可加 `--engine cloud|cli` / `--preset <名>` /
-  `--effort <档>`）和 `--note-process-test`，都不需要麦克风。
+- 验证用 `--process-test`（可加 `--preset <名>`），不需要麦克风。
 
-## 全篇转译
+## 转写（云端与本地）
 
-- 落笔的每一段音频**必须**存进 `attachments/<笔记 id>/voice-<ms>.wav`，
-  而且要存在**转写之前** —— 转写失败的段照样该留着音频，全篇转译正是补救
-  它的手段。文件名的毫秒既是唯一性也是说话顺序。
-- 拼接以**第一段的格式为准**，采样率/声道不同的直接跳过并报数：裸 PCM 硬拼
-  只会得到变调噪声（「换了麦克风之后全篇转译全是乱码」）。
-- 结果**另存为新笔记**，绝不覆盖或追加原文（原文已经有每段的转写，追加等于
-  全文重复一遍；而重跑出来的不一定更好）。
-- `diarize: true` 在这条路上是**写死的**，不看落笔面板那个「区分人物」开关。
-- 验证：`--seed-note-test <wav…>` 造样本（不依赖扬声器→麦克风那条不可靠的
-  路），`--full-transcribe-test [id]` 跑真链路。**造样本时必须在内存里关掉
-  自动粘贴**，否则会把测试文字插进用户当时前台的窗口（踩过）。
+- 入口只有一个：`Transcriber`（App 侧）。两个手势都从它过，按
+  `transcriptionMode` 走 OpenAI / Groq / 落音云 / Gemini / 本地。**别在调用方
+  自己判模式** —— 降级提示、缺 key 的处理、日志格式又会长成三份。
+- 请求体与解析在 InkfallCore 的 `TranscriptionAPI` + `MultipartForm`（有单测，
+  multipart 是**字节级**钉住的）；App 侧 `CloudTranscriber` 只管发出去与分类失败。
+- 降级：只有网络 / 5xx 才回落本地模型，而且要求选中的本地模型**已下载**；
+  鉴权 / 配额 / 没配 key / 落音云地址没配都要浮出来（本地模型在的话先顶上并提醒）。
+- 落音云鉴权顺序：钥匙串 `inkfall_session_token` → `X-Proxy-Token` → 匿名；
+  地址与令牌的环境变量（`INKFALL_GROQ_PROXY_URL` / `_TOKEN`）优先于设置项。
+  落音云的错误里**不带模型名**（服务端用什么是实现细节）。
+- 验证用 `--cloud-transcribe-test <wav> [--mode …]`，不需要麦克风；没 key 时
+  起一个本地假代理指给 `INKFALL_GROQ_PROXY_URL` 就能走完整条路。
 
 ## 自动粘贴
 
@@ -97,20 +89,18 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
   真实的 `MacAutomation.insert`，而且目标要先掉出前台（否则走 `pasteInPlace`，
   根本碰不到出事的那条路）。
 
-## 场景测试（多步走）
+## 两个手势的共享录音器
 
-- 单步的动作表只回答「这一下该干什么」，会出事的是**几步之后**的状态。
-  多步场景在 `SessionScenarioTests` / `NotePhaseTests`，对应 Tauri
-  `coordinator.rs` 里那组 `scenario_*`。
-- 状态机必须同时提供**动作表**与**把动作作用回状态**（`pressNote` /
-  `pressJarvis` / `NoteSessionMachine.next`）—— 只有前者的话多步路走不动，
-  而「共跑时停掉一个消费者，麦克风还开着吗」这类问题只有走几步才暴露。
-- 新增会话状态时，**同步给它加一条乱按序列的性质测试**：任意事件序列都
-  不能走到「不在会话里却还开着麦克风」或「还在录但没人要」。
+- ⌥Space 里的那个 ⌥ **就是推杆键本身**：按下它 matcher 先发 `.overlayHoldPressed`，
+  `beginHold()` 已经起录；Space 到了才发 `.toggleRecordingPressed`。所以切换录音
+  的入口先 `abortSpuriousHold()` 丢掉那截，再接管录音器；松开 ⌥ 的
+  `.overlayHoldReleased` 只在 `holdOwnsRecorder` 为真时才停录。
+  `HotkeyMatcherTests.testToggleChordIsPrecededByHoldPress` 钉住这个顺序。
 
 ## 验证
 
 - 纯逻辑改动：`swift test` 必须全绿。
 - UI / 系统集成改动：**必须签名构建 + 装到本机真机验证**。
-  TCC 权限、刘海几何、粘贴时序都不是单测能覆盖的。
+  TCC 权限、刘海几何、粘贴时序都不是单测能覆盖的。**不要用 open 起自测
+  实例去按真实热键** —— 用户日常在跑的那个 App 也会收到合成的按键。
 - 交付时说明：测试是否全绿、是否真的构建并启动过。

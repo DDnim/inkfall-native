@@ -48,79 +48,30 @@ public struct Shortcut: Codable, Sendable, Hashable {
 /// 它可以当作普通推杆修饰键用。
 public let fnKeycode: UInt16 = 63
 
-public struct PostProcessingEditShortcuts: Codable, Sendable, Hashable {
-    public var basic = Shortcut.empty
-    public var light = Shortcut.empty
-    public var clean = Shortcut.empty
-    public var polish = Shortcut.empty
-    public var summary = Shortcut.empty
-    public var email = Shortcut.empty
-    public var notes = Shortcut.empty
-    public var meeting = Shortcut.empty
-    public var custom = Shortcut.empty
-
-    public init() {}
-
-    public var all: [Shortcut] {
-        [basic, light, clean, polish, summary, email, notes, meeting, custom]
-    }
-}
-
 public struct ShortcutsConfig: Codable, Sendable, Hashable {
+    /// 按住说话：按下起录，松开转写并插回。
     public var overlayHold: Shortcut
-    /// 落笔：连续录音进笔记面板。默认 ⌥Space（长录听写下线后腾出来的键）；
-    /// ⌥, 作为硬编码别名活在热键监听器里。
-    public var noteMode: Shortcut
-    public var historyPicker: Shortcut
-    public var editBeforeSend: Shortcut
-    public var flushSegment: Shortcut
-    public var cancelRecording: Shortcut
-    public var selectScreenshotRegion: Shortcut
-    public var captureScreenshot: Shortcut
-    public var editBeforeSendPresets: PostProcessingEditShortcuts
+    /// 切换录音：按一下开始长录音，再按一下停止并转写。默认 ⌥Space。
+    public var toggleRecording: Shortcut
 
     public init(
         overlayHold: Shortcut = Shortcut([(61, "Right Option")]),
-        noteMode: Shortcut = Shortcut([(61, "Right Option"), (49, "Space")]),
-        historyPicker: Shortcut = Shortcut([(61, "Right Option"), (33, "[")]),
-        editBeforeSend: Shortcut = Shortcut([(61, "Right Option"), (44, "/")]),
-        flushSegment: Shortcut = Shortcut([(61, "Right Option"), (47, ".")]),
-        cancelRecording: Shortcut = Shortcut([(61, "Right Option"), (53, "Esc")]),
-        selectScreenshotRegion: Shortcut = Shortcut([(61, "Right Option"), (41, ";")]),
-        captureScreenshot: Shortcut = Shortcut([(61, "Right Option"), (39, "'")]),
-        editBeforeSendPresets: PostProcessingEditShortcuts = .init()
+        toggleRecording: Shortcut = Shortcut([(61, "Right Option"), (49, "Space")])
     ) {
         self.overlayHold = overlayHold
-        self.noteMode = noteMode
-        self.historyPicker = historyPicker
-        self.editBeforeSend = editBeforeSend
-        self.flushSegment = flushSegment
-        self.cancelRecording = cancelRecording
-        self.selectScreenshotRegion = selectScreenshotRegion
-        self.captureScreenshot = captureScreenshot
-        self.editBeforeSendPresets = editBeforeSendPresets
+        self.toggleRecording = toggleRecording
     }
 
-    /// 八个主槽（不含 per-preset 编辑快捷键）。
-    public var allShortcuts: [Shortcut] {
-        [overlayHold, noteMode, historyPicker, editBeforeSend,
-         flushSegment, cancelRecording, selectScreenshotRegion, captureScreenshot]
-    }
+    public var allShortcuts: [Shortcut] { [overlayHold, toggleRecording] }
 
     public var namedShortcuts: [(id: String, shortcut: Shortcut)] {
-        [("overlayHold", overlayHold), ("noteMode", noteMode),
-         ("historyPicker", historyPicker), ("editBeforeSend", editBeforeSend),
-         ("flushSegment", flushSegment), ("cancelRecording", cancelRecording),
-         ("selectScreenshotRegion", selectScreenshotRegion),
-         ("captureScreenshot", captureScreenshot)]
+        [("overlayHold", overlayHold), ("toggleRecording", toggleRecording)]
     }
 
-    /// 有没有任何快捷键（含 per-preset 的）绑了这个 keycode。
+    /// 有没有任何快捷键绑了这个 keycode。
     /// 用来决定要不要中和系统的 Fn/Globe 行为 —— 必须检查**全部**槽位。
     public func uses(keycode: UInt16) -> Bool {
-        let inKeys = { (s: Shortcut) in s.keys.contains { $0.keycode == keycode } }
-        return allShortcuts.contains(where: inKeys)
-            || editBeforeSendPresets.all.contains(where: inKeys)
+        allShortcuts.contains { $0.keys.contains { $0.keycode == keycode } }
     }
 
     public var usesFn: Bool { uses(keycode: fnKeycode) }
@@ -156,53 +107,34 @@ public struct ShortcutsConfig: Codable, Sendable, Hashable {
     // MARK: - 容错解码 + 迁移
 
     private enum CodingKeys: String, CodingKey {
-        case overlayHold, noteMode, historyPicker, editBeforeSend, flushSegment
-        case cancelRecording, selectScreenshotRegion, captureScreenshot
-        case editBeforeSendPresets
+        case overlayHold, toggleRecording
+        /// 减法之前「落笔」的槽。用户自定义过的绑定迁到 toggleRecording。
+        case noteMode
     }
 
     /// 任意字段缺失/类型错，只回落**那一个**字段，不丢用户其他自定义。
-    /// 另外做落笔键迁移：长录听写下线后，`noteMode` 从旧的 ⌥, 改到 ⌥Space；
-    /// 已废弃的 `overlayToggle` 静默忽略。
+    /// 减法之前的其他槽（historyPicker / flushSegment / 截图 …）静默忽略。
     public init(from decoder: Decoder) throws {
         let d = ShortcutsConfig()
         let c = try? decoder.container(keyedBy: CodingKeys.self)
-        func f(_ key: CodingKeys, _ fallback: Shortcut) -> Shortcut {
-            (try? c?.decodeIfPresent(Shortcut.self, forKey: key)) ?? nil ?? fallback
+        func f(_ key: CodingKeys) -> Shortcut? {
+            (try? c?.decodeIfPresent(Shortcut.self, forKey: key)) ?? nil
         }
-        overlayHold = f(.overlayHold, d.overlayHold)
-        historyPicker = f(.historyPicker, d.historyPicker)
-        editBeforeSend = f(.editBeforeSend, d.editBeforeSend)
-        flushSegment = f(.flushSegment, d.flushSegment)
-        cancelRecording = f(.cancelRecording, d.cancelRecording)
-        selectScreenshotRegion = f(.selectScreenshotRegion, d.selectScreenshotRegion)
-        captureScreenshot = f(.captureScreenshot, d.captureScreenshot)
-        editBeforeSendPresets =
-            (try? c?.decodeIfPresent(PostProcessingEditShortcuts.self,
-                                     forKey: .editBeforeSendPresets)) ?? nil
-            ?? d.editBeforeSendPresets
-
-        let decodedNote = (try? c?.decodeIfPresent(Shortcut.self, forKey: .noteMode)) ?? nil
-        // 迁移：没有 noteMode（早于落笔），或还停在旧的 ⌥, 默认值 —— 都移到 ⌥Space。
-        // ⌥, 靠硬编码别名继续可用，所以什么都没丢。用户自定义的绑定尊重原样。
-        let oldDefault = Shortcut([(61, "Right Option"), (43, ",")]).normalizedKeycodes
-        if let decodedNote, decodedNote.normalizedKeycodes != oldDefault {
-            noteMode = decodedNote
+        overlayHold = f(.overlayHold) ?? d.overlayHold
+        // 老的 ⌥, 默认值不迁：那是贾维斯别名腾出来之前的历史，不是用户的选择。
+        let oldComma = Shortcut([(61, "Right Option"), (43, ",")]).normalizedKeycodes
+        if let toggle = f(.toggleRecording) {
+            toggleRecording = toggle
+        } else if let note = f(.noteMode), note.normalizedKeycodes != oldComma {
+            toggleRecording = note
         } else {
-            noteMode = d.noteMode
+            toggleRecording = d.toggleRecording
         }
     }
 
-    /// 磁盘上的 shortcuts.json 是否早于 ⌥Space 改绑，因而需要回写一次。
-    /// 内存里的迁移不落盘会导致每次启动都重做一遍。
-    public static func predatesNoteSpace(json: Data) -> Bool {
-        guard let obj = try? JSONSerialization.jsonObject(with: json) as? [String: Any] else {
-            return false
-        }
-        if obj["overlayToggle"] != nil { return true }
-        guard let note = obj["noteMode"] as? [String: Any],
-              let keys = note["keys"] as? [[String: Any]] else { return true }
-        let codes = Set(keys.compactMap { ($0["keycode"] as? NSNumber)?.uint16Value })
-        return codes == [61, 43]
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(overlayHold, forKey: .overlayHold)
+        try c.encode(toggleRecording, forKey: .toggleRecording)
     }
 }

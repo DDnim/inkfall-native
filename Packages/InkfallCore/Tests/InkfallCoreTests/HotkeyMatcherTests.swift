@@ -68,7 +68,7 @@ final class HotkeyMatcherTests: XCTestCase {
         }
     }
 
-    // MARK: - 边沿触发
+    // MARK: - 按住说话
 
     func testFnChatterDoesNotRetriggerHold() {
         var config = ShortcutsConfig()
@@ -100,248 +100,93 @@ final class HotkeyMatcherTests: XCTestCase {
         XCTAssertEqual(kb.drain(), [.overlayHoldReleased])
     }
 
+    func testRightOptionHoldPressAndRelease() {
+        var kb = Keyboard()
+        kb.rightOption(down: true, at: 0)
+        XCTAssertEqual(kb.drain(), [.overlayHoldPressed])
+        XCTAssertFalse(kb.lastSuppressed, "修饰键永不吞")
+        kb.rightOption(down: false, at: 3.0)
+        XCTAssertEqual(kb.drain(), [.overlayHoldReleased])
+    }
+
+    // MARK: - 切换录音（⌥Space）
+
+    func testToggleChordFiresOnOptionSpaceAndSwallowsSpace() {
+        var kb = Keyboard()
+        kb.rightOption(down: true)
+        _ = kb.drain()
+
+        kb.keyDown(49)
+        XCTAssertEqual(kb.drain(), [.toggleRecordingPressed])
+        XCTAssertTrue(kb.lastSuppressed, "⌥Space 匹配成立，key-down 必须吞掉")
+
+        kb.keyUp(49)
+        XCTAssertTrue(kb.lastSuppressed, "只吞一半会让前台 App 收到孤儿 key-up")
+    }
+
+    func testToggleFiresOnceWhileKeyRepeats() {
+        var kb = Keyboard()
+        kb.rightOption(down: true)
+        _ = kb.drain()
+        kb.keyDown(49)
+        kb.keyDown(49)   // 自动重复
+        kb.keyDown(49)
+        XCTAssertEqual(kb.drain(), [.toggleRecordingPressed])
+    }
+
     func testExtraModifiersToleratedButExtraPlainKeyBreaksChord() {
         var kb = Keyboard()
         kb.rightOption(down: true)
         _ = kb.drain()
 
-        // ⌥⇧[ 仍然算历史选择器（额外的修饰键容忍）。
+        // ⌥⇧Space 仍然算切换（额外的修饰键容忍）。
         kb.shift(down: true)
-        kb.keyDown(33)
-        XCTAssertTrue(kb.drain().contains(.historyPickerPressed))
-        kb.keyUp(33)
+        kb.keyDown(49)
+        XCTAssertTrue(kb.drain().contains(.toggleRecordingPressed))
+        kb.keyUp(49)
         kb.shift(down: false)
 
         // 但多按一个普通键就不匹配了。
         kb.keyDown(9)
         _ = kb.drain()
-        kb.keyDown(33)
-        XCTAssertFalse(kb.drain().contains(.historyPickerPressed))
+        kb.keyDown(49)
+        XCTAssertFalse(kb.drain().contains(.toggleRecordingPressed))
+        XCTAssertFalse(kb.lastSuppressed)
     }
 
-    // MARK: - 吞噬
-
-    func testRightOptionComboSuppressesBothDownAndUp() {
+    /// 切换键的那个 ⌥ 就是推杆本身：按下先发一次 hold，Space 到了再发 toggle。
+    /// 宿主要靠 `abortSpuriousHold` 丢掉那截录音 —— 这里钉住事件顺序。
+    func testToggleChordIsPrecededByHoldPress() {
         var kb = Keyboard()
         kb.rightOption(down: true)
-        XCTAssertFalse(kb.lastSuppressed, "修饰键永不吞")
-
-        kb.keyDown(33)
-        XCTAssertTrue(kb.lastSuppressed, "⌥[ 匹配成立，key-down 必须吞掉")
-        XCTAssertTrue(kb.drain().contains(.historyPickerPressed))
-
-        kb.keyUp(33)
-        XCTAssertTrue(kb.lastSuppressed, "只吞一半会让前台 App 收到孤儿 key-up")
+        kb.keyDown(49)
+        kb.keyUp(49)
+        kb.rightOption(down: false)
+        XCTAssertEqual(kb.drain(),
+                       [.overlayHoldPressed, .toggleRecordingPressed, .overlayHoldReleased])
     }
 
-    func testCommaAliasFiresJarvisAndSwallowsTheComma() {
+    func testBareKeysAreUntouched() {
         var kb = Keyboard()
-        kb.rightOption(down: true)
-        _ = kb.drain()
-
-        kb.keyDown(43)
-        // ⌥, 是贾维斯别名，不是落笔（落笔已改绑 ⌥Space）。
-        XCTAssertEqual(kb.drain(), [.jarvisTogglePressed])
-        XCTAssertTrue(kb.lastSuppressed, "不吞会往前台漏一个可打印的「≤」")
-    }
-
-    func testCommaAliasYieldsWhenUserRebindsThatCombo() {
-        var config = ShortcutsConfig()
-        config.historyPicker = Shortcut([(61, "Right Option"), (43, ",")])
-        var kb = Keyboard(HotkeyMatcher(shortcuts: config))
-
-        kb.rightOption(down: true)
-        _ = kb.drain()
-        kb.keyDown(43)
-        let events = kb.drain()
-        XCTAssertTrue(events.contains(.historyPickerPressed))
-        XCTAssertFalse(events.contains(.jarvisTogglePressed), "用户重绑则用户赢")
-    }
-
-    func testEscapeIsUntouchedOutsideJarvisCountdown() {
-        var kb = Keyboard()
+        kb.keyDown(49)
+        XCTAssertTrue(kb.drain().isEmpty)
+        XCTAssertFalse(kb.lastSuppressed, "没按 ⌥ 的空格必须原样透传")
+        kb.keyUp(49)
         kb.keyDown(53)
         XCTAssertTrue(kb.drain().isEmpty)
         XCTAssertFalse(kb.lastSuppressed, "全局吞掉裸 esc 是不可接受的")
     }
 
-    func testJarvisCountdownClaimsBareEscapeAndReturn() {
-        var kb = Keyboard()
-        kb.matcher.jarvisCountdown = true
+    func testEmptiedToggleSlotPassesKeysThrough() {
+        var config = ShortcutsConfig()
+        config.toggleRecording = .empty
+        var kb = Keyboard(HotkeyMatcher(shortcuts: config))
 
-        kb.keyDown(53)
-        XCTAssertEqual(kb.drain(), [.jarvisUndoPressed])
-        XCTAssertTrue(kb.lastSuppressed)
-        kb.keyUp(53)
-
-        kb.keyDown(36)
-        XCTAssertEqual(kb.drain(), [.jarvisRunNowPressed])
-        XCTAssertTrue(kb.lastSuppressed)
-        kb.keyUp(36)
-
-        // 倒计时结束 → 立刻交还这两个键。
-        kb.matcher.jarvisCountdown = false
-        kb.keyDown(53)
+        kb.rightOption(down: true)
+        _ = kb.drain()
+        kb.keyDown(49)
         XCTAssertTrue(kb.drain().isEmpty)
-        XCTAssertFalse(kb.lastSuppressed)
-    }
-
-    func testRightOptionEscapeCancelsRecording() {
-        var kb = Keyboard()
-        kb.rightOption(down: true)
-        _ = kb.drain()
-        kb.keyDown(53)
-        XCTAssertTrue(kb.drain().contains(.cancelRecordingPressed))
-        XCTAssertTrue(kb.lastSuppressed)
-    }
-
-    // MARK: - lone tap（右 ⌥ 单击）
-
-    func testLoneRightOptionTapFlushesButComboReleaseDoesNot() {
-        var kb = Keyboard()
-
-        kb.rightOption(down: true)
-        kb.rightOption(down: false)
-        XCTAssertTrue(kb.drain().contains(.longRecordingFlushTap))
-
-        // 走过组合键的那一次松开不算单击 —— 否则 ⌥, 开会话会立刻切出空的第一段。
-        kb.rightOption(down: true)
-        kb.tap(43)
-        kb.rightOption(down: false)
-        XCTAssertFalse(kb.drain().contains(.longRecordingFlushTap))
-    }
-
-    func testFlushTapContaminatedWhenOtherKeyAlreadyHeld() {
-        var kb = Keyboard()
-        kb.keyDown(9)              // 先按住 V
-        kb.rightOption(down: true) // 再按右 ⌥
-        kb.rightOption(down: false)
-        XCTAssertFalse(kb.drain().contains(.longRecordingFlushTap))
-    }
-
-    func testFlushTapRecoversAfterAContaminatedRound() {
-        var kb = Keyboard()
-        kb.rightOption(down: true)
-        kb.tap(43)
-        kb.rightOption(down: false)
-        _ = kb.drain()
-
-        kb.rightOption(down: true)
-        kb.rightOption(down: false)
-        XCTAssertTrue(kb.drain().contains(.longRecordingFlushTap), "污染标志必须逐轮清空")
-    }
-
-    // MARK: - Ask 双击并按住
-
-    func testDoubleTapAndHoldEntersAskGesture() {
-        var kb = Keyboard()
-        kb.rightOption(down: true, at: 0)
-        kb.rightOption(down: false, at: 0.2)     // 一击（≤ 0.35 s）
-        XCTAssertTrue(kb.drain().contains(.overlayHoldReleased))
-
-        kb.rightOption(down: true, at: 0.4)      // 间隔 0.2 s ≤ 0.4 s
-        XCTAssertTrue(kb.drain().contains(.askHoldPressed))
-        kb.rightOption(down: false, at: 2.0)
-        let released = kb.drain()
-        XCTAssertTrue(released.contains(.askHoldReleased))
-        XCTAssertFalse(released.contains(.overlayHoldReleased))
-    }
-
-    func testSingleHoldNeverTriggersAsk() {
-        var kb = Keyboard()
-        kb.rightOption(down: true, at: 0)
-        kb.rightOption(down: false, at: 3.0)
-        let events = kb.drain()
-        XCTAssertTrue(events.contains(.overlayHoldPressed))
-        XCTAssertTrue(events.contains(.overlayHoldReleased))
-        XCTAssertFalse(events.contains(.askHoldPressed))
-    }
-
-    func testRealHoldFollowedByAnotherHoldDoesNotPrimeAsk() {
-        var kb = Keyboard()
-        kb.rightOption(down: true, at: 0)
-        kb.rightOption(down: false, at: 1.5)     // 真的按住了，不是一击
-        _ = kb.drain()
-        kb.rightOption(down: true, at: 1.6)
-        XCTAssertEqual(kb.drain().filter { $0 == .askHoldPressed }, [])
-    }
-
-    func testExpiredTapDoesNotPrimeAsk() {
-        var kb = Keyboard()
-        kb.rightOption(down: true, at: 0)
-        kb.rightOption(down: false, at: 0.2)     // 是一击
-        _ = kb.drain()
-        kb.rightOption(down: true, at: 1.0)      // 但间隔 0.8 s > 0.4 s
-        let events = kb.drain()
-        XCTAssertTrue(events.contains(.overlayHoldPressed))
-        XCTAssertFalse(events.contains(.askHoldPressed))
-    }
-
-    // MARK: - 严格组合
-
-    func testRightOptionDigitsAndFunctionRow() {
-        var kb = Keyboard()
-        kb.rightOption(down: true)
-        _ = kb.drain()
-
-        kb.keyDown(18)
-        XCTAssertTrue(kb.drain().contains(.noteQuickPaste(1)))
-        XCTAssertTrue(kb.lastSuppressed)
-        kb.keyUp(18)
-
-        // 5 和 6 的 keycode 是反的 —— 23 才是 5。
-        kb.keyDown(23)
-        XCTAssertTrue(kb.drain().contains(.noteQuickPaste(5)))
-        kb.keyUp(23)
-
-        kb.keyDown(122)
-        XCTAssertTrue(kb.drain().contains(.processingPresetDigit(1)))
-        kb.keyUp(122)
-    }
-
-    func testDigitComboIgnoresNonStrictCombination() {
-        var kb = Keyboard()
-        kb.rightOption(down: true)
-        kb.shift(down: true)
-        _ = kb.drain()
-
-        kb.keyDown(18)
-        // ⌥⇧1 必须照常打字。
-        XCTAssertFalse(kb.drain().contains(.noteQuickPaste(1)))
-        XCTAssertFalse(kb.lastSuppressed)
-    }
-
-    func testDigitComboFiresOnceWhileKeyRepeats() {
-        var kb = Keyboard()
-        kb.rightOption(down: true)
-        _ = kb.drain()
-        kb.keyDown(19)
-        kb.keyDown(19)   // 自动重复
-        kb.keyDown(19)
-        XCTAssertEqual(kb.drain(), [.noteQuickPaste(2)])
-    }
-
-    func testNoteTogglesOnlyWhenPanelVisible() {
-        var kb = Keyboard()
-        kb.rightOption(down: true)
-        _ = kb.drain()
-
-        kb.keyDown(9)
-        XCTAssertTrue(kb.drain().isEmpty, "面板关着时 V 必须照常打字")
-        XCTAssertFalse(kb.lastSuppressed)
-        kb.keyUp(9)
-
-        kb.matcher.noteTogglesActive = true
-        kb.keyDown(9)
-        XCTAssertEqual(kb.drain(), [.noteAutoPasteToggle])
-        XCTAssertTrue(kb.lastSuppressed)
-        kb.keyUp(9)
-
-        kb.keyDown(35)
-        XCTAssertEqual(kb.drain(), [.noteDiarizeToggle])
-        kb.keyUp(35)
-        kb.keyDown(1)
-        XCTAssertEqual(kb.drain(), [.noteAutoSegToggle])
+        XCTAssertFalse(kb.lastSuppressed, "槽位置空后按键必须原样透传给其他 App")
     }
 
     // MARK: - 自愈
@@ -357,8 +202,8 @@ final class HotkeyMatcherTests: XCTestCase {
         // 和弦必须照常工作 —— 老代码在这里全线堵死。
         kb.rightOption(down: true)
         _ = kb.drain()
-        kb.keyDown(33)
-        XCTAssertTrue(kb.drain().contains(.historyPickerPressed))
+        kb.keyDown(49)
+        XCTAssertTrue(kb.drain().contains(.toggleRecordingPressed))
     }
 
     func testStalePlainKeyExpiresAndChordsRecover() {
@@ -367,17 +212,17 @@ final class HotkeyMatcherTests: XCTestCase {
         kb.keyUp(9, at: 0)         // 别的键正常收发，幽灵仍在
 
         kb.rightOption(down: true, at: 1)
-        kb.keyDown(43, at: 1)
-        XCTAssertFalse(kb.drain().contains(.jarvisTogglePressed), "幽灵键堵住和弦")
-        kb.keyUp(43, at: 1)
+        kb.keyDown(49, at: 1)
+        XCTAssertFalse(kb.drain().contains(.toggleRecordingPressed), "幽灵键堵住和弦")
+        kb.keyUp(49, at: 1)
         kb.rightOption(down: false, at: 1)
         _ = kb.drain()
 
         // 20 s 后过期。
         kb.rightOption(down: true, at: 30)
         XCTAssertFalse(kb.matcher.debugPressedKeys.contains(33))
-        kb.keyDown(43, at: 30)
-        XCTAssertTrue(kb.drain().contains(.jarvisTogglePressed))
+        kb.keyDown(49, at: 30)
+        XCTAssertTrue(kb.drain().contains(.toggleRecordingPressed))
     }
 
     func testSelfHealNeverDropsGenuinelyHeldKeys() {
@@ -410,6 +255,7 @@ final class HotkeyMatcherTests: XCTestCase {
         kb.raw(HotkeyEventType.flagsChanged, 56, flags: HotkeyMask.shift, at: 1)
         XCTAssertFalse(kb.matcher.debugPressedKeys.contains(61))
         XCTAssertTrue(kb.matcher.debugPressedKeys.contains(56))
+        XCTAssertEqual(kb.drain(), [.overlayHoldReleased], "推杆随之松开")
     }
 
     func testModifierReconciliationUsesSharedBitNotDeviceBit() {
@@ -425,7 +271,7 @@ final class HotkeyMatcherTests: XCTestCase {
     func testResetClearsEverything() {
         var kb = Keyboard()
         kb.rightOption(down: true)
-        kb.keyDown(33)
+        kb.keyDown(49)
         _ = kb.drain()
 
         kb.matcher.resetMatches()
@@ -439,47 +285,13 @@ final class HotkeyMatcherTests: XCTestCase {
     func testChangingShortcutsResetsState() {
         var kb = Keyboard()
         kb.rightOption(down: true)
-        kb.keyDown(33)
+        kb.keyDown(49)
         _ = kb.drain()
 
         var config = ShortcutsConfig()
-        config.historyPicker = Shortcut([(61, "Right Option"), (30, "]")])
+        config.toggleRecording = Shortcut([(61, "Right Option"), (47, ".")])
         kb.matcher.shortcuts = config
         XCTAssertTrue(kb.matcher.debugPressedKeys.isEmpty,
                       "改绑期间的 key-up 看不见，残留状态不可信")
-    }
-
-    // MARK: - 截图槽动态摘除
-
-    func testEmptiedScreenshotSlotPassesKeysThrough() {
-        var config = ShortcutsConfig()
-        config.selectScreenshotRegion = .empty
-        config.captureScreenshot = .empty
-        var kb = Keyboard(HotkeyMatcher(shortcuts: config))
-
-        kb.rightOption(down: true)
-        _ = kb.drain()
-        kb.keyDown(41)
-        XCTAssertTrue(kb.drain().isEmpty)
-        XCTAssertFalse(kb.lastSuppressed, "关掉截图功能后按键必须原样透传给其他 App")
-    }
-
-    // MARK: - 落笔
-
-    func testNoteModeChordFiresOnOptionSpace() {
-        var kb = Keyboard()
-        kb.rightOption(down: true)
-        _ = kb.drain()
-        kb.keyDown(49)
-        XCTAssertTrue(kb.drain().contains(.noteModePressed))
-        XCTAssertTrue(kb.lastSuppressed)
-    }
-
-    func testFlushSegmentWorksWhileHoldKeyHeld() {
-        var kb = Keyboard()
-        kb.rightOption(down: true)
-        XCTAssertTrue(kb.drain().contains(.overlayHoldPressed))
-        kb.keyDown(47)
-        XCTAssertTrue(kb.drain().contains(.flushSegmentPressed))
     }
 }

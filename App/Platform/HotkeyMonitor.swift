@@ -80,16 +80,6 @@ final class HotkeyMonitor: @unchecked Sendable {
         lock.withLock { matcher.shortcuts = shortcuts }
     }
 
-    var jarvisCountdown: Bool {
-        get { lock.withLock { matcher.jarvisCountdown } }
-        set { lock.withLock { matcher.jarvisCountdown = newValue } }
-    }
-
-    var noteTogglesActive: Bool {
-        get { lock.withLock { matcher.noteTogglesActive } }
-        set { lock.withLock { matcher.noteTogglesActive = newValue } }
-    }
-
     var isEnabled: Bool {
         guard let tap = lock.withLock({ tap }) else { return false }
         return CGEvent.tapIsEnabled(tap: tap)

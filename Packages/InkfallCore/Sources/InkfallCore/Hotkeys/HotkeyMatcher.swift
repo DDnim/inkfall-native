@@ -25,63 +25,24 @@ public enum HotkeyMask {
 public enum Keycode {
     public static let modifiers: Set<UInt16> = [55, 56, 58, 59, 61, 63]
     public static let rightOption: UInt16 = 61
-    /// 单击触发「粘贴所有 / 手动切段」的那个键 —— 与所有录音快捷键同源。
-    public static let flushTap: UInt16 = rightOption
     public static let escape: UInt16 = 53
-    public static let returns: Set<UInt16> = [36, 76]
     public static let fn: UInt16 = 63
-
-    /// 数字行 1–9（快速粘贴组合键）。⚠️ 5 和 6 是 23/22，顺序是反的。
-    static let digitRow: [UInt16: UInt8] = [
-        18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8, 25: 9,
-    ]
-    /// F1–F9（切换加工预设）。
-    static let functionRow: [UInt16: UInt8] = [
-        122: 1, 120: 2, 99: 3, 118: 4, 96: 5, 97: 6, 98: 7, 100: 8, 101: 9,
-    ]
-    /// 落笔会话开关：右⌥ + V / P / S。
-    static let noteToggles: [UInt16: HotkeyEvent] = [
-        9: .noteAutoPasteToggle, 35: .noteDiarizeToggle, 1: .noteAutoSegToggle,
-    ]
 }
 
 public enum HotkeyTiming {
     /// 一个被跟踪的普通键多久没有任何键事件刷新就算幽灵（它的 key-up 在 tap
     /// 被禁用期间丢了）。长按会自动重复，远低于这个值。
     public static let stalePressedKeySeconds: Double = 20
-    /// 短于这个时长的按住算「一击」—— ask 双击手势的前半。
-    public static let askGestureTapMax: Double = 0.35
-    /// 第二次按住必须在这一击松开后的这个窗口内开始，才读成 ask 手势
-    /// 而不是两个独立动作。
-    public static let askGestureGap: Double = 0.4
 }
 
 // MARK: - 事件
 
+/// 减法版只剩两个手势：按住说话（按下 / 松开）与切换录音（按一下）。
 public enum HotkeyEvent: Equatable, Sendable {
     case overlayHoldPressed
     case overlayHoldReleased
-    /// 「双击并按住」推杆键：录一个交给 LLM 的问题，而不是普通听写。
-    case askHoldPressed
-    case askHoldReleased
-    case noteModePressed
-    /// ⌥, —— 硬编码别名。功能（关键词扫描）本轮不做，但事件与吞噬要留对。
-    case jarvisTogglePressed
-    case historyPickerPressed
-    case editBeforeSendPressed
-    case flushSegmentPressed
-    case cancelRecordingPressed
-    /// 右⌥ 单击（期间没碰过别的键）。
-    case longRecordingFlushTap
-    case selectScreenshotRegionPressed
-    case captureScreenshotPressed
-    case processingPresetDigit(UInt8)
-    case noteQuickPaste(UInt8)
-    case noteAutoPasteToggle
-    case noteDiarizeToggle
-    case noteAutoSegToggle
-    case jarvisUndoPressed
-    case jarvisRunNowPressed
+    /// 切换录音：按一下开始长录音，再按一下停止并转写。
+    case toggleRecordingPressed
 }
 
 // MARK: - 和弦状态机
@@ -93,12 +54,8 @@ public enum HotkeyEvent: Equatable, Sendable {
 public struct HotkeyMatcher: Sendable {
 
     public var shortcuts: ShortcutsConfig {
-        didSet { noteAliasActive = Self.aliasActive(shortcuts); resetMatches() }
+        didSet { resetMatches() }
     }
-
-    /// ⌥, 别名只在**没有任何配置槽绑它**时生效 —— 用户重绑了就用户赢。
-    private var noteAliasActive: Bool
-    private static let noteAlias = Shortcut([(61, "Right Option"), (43, ",")])
 
     private var pressedKeys: Set<UInt16> = []
     /// 每个被跟踪的**非修饰**键最后一次收到事件的时间（自动重复会刷新），
@@ -107,31 +64,12 @@ public struct HotkeyMatcher: Sendable {
     private var suppressedKeyUps: Set<UInt16> = []
 
     private var matched: Set<String> = []
-    private var flushTapInProgress = false
-    private var flushTapContaminated = false
 
-    private var holdPressedAt: Double?
-    private var lastHoldReleaseAt: Double?
-    private var lastHoldWasTap = false
-    private var askHoldActive = false
-
-    /// 只有贾维斯倒计时期间才为真。esc / ↩ 只在这段窗口里被抢占，其余时间
-    /// 完全不碰 —— 全局吞掉 esc 是不可接受的。
-    public var jarvisCountdown = false {
-        didSet { if !jarvisCountdown { matched.remove("jarvisUndo"); matched.remove("jarvisRun") } }
-    }
-    /// 只有落笔面板显示时才为真。V/P/S 是常用字母，面板关着时绝不碰。
-    public var noteTogglesActive = false
     /// 真实 tap 上开启：每个事件先把跟踪状态与权威来源对账。
     public var systemStateVerify = false
 
     public init(shortcuts: ShortcutsConfig = ShortcutsConfig()) {
         self.shortcuts = shortcuts
-        self.noteAliasActive = Self.aliasActive(shortcuts)
-    }
-
-    private static func aliasActive(_ shortcuts: ShortcutsConfig) -> Bool {
-        shortcuts.conflictingSlot(noteAlias) == nil
     }
 
     // MARK: - 主入口
@@ -146,10 +84,9 @@ public struct HotkeyMatcher: Sendable {
 
         if systemStateVerify { selfHealStaleKeys(type: type, flags: flags, now: now) }
 
-        var newlyPressed = false
         switch type {
         case HotkeyEventType.keyDown:
-            newlyPressed = pressedKeys.insert(normalized).inserted
+            pressedKeys.insert(normalized)
             pressedAt[normalized] = now
         case HotkeyEventType.keyUp:
             pressedKeys.remove(normalized)
@@ -161,33 +98,11 @@ public struct HotkeyMatcher: Sendable {
             break
         }
 
-        updateFlushTapState(&events)
-        dispatchMatches(&events, now: now)
+        dispatchMatches(&events)
 
         if type == HotkeyEventType.keyDown, shouldConsumeKeyDown(normalized) {
             suppressedKeyUps.insert(normalized)
             suppress = true
-        }
-
-        // 右⌥ + 数字 / F 键 / V-P-S。三者都是**严格**组合（只有右⌥ 和那一个键），
-        // 这样 ⌥⇧1 之类的输入法组合仍然照常打字。按住时的重复 key-down 会被吞掉，
-        // 但只触发一次。
-        if type == HotkeyEventType.keyDown {
-            if let digit = Keycode.digitRow[normalized], strictRightOptionCombo(normalized) {
-                if newlyPressed { events.append(.noteQuickPaste(digit)) }
-                suppressedKeyUps.insert(normalized)
-                suppress = true
-            } else if let digit = Keycode.functionRow[normalized],
-                      strictRightOptionCombo(normalized) {
-                if newlyPressed { events.append(.processingPresetDigit(digit)) }
-                suppressedKeyUps.insert(normalized)
-                suppress = true
-            } else if let event = Keycode.noteToggles[normalized],
-                      noteTogglesActive, strictRightOptionCombo(normalized) {
-                if newlyPressed { events.append(event) }
-                suppressedKeyUps.insert(normalized)
-                suppress = true
-            }
         }
 
         return (events, suppress)
@@ -274,91 +189,19 @@ public struct HotkeyMatcher: Sendable {
         }
     }
 
-    private mutating func dispatchMatches(_ events: inout [HotkeyEvent], now: Double) {
-        // 推杆键单独处理（要判 ask 双击）。
+    private mutating func dispatchMatches(_ events: inout [HotkeyEvent]) {
         let hold = matches(shortcuts.overlayHold)
         if hold, !matched.contains("hold") {
             matched.insert("hold")
-            // 这一次按下紧跟在同一个键的一次快速轻击之后 → 升格为 ask 手势。
-            let primed = lastHoldWasTap
-                && (lastHoldReleaseAt.map { now - $0 <= HotkeyTiming.askGestureGap } ?? false)
-            holdPressedAt = now
-            if primed {
-                askHoldActive = true
-                lastHoldWasTap = false
-                lastHoldReleaseAt = nil
-                events.append(.askHoldPressed)
-            } else {
-                events.append(.overlayHoldPressed)
-            }
+            events.append(.overlayHoldPressed)
         } else if !hold, matched.contains("hold") {
             matched.remove("hold")
-            lastHoldWasTap = holdPressedAt.map { now - $0 <= HotkeyTiming.askGestureTapMax } ?? false
-            lastHoldReleaseAt = now
-            holdPressedAt = nil
-            if askHoldActive {
-                askHoldActive = false
-                events.append(.askHoldReleased)
-            } else {
-                events.append(.overlayHoldReleased)
-            }
+            events.append(.overlayHoldReleased)
         }
 
-        edge("noteMode", matches(shortcuts.noteMode)) { events.append(.noteModePressed) }
-        edge("jarvis", noteAliasActive && matches(Self.noteAlias)) {
-            events.append(.jarvisTogglePressed)
+        edge("toggle", matches(shortcuts.toggleRecording)) {
+            events.append(.toggleRecordingPressed)
         }
-
-        // esc / ↩ 只回答一个**活着的**倒计时，别的时候完全不碰这两个键。
-        // 是裸键，所以「只在倒计时期间」这个门就是全部的安全保障。
-        if jarvisCountdown {
-            edge("jarvisUndo", pressedKeys.contains(Keycode.escape)) {
-                events.append(.jarvisUndoPressed)
-            }
-            edge("jarvisRun", !pressedKeys.isDisjoint(with: Keycode.returns)) {
-                events.append(.jarvisRunNowPressed)
-            }
-        }
-
-        edge("history", matches(shortcuts.historyPicker)) { events.append(.historyPickerPressed) }
-        edge("edit", matches(shortcuts.editBeforeSend)) { events.append(.editBeforeSendPressed) }
-        edge("flush", matches(shortcuts.flushSegment)) { events.append(.flushSegmentPressed) }
-        edge("cancel", matches(shortcuts.cancelRecording)) { events.append(.cancelRecordingPressed) }
-        edge("selectRegion", matches(shortcuts.selectScreenshotRegion)) {
-            events.append(.selectScreenshotRegionPressed)
-        }
-        edge("capture", matches(shortcuts.captureScreenshot)) {
-            events.append(.captureScreenshotPressed)
-        }
-    }
-
-    /// 右⌥ 的「单击」：按下再松开，中间**没有碰过任何别的键**。
-    ///
-    /// ⚠️ 污染检测是必需的。⌥, 开会话、⌥[ 开历史、⌥. 显式切段 ——
-    /// 这些组合结束时松开修饰键不能被当成单击。没有它，开启长录（⌥,）
-    /// 会立刻切出一个空的第一段。
-    private mutating func updateFlushTapState(_ events: inout [HotkeyEvent]) {
-        let modifierHeld = pressedKeys.contains(Keycode.flushTap)
-        let otherKeyHeld = pressedKeys.contains { $0 != Keycode.flushTap }
-        if modifierHeld {
-            if !flushTapInProgress {
-                flushTapInProgress = true
-                flushTapContaminated = otherKeyHeld
-            } else if otherKeyHeld {
-                flushTapContaminated = true
-            }
-        } else if flushTapInProgress {
-            let clean = !flushTapContaminated
-            flushTapInProgress = false
-            flushTapContaminated = false
-            if clean { events.append(.longRecordingFlushTap) }
-        }
-    }
-
-    /// 只有右⌥ 和这一个键被按着 —— 别的什么都没有。
-    private func strictRightOptionCombo(_ keycode: UInt16) -> Bool {
-        pressedKeys.contains(Keycode.rightOption)
-            && pressedKeys.allSatisfy { $0 == keycode || $0 == Keycode.rightOption }
     }
 
     func matches(_ shortcut: Shortcut) -> Bool {
@@ -375,16 +218,7 @@ public struct HotkeyMatcher: Sendable {
     private func shouldConsumeKeyDown(_ keycode: UInt16) -> Bool {
         // 修饰键永不吞 —— 吞了会打断正常输入。
         if Keycode.modifiers.contains(keycode) { return false }
-        // 倒计时期间的 esc / ↩ 属于倒计时，不能同时到达前台 App。
-        if jarvisCountdown, keycode == Keycode.escape || Keycode.returns.contains(keycode) {
-            return true
-        }
-        // ⌥, 别名生效时连它的逗号一起吞，否则组合会往前台漏一个可打印的「≤」。
-        if noteAliasActive, consumes(Self.noteAlias, keycode) { return true }
-        return [shortcuts.noteMode, shortcuts.historyPicker, shortcuts.editBeforeSend,
-                shortcuts.flushSegment, shortcuts.cancelRecording,
-                shortcuts.selectScreenshotRegion, shortcuts.captureScreenshot]
-            .contains { consumes($0, keycode) }
+        return consumes(shortcuts.toggleRecording, keycode)
     }
 
     private func consumes(_ shortcut: Shortcut, _ keycode: UInt16) -> Bool {
@@ -402,12 +236,6 @@ public struct HotkeyMatcher: Sendable {
         pressedAt.removeAll()
         suppressedKeyUps.removeAll()
         matched.removeAll()
-        flushTapInProgress = false
-        flushTapContaminated = false
-        holdPressedAt = nil
-        lastHoldReleaseAt = nil
-        lastHoldWasTap = false
-        askHoldActive = false
     }
 
     /// 测试用：当前被跟踪为按下的键。
