@@ -4,16 +4,14 @@ import Foundation
 
 public enum TranscriptionMode: String, Codable, Sendable, CaseIterable {
     case openai, groq, gemini, local
-    /// 落音云：服务端持 Groq key，客户端只带会话令牌。
-    case groqProxy
 
-    /// 自测时对应的云供应商；local 与 groqProxy 没有客户端 key 可测。
+    /// 自测时对应的云供应商；local 没有客户端 key 可测。
     public var cloudProviderForSelfTest: CloudProvider? {
         switch self {
         case .openai: return .openai
         case .groq: return .groq
         case .gemini: return .gemini
-        case .local, .groqProxy: return nil
+        case .local: return nil
         }
     }
 }

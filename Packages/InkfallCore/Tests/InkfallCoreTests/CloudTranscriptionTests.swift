@@ -2,7 +2,7 @@ import XCTest
 @testable import InkfallCore
 
 // 云端转写链路里不需要活的 App 环境的那一半：multipart 的每个字节、
-// 四条路的端点与鉴权头、语言字段、响应解析、落音云的鉴权顺序与地址校验。
+// 三条路的端点与鉴权头、语言字段、响应解析。
 //
 // 真正发请求那一层在 App 里（`CloudTranscriber`），靠
 // `--cloud-transcribe-test <wav>` 真机验证。
@@ -84,41 +84,12 @@ final class TranscriptionAPITests: XCTestCase {
         XCTAssertTrue(String(decoding: prepared.body, as: UTF8.self).contains("verbose_json"))
     }
 
-    func testVocabularyBecomesPromptForDirectProvidersOnly() throws {
+    func testVocabularyBecomesPrompt() throws {
         let direct = try TranscriptionAPI.prepare(
             route: .groq(model: "whisper-large-v3", key: "k"), audio: audio, language: nil,
             vocabulary: [" 落音", "Inkfall", "落音", ""], boundary: "B")
         let body = String(decoding: direct.body, as: UTF8.self)
         XCTAssertTrue(body.contains("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n落音, Inkfall\r\n"))
-
-        let proxy = try TranscriptionAPI.prepare(
-            route: .groqProxy(url: URL(string: "https://cloud.example/transcribe")!,
-                              model: "whisper-large-v3", auth: .none),
-            audio: audio, language: nil, vocabulary: ["落音"], boundary: "B")
-        XCTAssertFalse(String(decoding: proxy.body, as: UTF8.self).contains("name=\"prompt\""))
-    }
-
-    func testProxyRouteUsesConfiguredURLAndAuthHeader() throws {
-        let url = URL(string: "https://asia-northeast1-x.cloudfunctions.net/inkfall")!
-        let session = try TranscriptionAPI.prepare(
-            route: .groqProxy(url: url, model: "whisper-large-v3-turbo", auth: .sessionToken("tok")),
-            audio: audio, language: "ja", boundary: "B")
-        XCTAssertEqual(session.url, url)
-        XCTAssertEqual(session.headers["Authorization"], "Bearer tok")
-        XCTAssertNil(session.headers["X-Proxy-Token"])
-
-        let shared = try TranscriptionAPI.prepare(
-            route: .groqProxy(url: url, model: "whisper-large-v3-turbo", auth: .proxyToken("shared")),
-            audio: audio, language: "ja", boundary: "B")
-        XCTAssertEqual(shared.headers["X-Proxy-Token"], "shared")
-        XCTAssertNil(shared.headers["Authorization"])
-
-        let anonymous = try TranscriptionAPI.prepare(
-            route: .groqProxy(url: url, model: "whisper-large-v3-turbo", auth: .none),
-            audio: audio, language: "ja", boundary: "B")
-        XCTAssertNil(anonymous.headers["Authorization"])
-        XCTAssertNil(anonymous.headers["X-Proxy-Token"])
-        XCTAssertNotNil(anonymous.headers["Content-Type"])
     }
 
     func testGeminiRequestInlinesAudioAsBase64() throws {
@@ -191,10 +162,9 @@ final class TranscriptionAPITests: XCTestCase {
         XCTAssertEqual(parsed, .init(text: "hello", language: nil))
     }
 
-    func testParseProxyAcceptsDetectedLanguageKey() throws {
+    func testParseAcceptsDetectedLanguageKey() throws {
         let data = Data(#"{"text":"こんにちは","detectedLanguage":"ja"}"#.utf8)
-        let route = TranscriptionAPI.Route.groqProxy(
-            url: URL(string: "https://x.example")!, model: "m", auth: .none)
+        let route = TranscriptionAPI.Route.groq(model: "m", key: "k")
         XCTAssertEqual(try TranscriptionAPI.parse(route: route, data: data).language, "ja")
     }
 
@@ -205,12 +175,6 @@ final class TranscriptionAPITests: XCTestCase {
         }
         XCTAssertThrowsError(try TranscriptionAPI.parse(route: route, data: Data("nope".utf8))) {
             XCTAssertEqual($0 as? TranscriptionAPI.Failure, .malformedResponse)
-        }
-        // 落音云的错误里不带模型名。
-        let proxy = TranscriptionAPI.Route.groqProxy(url: URL(string: "https://x.example")!,
-                                                     model: "whisper-large-v3", auth: .none)
-        XCTAssertThrowsError(try TranscriptionAPI.parse(route: proxy, data: Data(#"{"text":""}"#.utf8))) {
-            XCTAssertEqual($0 as? TranscriptionAPI.Failure, .emptyTranscript("落音云"))
         }
     }
 
@@ -223,42 +187,6 @@ final class TranscriptionAPITests: XCTestCase {
             data: Data(#"{"candidates":[{"content":{"parts":[{"text":""}]}}]}"#.utf8))) {
             XCTAssertEqual($0 as? TranscriptionAPI.Failure, .emptyTranscript("Gemini m"))
         }
-    }
-
-    // MARK: 落音云的地址与鉴权
-
-    func testProxyURLRequiresSchemeAndHost() {
-        var settings = defaults
-        settings.groqProxyUrl = "localhost:8080"
-        XCTAssertNil(TranscriptionAPI.proxyURL(settings: settings, environment: [:]))
-        settings.groqProxyUrl = " https://cloud.example/transcribe "
-        XCTAssertEqual(TranscriptionAPI.proxyURL(settings: settings, environment: [:])?.absoluteString,
-                       "https://cloud.example/transcribe")
-        // 环境变量优先。
-        XCTAssertEqual(TranscriptionAPI.proxyURL(settings: settings,
-                                                 environment: ["INKFALL_GROQ_PROXY_URL": "http://127.0.0.1:9/x"])?
-                       .absoluteString, "http://127.0.0.1:9/x")
-        settings.groqProxyUrl = ""
-        XCTAssertNil(TranscriptionAPI.proxyURL(settings: settings, environment: [:]))
-    }
-
-    func testCloudAuthPrecedence() {
-        XCTAssertEqual(TranscriptionAPI.CloudAuth.resolve(sessionToken: " s ", proxyToken: "p"), .sessionToken("s"))
-        XCTAssertEqual(TranscriptionAPI.CloudAuth.resolve(sessionToken: "  ", proxyToken: "p"), .proxyToken("p"))
-        XCTAssertEqual(TranscriptionAPI.CloudAuth.resolve(sessionToken: nil, proxyToken: nil), .none)
-        var settings = defaults
-        settings.groqProxyToken = "from-settings"
-        XCTAssertEqual(TranscriptionAPI.proxyToken(settings: settings, environment: [:]), "from-settings")
-        XCTAssertEqual(TranscriptionAPI.proxyToken(settings: settings,
-                                                   environment: ["INKFALL_GROQ_PROXY_TOKEN": "env"]), "env")
-    }
-
-    func testMembershipErrorsAreHumanized() {
-        XCTAssertNotNil(TranscriptionAPI.membershipMessage(status: 401, code: "unauthorized"))
-        XCTAssertNotNil(TranscriptionAPI.membershipMessage(status: 402, code: "quotaExceeded"))
-        // 别的供应商的 401 不带这个 code，不该被翻成「落音云登录失效」。
-        XCTAssertNil(TranscriptionAPI.membershipMessage(status: 401, code: "invalid_api_key"))
-        XCTAssertNil(TranscriptionAPI.membershipMessage(status: 402, code: ""))
     }
 
     func testServerErrorMessageExtracted() {
@@ -276,7 +204,6 @@ final class TranscriptionAPITests: XCTestCase {
         var settings = defaults
         settings.selectedGroqModel = "whisper-large-v3"
         XCTAssertEqual(TranscriptionAPI.model(for: .groq, settings: settings), "whisper-large-v3")
-        XCTAssertEqual(TranscriptionAPI.model(for: .groqProxy, settings: settings), "whisper-large-v3")
         settings.selectedGroqModel = "made-up"
         XCTAssertEqual(TranscriptionAPI.model(for: .groq, settings: settings), "whisper-large-v3-turbo")
         settings.selectedOpenAiModel = "whisper-1"
