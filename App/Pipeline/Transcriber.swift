@@ -108,8 +108,7 @@ final class Transcriber: Sendable {
             // 固定模式下它就是答案，自动模式下它是 nil，投票会跳过。
             let result = LocalTranscriber.Result(text: text,
                                                  language: success.language ?? request.language,
-                                                 elapsed: success.elapsed,
-                                                 speakerCount: nil)
+                                                 elapsed: success.elapsed)
             return Outcome(result: result, route: "\(route.provider.rawValue)/\(route.model)")
 
         case .failure(let failure):
