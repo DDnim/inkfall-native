@@ -148,18 +148,14 @@ struct HubView: View {
         VStack(alignment: .leading, spacing: 9) {
             group("模型来源") {
                 HStack(spacing: 6) {
-                    sourceCard("落音云", "推荐 · 无需 key",
-                               on: model.settings.transcriptionMode == .groqProxy) {
-                        model.settings.transcriptionMode = .groqProxy
-                    }
-                    sourceCard("自定义", "BYOK", on: byokProvider != nil) {
-                        // 已经配了 key 的供应商优先；一个都没配就默认 Groq（又快又便宜）。
-                        let preferred = CloudProvider.allCases.first { model.keys.isConfigured($0) } ?? .groq
-                        model.settings.transcriptionMode = preferred.transcriptionMode
-                    }
                     sourceCard("本地", "离线 · CoreML",
                                on: model.settings.transcriptionMode == .local) {
                         model.settings.transcriptionMode = .local
+                    }
+                    sourceCard("云端", "自带 key", on: byokProvider != nil) {
+                        // 已经配了 key 的供应商优先；一个都没配就默认 Groq（又快又便宜）。
+                        let preferred = CloudProvider.allCases.first { model.keys.isConfigured($0) } ?? .groq
+                        model.settings.transcriptionMode = preferred.transcriptionMode
                     }
                 }
                 transcriptionSourceRows
@@ -199,23 +195,14 @@ struct HubView: View {
         }
     }
 
-    /// 自定义（BYOK）时选的是哪家；落音云 / 本地时为 nil。
+    /// 云端（BYOK）时选的是哪家；本地时为 nil。
     private var byokProvider: CloudProvider? {
         model.settings.transcriptionMode.cloudProviderForSelfTest
     }
 
-    /// 三张卡下面跟着的那几行：落音云要地址，BYOK 要供应商 + 模型 + key，本地什么都不要。
+    /// 两张卡下面跟着的那几行：云端要供应商 + 模型 + key，本地什么都不要。
     @ViewBuilder private var transcriptionSourceRows: some View {
         switch model.settings.transcriptionMode {
-        case .groqProxy:
-            textRow("落音云地址", placeholder: "https://…（环境变量 INKFALL_GROQ_PROXY_URL 优先）",
-                    text: Binding(get: { model.settings.groqProxyUrl },
-                                  set: { model.settings.groqProxyUrl = $0 }))
-            textRow("代理令牌（可选）", placeholder: "自托管部署用的 X-Proxy-Token",
-                    text: Binding(get: { model.settings.groqProxyToken },
-                                  set: { model.settings.groqProxyToken = $0 }))
-            caption("鉴权顺序：登录会话（钥匙串里的 inkfall_session_token）→ 代理令牌 → 匿名。"
-                    + "服务端持 Groq key，音频只经过落音云。")
         case .openai, .groq, .gemini:
             let provider = byokProvider ?? .groq
             HStack(spacing: 9) {

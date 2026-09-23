@@ -317,7 +317,7 @@ final class SettingsDecodingTests: XCTestCase {
     func testSpeakerLabelsRequireLocalPipeline() {
         var s = AppSettings()
         s.noteSpeakerDiarizationEnabled = true
-        s.transcriptionMode = .groqProxy
+        s.transcriptionMode = .groq
         XCTAssertFalse(s.noteWantsSpeakerLabels, "云端出不了说话人标签")
 
         s.transcriptionMode = .local

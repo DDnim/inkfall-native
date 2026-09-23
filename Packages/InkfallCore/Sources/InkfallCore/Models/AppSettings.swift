@@ -42,15 +42,9 @@ public struct AppSettings: Codable, Sendable, Equatable {
     /// 默认开 —— 这是听写的默认预期，关掉是显式选择。
     public var autoPasteEnabled = true
 
-    // 账号与云
-    public var accountEmail = ""
-    public var websiteAuthBaseUrl = ""
-    public var accountWebsiteUrl = ""
-    public var groqProxyUrl = ""
-    public var groqProxyToken = ""
-
     // 转写
-    public var transcriptionMode: TranscriptionMode = .groqProxy
+    /// 默认本机 —— 不需要 key、音频不出机器；云端是显式选择。
+    public var transcriptionMode: TranscriptionMode = .local
     public var openAiProviderEnabled = false
     public var groqProviderEnabled = false
     public var geminiProviderEnabled = false
@@ -107,7 +101,6 @@ public struct AppSettings: Codable, Sendable, Equatable {
     private enum K: String, CodingKey {
         case insertNewlineBetweenSegments, focusEditorAfterInsert, pasteAppendNewline
         case autoPasteEnabled
-        case accountEmail, websiteAuthBaseUrl, accountWebsiteUrl, groqProxyUrl, groqProxyToken
         case transcriptionMode, openAiProviderEnabled, groqProviderEnabled, geminiProviderEnabled
         case selectedOpenAiModel, selectedGroqModel, selectedGeminiModel, selectedLocalModelId
         case transcriptionLanguageMode, fixedTranscriptionLanguage, preferredTranscriptionLanguages
@@ -134,12 +127,6 @@ public struct AppSettings: Codable, Sendable, Equatable {
         focusEditorAfterInsert = f(.focusEditorAfterInsert, focusEditorAfterInsert)
         pasteAppendNewline = f(.pasteAppendNewline, pasteAppendNewline)
         autoPasteEnabled = f(.autoPasteEnabled, autoPasteEnabled)
-
-        accountEmail = f(.accountEmail, accountEmail)
-        websiteAuthBaseUrl = f(.websiteAuthBaseUrl, websiteAuthBaseUrl)
-        accountWebsiteUrl = f(.accountWebsiteUrl, accountWebsiteUrl)
-        groqProxyUrl = f(.groqProxyUrl, groqProxyUrl)
-        groqProxyToken = f(.groqProxyToken, groqProxyToken)
 
         transcriptionMode = f(.transcriptionMode, transcriptionMode)
         openAiProviderEnabled = f(.openAiProviderEnabled, openAiProviderEnabled)
@@ -235,7 +222,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
         // local 是例外 —— 它没法加工，所以保留独立选择。
         switch transcriptionMode {
         case .openai: postProcessingProvider = .openai
-        case .groq, .groqProxy: postProcessingProvider = .groq
+        case .groq: postProcessingProvider = .groq
         case .gemini: postProcessingProvider = .gemini
         case .local: break
         }

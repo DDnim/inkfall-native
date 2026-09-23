@@ -2,8 +2,8 @@ import Foundation
 
 /// 云端转写请求的**拼装与解析**，不碰网络（spec/05 §1）。
 ///
-/// 四条云端路：OpenAI / Groq / 落音云（服务端持 Groq key，客户端只带会话
-/// 令牌）/ Gemini。前三条是同一个 `audio/transcriptions` 形状的 multipart；
+/// 三条云端路：OpenAI / Groq / Gemini。前两条是同一个 `audio/transcriptions`
+/// 形状的 multipart；
 /// Gemini 没有转写端点，走 `generateContent` 把音频以 inline_data 塞进去。
 ///
 /// 真正发请求的那一层（`CloudTranscriber`）在 App 里；这里的每个字节
@@ -25,8 +25,6 @@ public enum TranscriptionAPI {
         case audioTooLarge
         case malformedResponse
         case emptyTranscript(String)
-        /// 落音云的地址没配（既没有环境变量也没有设置项）。
-        case proxyURLMissing
 
         public var errorDescription: String? {
             switch self {
@@ -34,62 +32,8 @@ public enum TranscriptionAPI {
             case .audioTooLarge: return "音频超过 25 MB"
             case .malformedResponse: return "响应解析失败"
             case .emptyTranscript(let label): return "\(label) 返回了空转写"
-            case .proxyURLMissing: return "落音云地址没配"
             }
         }
-    }
-
-    // MARK: - 落音云的鉴权
-
-    /// 落音云的鉴权头，优先级是（spec/05 §1）：
-    /// Keychain 里的会话 token → 共享的 `X-Proxy-Token` → 什么都不带。
-    /// 服务端两种都认，自托管 / GCP 部署没有会话 token 也照样通。
-    public enum CloudAuth: Sendable, Equatable {
-        case sessionToken(String)
-        case proxyToken(String)
-        case none
-
-        public static func resolve(sessionToken: String?, proxyToken: String?) -> CloudAuth {
-            if let token = sessionToken?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !token.isEmpty {
-                return .sessionToken(token)
-            }
-            if let token = proxyToken?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !token.isEmpty {
-                return .proxyToken(token)
-            }
-            return .none
-        }
-
-        public var headers: [String: String] {
-            switch self {
-            case .sessionToken(let token): return ["Authorization": "Bearer \(token)"]
-            case .proxyToken(let token): return ["X-Proxy-Token": token]
-            case .none: return [:]
-            }
-        }
-    }
-
-    /// 落音云地址：环境变量 `INKFALL_GROQ_PROXY_URL` 优先于设置项。
-    /// 必须带 scheme 和 host —— 一个裸的 `localhost:8080` 会让 URLSession
-    /// 静默地把它当成路径。
-    public static func proxyURL(settings: AppSettings,
-                                environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
-        let env = (environment["INKFALL_GROQ_PROXY_URL"] ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let raw = env.isEmpty ? settings.groqProxyUrl.trimmingCharacters(in: .whitespacesAndNewlines) : env
-        guard let url = URL(string: raw), let scheme = url.scheme, !scheme.isEmpty,
-              let host = url.host, !host.isEmpty else { return nil }
-        return url
-    }
-
-    /// 共享 proxy token：环境变量 `INKFALL_GROQ_PROXY_TOKEN` 优先于设置项。
-    public static func proxyToken(settings: AppSettings,
-                                  environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
-        let env = (environment["INKFALL_GROQ_PROXY_TOKEN"] ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let raw = env.isEmpty ? settings.groqProxyToken.trimmingCharacters(in: .whitespacesAndNewlines) : env
-        return raw.isEmpty ? nil : raw
     }
 
     // MARK: - 路线
@@ -97,7 +41,6 @@ public enum TranscriptionAPI {
     public enum Route: Sendable, Equatable {
         case openai(model: String, key: String)
         case groq(model: String, key: String)
-        case groqProxy(url: URL, model: String, auth: CloudAuth)
         case gemini(model: String, key: String)
 
         /// 界面与日志里的名字。
@@ -105,7 +48,6 @@ public enum TranscriptionAPI {
             switch self {
             case .openai: return "OpenAI"
             case .groq: return "Groq"
-            case .groqProxy: return "落音云"
             case .gemini: return "Gemini"
             }
         }
@@ -113,34 +55,19 @@ public enum TranscriptionAPI {
         public var model: String {
             switch self {
             case .openai(let model, _), .groq(let model, _), .gemini(let model, _): return model
-            case .groqProxy(_, let model, _): return model
             }
         }
 
-        /// 出错时要不要把模型名带给用户看。落音云服务端用什么模型是实现细节，
-        /// 不该出现在用户面前。
-        public var modelVisibleInErrors: Bool {
-            if case .groqProxy = self { return false }
-            return true
-        }
+        /// 错误提示里用的名字：`Groq whisper-large-v3-turbo`。
+        public var errorLabel: String { "\(label) \(model)" }
 
-        /// 错误提示里用的名字：`Groq whisper-large-v3-turbo` / `落音云`。
-        public var errorLabel: String {
-            modelVisibleInErrors ? "\(label) \(model)" : label
-        }
-
-        /// 这条路对应的客户端供应商（错误分类与提示用）。落音云走的是 Groq。
+        /// 这条路对应的客户端供应商（错误分类与提示用）。
         public var provider: CloudProvider {
             switch self {
             case .openai: return .openai
-            case .groq, .groqProxy: return .groq
+            case .groq: return .groq
             case .gemini: return .gemini
             }
-        }
-
-        public var isProxy: Bool {
-            if case .groqProxy = self { return true }
-            return false
         }
     }
 
@@ -150,7 +77,7 @@ public enum TranscriptionAPI {
         case .openai:
             return ProviderModels.openAITranscription.contains(settings.selectedOpenAiModel)
                 ? settings.selectedOpenAiModel : "gpt-4o-mini-transcribe"
-        case .groq, .groqProxy:
+        case .groq:
             return ProviderModels.groqTranscription.contains(settings.selectedGroqModel)
                 ? settings.selectedGroqModel : "whisper-large-v3-turbo"
         case .gemini:
@@ -184,8 +111,7 @@ public enum TranscriptionAPI {
     /// - Parameters:
     ///   - language: 这一段要请求的 ISO 639-1 码；`nil` = 交给模型检测
     ///     （由 `TranscriptionLanguagePolicy.requested` 决定，这里不重算）。
-    ///   - vocabulary: 专有名词表，作为 `prompt` 发给 OpenAI / Groq。落音云
-    ///     不发 —— 服务端接口是固定的，多一个字段是它的事。
+    ///   - vocabulary: 专有名词表，作为 `prompt` 发给 OpenAI / Groq。
     ///   - languageInstruction: Gemini 用的语言指令（`geminiLanguageInstruction`）。
     ///   - boundary: multipart 边界；测试时传固定值。
     public static func prepare(route: Route,
@@ -207,9 +133,6 @@ public enum TranscriptionAPI {
             return multipart(url: groqEndpoint, auth: ["Authorization": "Bearer \(key)"],
                              model: model, provider: .groq, audio: audio, language: language,
                              vocabulary: vocabulary, boundary: boundary)
-        case .groqProxy(let url, let model, let auth):
-            return multipart(url: url, auth: auth.headers, model: model, provider: .groq,
-                             audio: audio, language: language, vocabulary: [], boundary: boundary)
         case .gemini(let model, let key):
             guard let url = TextGenerationAPI.endpoint(provider: .gemini, model: model),
                   let body = geminiBody(audio: audio, languageInstruction: languageInstruction) else {
@@ -307,7 +230,7 @@ public enum TranscriptionAPI {
 
     public static func parse(route: Route, data: Data) throws -> Parsed {
         switch route {
-        case .openai, .groq, .groqProxy:
+        case .openai, .groq:
             guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let raw = object["text"] as? String else {
                 throw Failure.malformedResponse
@@ -330,15 +253,4 @@ public enum TranscriptionAPI {
         }
     }
 
-    /// 落音云的会员错误要说成人话（auth-membership-design.md §2/§4.1）：
-    /// 401 `unauthorized` → 重新登录；402 `quotaExceeded` → 升级。
-    /// 按 JSON 里的 code 判而不是只看状态码 —— 别的供应商也用 401/402，
-    /// 但它们的响应体不会带这两个 code。
-    public static func membershipMessage(status: Int, code: String) -> String? {
-        switch (status, code) {
-        case (401, "unauthorized"): return "落音云登录已失效，请重新登录"
-        case (402, "quotaExceeded"): return "落音云的额度用完了"
-        default: return nil
-        }
-    }
 }

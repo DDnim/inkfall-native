@@ -2,8 +2,7 @@
 
 落音 Inkfall 的 macOS 客户端 —— **原生 Swift / SwiftUI**。按住一个键说话，
 文字落回你刚才那个窗口。转写可以在本机跑（推理运行时编译进二进制，不需要
-另外装 Python 环境），也可以走云端：落音云、或者自带 key 的
-OpenAI / Groq / Gemini。转写完可以再过一遍模型**加工**（云端 API）。
+另外装 Python 环境），也可以走云端：自带 key 的 OpenAI / Groq / Gemini。转写完可以再过一遍模型**加工**（云端 API）。
 
 这个仓库是 `inkfall-app`（Tauri 2 / Rust + WebView）的重写，目标是取代它。
 
@@ -44,7 +43,7 @@ Groq 的 `gpt-oss-20b` 又快又便宜，是默认）。
 
 ## 隐私
 
-- **转写默认在本机**（WhisperKit + CoreML/ANE），音频不出机器。选了落音云或自带 key
+- **转写默认在本机**（WhisperKit + CoreML/ANE），音频不出机器。选了自带 key
   的云端转写时，音频会发给那一家；云端不可达（网络 / 5xx）时降级回本地模型，
   鉴权与配额问题不会被静默重试。
 - **加工会把文字发出去**（如果你开了云端 API）。只想要本地的话，

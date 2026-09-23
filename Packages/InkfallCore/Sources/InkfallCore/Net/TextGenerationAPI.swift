@@ -88,8 +88,7 @@ public enum TextGenerationAPI {
         return trimmed
     }
 
-    /// 服务端返回的错误码（`{"error":"quotaExceeded"}` 这种），
-    /// 用来把落音云的会员错误翻成人话。取不到就是空串。
+    /// 服务端返回的错误码（`{"error":"quotaExceeded"}` 这种）。取不到就是空串。
     public static func errorCode(in data: Data) -> String {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return ""

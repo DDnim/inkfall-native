@@ -1303,7 +1303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         selfTest = true
         store.readOnly = true
         guard !wav.isEmpty, let data = try? Data(contentsOf: URL(fileURLWithPath: wav)) else {
-            emit("用法：--cloud-transcribe-test <wav> [--mode openai|groq|gemini|groqProxy|local]")
+            emit("用法：--cloud-transcribe-test <wav> [--mode openai|groq|gemini|local]")
             exit(2)
         }
         let arguments = ProcessInfo.processInfo.arguments
@@ -1334,9 +1334,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
              + "本地模型就绪=\(Transcriber.localModelReady(settings) ? "是" : "否") "
              + "自动降级=\(settings.autoLocalFallbackEnabled ? "开" : "关") "
              + "音频=\(data.count) 字节 \(durationMs) ms")
-        if settings.transcriptionMode == .groqProxy {
-            emit("落音云地址=\(TranscriptionAPI.proxyURL(settings: settings)?.absoluteString ?? "（没配）")")
-        }
 
         Task { [router] in
             let started = CFAbsoluteTimeGetCurrent()

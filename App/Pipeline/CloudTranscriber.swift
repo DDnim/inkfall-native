@@ -65,11 +65,8 @@ enum CloudTranscriber {
 
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
-        // 落音云会在响应头里报它自己调 Groq 花了多久，能把代理/网络的开销
-        // 和 Groq 本身分开看。
-        let upstream = http?.value(forHTTPHeaderField: "X-Groq-Upstream-Ms") ?? "n/a"
-        Log.write(String(format: "cloud-transcribe: %@ %d %.2fs bytes=%d upstreamMs=%@",
-                         route.label, status, elapsed, data.count, upstream))
+        Log.write(String(format: "cloud-transcribe: %@ %d %.2fs bytes=%d",
+                         route.label, status, elapsed, data.count))
 
         guard (200...299).contains(status) else {
             let kind = CloudFailureKind.classify(status: status)
@@ -87,17 +84,12 @@ enum CloudTranscriber {
         }
     }
 
-    /// 会员/鉴权错误要说成人话。一串英文 JSON 对着用户弹出来等于没说。
+    /// 鉴权错误要说成人话。一串英文 JSON 对着用户弹出来等于没说。
     private static func message(status: Int, code: String, kind: CloudFailureKind,
                                 route: TranscriptionAPI.Route, body: Data) -> String {
-        if route.isProxy, let membership = TranscriptionAPI.membershipMessage(status: status, code: code) {
-            return membership
-        }
         switch kind {
         case .auth:
-            return route.isProxy
-                ? "\(route.label) 拒绝了这次请求（\(status)）—— 检查登录或代理令牌"
-                : "\(route.label) 拒绝了这把 key（\(status)）—— 检查一下是不是过期或写错了"
+            return "\(route.label) 拒绝了这把 key（\(status)）—— 检查一下是不是过期或写错了"
         case .quota: return "\(route.label) 的额度用完了（\(status)）"
         case .serverError: return "\(route.label) 服务端故障（\(status)）"
         default:

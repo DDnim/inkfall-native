@@ -3,8 +3,8 @@ import InkfallCore
 
 /// 「这段音频 → 文字」的唯一入口。听写、提问、落笔三条路共用它。
 ///
-/// 按 `settings.transcriptionMode` 走五种模式之一：OpenAI / Groq / 落音云 /
-/// Gemini 是云端（`CloudTranscriber`），local 是本机 WhisperKit（`LocalTranscriber`）。
+/// 按 `settings.transcriptionMode` 走四种模式之一：OpenAI / Groq / Gemini
+/// 是云端（`CloudTranscriber`），local 是本机 WhisperKit（`LocalTranscriber`）。
 /// 云端**不可达**（网络 / 5xx）时按 A15 降级到本地模型 —— 前提是用户没关掉
 /// 自动降级、且选中的本地模型确实下载了。鉴权 / 配额 / 没配 key 这类问题
 /// **不静默重试**：那是用户必须处理的事，静默的本地重试会把它藏起来。
@@ -26,13 +26,11 @@ final class Transcriber: Sendable {
 
     enum Failure: LocalizedError {
         case missingKey(CloudProvider)
-        case proxyNotConfigured
         case cloud(String)
 
         var errorDescription: String? {
             switch self {
             case .missingKey(let provider): return "还没配 \(provider.label) 的 API key"
-            case .proxyNotConfigured: return "落音云地址没配（设置 → 模型）"
             case .cloud(let message): return message
             }
         }
@@ -44,7 +42,7 @@ final class Transcriber: Sendable {
         self.local = local
     }
 
-    /// 刘海上「谁在转写」的名字：`Groq` / `落音云` / `Whisper Large v3 Turbo`。
+    /// 刘海上「谁在转写」的名字：`Groq` / `Whisper Large v3 Turbo`。
     static func label(for settings: AppSettings) -> String {
         switch settings.transcriptionMode {
         case .local:
@@ -52,7 +50,6 @@ final class Transcriber: Sendable {
             return LocalModels.definition(id: id)?.name ?? id
         case .openai: return "OpenAI"
         case .groq: return "Groq"
-        case .groqProxy: return "落音云"
         case .gemini: return "Gemini"
         }
     }
@@ -131,7 +128,7 @@ final class Transcriber: Sendable {
         }
     }
 
-    /// 把设置翻成一条路线：模型白名单、key（环境变量 → 钥匙串）、落音云的地址与鉴权。
+    /// 把设置翻成一条路线：模型白名单、key（环境变量 → 钥匙串）。
     private func resolveRoute(mode: TranscriptionMode,
                               settings: AppSettings) async throws -> TranscriptionAPI.Route {
         let model = TranscriptionAPI.model(for: mode, settings: settings)
@@ -142,15 +139,6 @@ final class Transcriber: Sendable {
             return .groq(model: model, key: try await key(.groq))
         case .gemini:
             return .gemini(model: model, key: try await key(.gemini))
-        case .groqProxy:
-            guard let url = TranscriptionAPI.proxyURL(settings: settings) else {
-                throw Failure.proxyNotConfigured
-            }
-            let session = await APIKeyStore.shared.resolveSessionToken()
-            let auth = TranscriptionAPI.CloudAuth.resolve(
-                sessionToken: session,
-                proxyToken: TranscriptionAPI.proxyToken(settings: settings))
-            return .groqProxy(url: url, model: model, auth: auth)
         case .local:
             preconditionFailure("local 不走云端路线")
         }
