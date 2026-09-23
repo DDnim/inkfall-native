@@ -207,10 +207,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            // 品牌字形（水滴 + 两道涟漪）在资源接上之前，先用系统符号占位。
+            // 品牌字形（与 Tauri 版同一张 tray-icon）。
             // 必须是 template 才能跟随菜单栏色并自动适配明暗。
-            let image = NSImage(systemSymbolName: "drop.fill", accessibilityDescription: "Inkfall")
+            let image = NSImage(named: "StatusIcon")
+                ?? NSImage(systemSymbolName: "drop.fill", accessibilityDescription: "Inkfall")
             image?.isTemplate = true
+            image?.accessibilityDescription = "Inkfall"
             button.image = image
         }
 
