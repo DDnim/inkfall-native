@@ -311,22 +311,6 @@ final class SettingsDecodingTests: XCTestCase {
         XCTAssertEqual(s.postProcessingProvider, .groq, "本地不能加工，保留独立选择")
     }
 
-    /// 说话人标签只在本地 MOSS 管线上存在。
-    /// 分离在原生版是独立能力（Pyannote），任何本地模型都能配；
-    /// 云端路径仍然出不了标签。
-    func testSpeakerLabelsRequireLocalPipeline() {
-        var s = AppSettings()
-        s.noteSpeakerDiarizationEnabled = true
-        s.transcriptionMode = .groq
-        XCTAssertFalse(s.noteWantsSpeakerLabels, "云端出不了说话人标签")
-
-        s.transcriptionMode = .local
-        s.selectedLocalModelId = "whisper-tiny"
-        XCTAssertTrue(s.noteWantsSpeakerLabels, "不再要求特定模型")
-
-        s.noteSpeakerDiarizationEnabled = false
-        XCTAssertFalse(s.noteWantsSpeakerLabels)
-    }
 }
 
 // MARK: - 快捷键

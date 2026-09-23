@@ -113,7 +113,7 @@ final class PostProcessingPolicyTests: XCTestCase {
     func testCloudWhenEverythingIsInPlace() {
         let decision = PostProcessingPolicy.decide(
             settings: settings(), durationMs: 5_000,
-            transcript: sentence, speakerLabeled: false)
+            transcript: sentence)
         XCTAssertEqual(decision, .cloud(preset: .light, provider: .groq,
                                         model: "openai/gpt-oss-20b"))
     }
@@ -123,23 +123,15 @@ final class PostProcessingPolicyTests: XCTestCase {
     func testDisabledMeansRaw() {
         XCTAssertEqual(
             PostProcessingPolicy.decide(settings: settings(enabled: false), durationMs: 9_000,
-                                        transcript: sentence, speakerLabeled: false),
+                                        transcript: sentence),
             .raw(.disabled))
-    }
-
-    /// A13 的邻居：带说话人标签的段绝不加工，标签的排版是结构不是噪声。
-    func testSpeakerLabeledNeverProcessed() {
-        XCTAssertEqual(
-            PostProcessingPolicy.decide(settings: settings(), durationMs: 9_000,
-                                        transcript: "说话人 1：你好", speakerLabeled: true),
-            .raw(.speakerLabeled))
     }
 
     /// basic 是本地预设：不联网、不要 key。
     func testBasicPresetStaysLocal() {
         XCTAssertEqual(
             PostProcessingPolicy.decide(settings: settings(preset: .basic), durationMs: 9_000,
-                                        transcript: sentence, speakerLabeled: false),
+                                        transcript: sentence),
             .local(.presetBasic))
     }
 
@@ -148,18 +140,18 @@ final class PostProcessingPolicyTests: XCTestCase {
     func testShortTakesFallBackToLocalPolish() {
         XCTAssertEqual(
             PostProcessingPolicy.decide(settings: settings(), durationMs: 2_999,
-                                        transcript: sentence, speakerLabeled: false),
+                                        transcript: sentence),
             .local(.tooShort))
         XCTAssertEqual(
             PostProcessingPolicy.decide(settings: settings(), durationMs: 9_000,
-                                        transcript: "嗯好的", speakerLabeled: false),
+                                        transcript: "嗯好的"),
             .local(.tooFewCharacters))
     }
 
     func testEmptyTranscriptIsRaw() {
         XCTAssertEqual(
             PostProcessingPolicy.decide(settings: settings(), durationMs: 9_000,
-                                        transcript: "  \n ", speakerLabeled: false),
+                                        transcript: "  \n "),
             .raw(.emptyTranscript))
     }
 

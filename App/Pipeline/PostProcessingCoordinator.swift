@@ -42,12 +42,10 @@ final class PostProcessingCoordinator {
     func process(_ transcript: String,
                  settings: AppSettings,
                  durationMs: UInt64,
-                 speakerLabeled: Bool,
                  onRemoteStart: ((PostProcessingPreset) -> Void)? = nil) async -> Outcome {
 
         let decision = PostProcessingPolicy.decide(settings: settings, durationMs: durationMs,
-                                                   transcript: transcript,
-                                                   speakerLabeled: speakerLabeled)
+                                                   transcript: transcript)
         switch decision {
         case .raw(let reason):
             return Outcome(text: transcript, route: "raw(\(reason.rawValue))")

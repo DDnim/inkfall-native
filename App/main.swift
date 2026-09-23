@@ -192,9 +192,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            LocalTranscriber.isDownloaded(model) {
             Task { [transcriber] in await transcriber.prewarm(modelID: modelID) }
         }
-        if store.settings.noteWantsSpeakerLabels {
-            Task { [transcriber] in await transcriber.prewarmDiarization() }
-        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -689,17 +686,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     wavURL: url, modelID: id,
                     language: TranscriptionLanguagePolicy(settings: store.settings).requested(),
                     replacements: ProcessInfo.processInfo.arguments.contains("--no-vocab")
-                        ? [:] : store.settings.transcriptionReplacements,
-                    diarize: ProcessInfo.processInfo.arguments.contains("--diarize"))
+                        ? [:] : store.settings.transcriptionReplacements)
                 // 连跑三遍：第一遍含模型加载，后两遍才是常驻时的真实延迟。
                 // 同时也是回归 —— 同一个实例上重复转写必须每次都出同样的文字。
                 var texts: [String] = []
                 for round in 1...3 {
                     let r = try await transcriber.transcribe(request)
                     texts.append(r.text)
-                    emit(String(format: "第 %d 遍 %.2fs lang=%@ 说话人=%@ → 「%@」",
+                    emit(String(format: "第 %d 遍 %.2fs lang=%@ → 「%@」",
                                 round, round == 1 ? Date().timeIntervalSince(started) : r.elapsed,
-                                r.language ?? "?", r.speakerCount.map(String.init) ?? "-", r.text))
+                                r.language ?? "?", r.text))
                 }
                 emit("润色：\(BasicPolisher.polish(texts[0]))")
                 let stable = Set(texts).count == 1
@@ -1076,10 +1072,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let modelID = settings.selectedLocalModelId
         let name = Transcriber.label(for: settings)
         let target = pasteTarget
-        let diarizing = store.settings.noteWantsSpeakerLabels
-            && LocalTranscriber.isDiarizationDownloaded
-        notch.show(state: .transcribing,
-                   message: diarizing ? "\(name) 转写中 · 分辨说话人" : "\(name) 转写中")
+        notch.show(state: .transcribing, message: "\(name) 转写中")
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("inkfall-take-\(UUID().uuidString).wav")
@@ -1095,11 +1088,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             wavURL: url,
             modelID: modelID,
             language: policy.requested(locked: sessionLanguage),
-            replacements: store.settings.transcriptionReplacements,
-            // 「区分人物」是用户显式打开的 —— 开了就意味着这次录的是会议或访谈，
-            // 那多花的那点时间是他要的。关着时绝不跑，单人听写跑分离只是白等。
-            diarize: store.settings.noteWantsSpeakerLabels
-                && LocalTranscriber.isDiarizationDownloaded)
+            replacements: store.settings.transcriptionReplacements)
 
         Task { [router] in
             defer { try? FileManager.default.removeItem(at: url) }
@@ -1136,9 +1125,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             flash(.cancelled, "没听清", seconds: 1.2)
             return
         }
-        Log.write(String(format: "transcribe: %@ %.2fs lang=%@ 说话人=%@ → %d 字",
-                         route, result.elapsed, result.language ?? "?",
-                         result.speakerCount.map(String.init) ?? "-", result.text.count))
+        Log.write(String(format: "transcribe: %@ %.2fs lang=%@ → %d 字",
+                         route, result.elapsed, result.language ?? "?", result.text.count))
         scheduleModelUnload()
 
         // 加工可能要一次网络往返或 fork 一个 claude，所以整条尾巴是异步的。
@@ -1148,7 +1136,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 result.text,
                 settings: store.settings,
                 durationMs: durationMs,
-                speakerLabeled: result.labeled,
                 onRemoteStart: { [weak self] preset in
                     self?.notch.show(state: .processing, message: "\(preset.label) · 加工中")
                 })
@@ -1392,7 +1379,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         emit("")
         let decision = PostProcessingPolicy.decide(
-            settings: store.settings, durationMs: 9_000, transcript: sample, speakerLabeled: false)
+            settings: store.settings, durationMs: 9_000, transcript: sample)
         emit("裁决（9 s / \(sample.count) 字）：\(decision)")
 
         emit("")
@@ -1402,7 +1389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [processing, store] in
             let started = CFAbsoluteTimeGetCurrent()
             let outcome = await processing.process(
-                sample, settings: store.settings, durationMs: 9_000, speakerLabeled: false,
+                sample, settings: store.settings, durationMs: 9_000,
                 onRemoteStart: { preset in emit("→ 送出（\(preset.label)）") })
             emit("")
             emit(String(format: "路线=%@ 耗时=%.2fs", outcome.route,

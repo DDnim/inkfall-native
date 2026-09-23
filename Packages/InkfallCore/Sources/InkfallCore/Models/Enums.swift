@@ -182,7 +182,7 @@ public struct LocalModelDefinition: Sendable, Equatable {
 }
 
 public enum LocalModels {
-    /// 唯一能产出说话人标签的模型 id（落笔的「区分人物」以此为准）。
+    /// 旧版 MOSS 管线的模型 id，只用于迁移旧设置。
     public static let mossID = "moss-transcribe-diarize"
     public static let mossRepo = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
 

@@ -23,8 +23,6 @@ public enum PostProcessingPolicy {
     public enum RawReason: String, Sendable, Equatable {
         /// 用户把加工关了。
         case disabled
-        /// 带说话人标签 —— 加工会把 `说话人 1：` 的排版改坏（spec/01 §356）。
-        case speakerLabeled
         /// 转写是空的。
         case emptyTranscript
     }
@@ -60,10 +58,8 @@ public enum PostProcessingPolicy {
     /// 反而比以前脏。basic 全本地、零成本，没有不做的理由。
     public static func decide(settings: AppSettings,
                               durationMs: UInt64,
-                              transcript: String,
-                              speakerLabeled: Bool) -> Decision {
+                              transcript: String) -> Decision {
         guard settings.postProcessingEnabled else { return .raw(.disabled) }
-        guard !speakerLabeled else { return .raw(.speakerLabeled) }
         guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .raw(.emptyTranscript)
         }

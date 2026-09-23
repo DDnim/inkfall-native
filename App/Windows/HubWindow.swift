@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import InkfallCore
 
-/// 设置窗。减法之后只剩三页：模型 / 快捷键 / 通用。
+/// 设置窗。减法之后只剩四页：转写模型 / 加工模型 / 快捷键 / 通用。
 @MainActor
 final class HubWindowController {
 
@@ -57,19 +57,20 @@ final class HubWindowController {
 @Observable
 final class HubModel {
     enum Page: String, CaseIterable, Identifiable {
-        case operators, shortcuts, general
+        case transcription, processing, shortcuts, general
 
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .operators: return "模型"
+            case .transcription: return "转写模型"
+            case .processing: return "加工模型"
             case .shortcuts: return "快捷键"
             case .general: return "通用"
             }
         }
     }
 
-    var selection: Page = .operators
+    var selection: Page = .transcription
     let store: SettingsStore
     let permissions: PermissionCoordinator
     let models: ModelCatalog
@@ -131,7 +132,8 @@ struct HubView: View {
                         .padding(.top, 12)
 
                     switch model.selection {
-                    case .operators: operatorsPage
+                    case .transcription: transcriptionPage
+                    case .processing: processingPage
                     case .general: generalPage
                     case .shortcuts: shortcutsPage
                     }
@@ -144,9 +146,9 @@ struct HubView: View {
         .background(Ink.paper2)
     }
 
-    private var operatorsPage: some View {
+    private var transcriptionPage: some View {
         VStack(alignment: .leading, spacing: 9) {
-            group("模型来源") {
+            group("来源") {
                 HStack(spacing: 6) {
                     sourceCard("本地", "离线 · CoreML",
                                on: model.settings.transcriptionMode == .local) {
@@ -160,21 +162,30 @@ struct HubView: View {
                 }
                 transcriptionSourceRows
             }
-            group("本地模型") {
-                ForEach(model.models.entries) { entry in
-                    modelRow(entry)
+            // 本地模型列表只在选了「本地」时才有意义；云端卡下面摆一排
+            // Whisper 档位只会让人以为还要下载点什么。
+            if model.settings.transcriptionMode == .local {
+                group("本地模型") {
+                    ForEach(model.models.entries) { entry in
+                        modelRow(entry)
+                    }
                 }
+                caption("权重按需下载到 App 容器（\(LocalTranscriber.modelRoot.lastPathComponent)/），"
+                        + "不进安装包。推理运行时是编译进程序的，不需要另外装任何东西。"
+                        + "空闲 5 分钟会把模型从内存卸掉。")
+            } else {
+                group("降级") {
+                    toggleRow("离线降级", "云端连不上或 5xx 时改用本地模型；鉴权与配额问题会浮出来，不降级",
+                              isOn: Binding(get: { model.settings.autoLocalFallbackEnabled },
+                                            set: { model.settings.autoLocalFallbackEnabled = $0 }))
+                }
+                caption("降级用的是「本地」卡里选中的那个模型，要先在那边下载好。")
             }
-            group("区分人物") {
-                toggleRow("区分人物", "把「谁在说」贴进转写结果。适合会议与访谈；"
-                          + "一个人说话时不会加标签。开着会让每段多花一点时间",
-                          isOn: Binding(get: { model.models.diarizationEnabled },
-                                        set: { model.models.setDiarizationEnabled($0) }))
-                diarizationRow
-            }
-            caption("权重按需下载到 App 容器（\(LocalTranscriber.modelRoot.lastPathComponent)/），"
-                    + "不进安装包。推理运行时是编译进程序的，不需要另外装任何东西。"
-                    + "空闲 5 分钟会把模型从内存卸掉。")
+        }
+    }
+
+    private var processingPage: some View {
+        VStack(alignment: .leading, spacing: 9) {
             group("加工") {
                 toggleRow("AI 加工", "转写后再过一遍大模型。关掉就是原样输出",
                           isOn: Binding(get: { model.settings.postProcessingEnabled },
@@ -185,9 +196,6 @@ struct HubView: View {
                 if model.settings.postProcessingPreset == .custom {
                     customPromptRow
                 }
-                toggleRow("离线降级", "只在网络 / 5xx 时降级；鉴权与配额问题会浮出来",
-                          isOn: Binding(get: { model.settings.autoLocalFallbackEnabled },
-                                        set: { model.settings.autoLocalFallbackEnabled = $0 }))
             }
             caption("「基础整理」是纯本地规则（去口头禅、补标点），不联网也不要 key；"
                     + "其余八个预设要调模型。录音短于 3 秒或不足 10 字时自动退回本地整理，"
@@ -465,39 +473,6 @@ struct HubView: View {
             }
             Spacer(minLength: 6)
             Toggle("", isOn: isOn).labelsHidden().toggleStyle(.switch).controlSize(.small)
-        }
-        .padding(.horizontal, 11).padding(.vertical, 7)
-        .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
-    }
-
-    /// 分离模型独立于转写档位 —— 单列一行，免得看成「和 Whisper 二选一」。
-    private var diarizationRow: some View {
-        let state = model.models.diarization
-        return HStack(alignment: .center, spacing: 9) {
-            Image(systemName: "person.2")
-                .foregroundStyle(state.downloaded ? Ink.teal : Ink.ink4)
-                .font(.system(size: 12))
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Pyannote 说话人分离").font(.system(size: 12)).foregroundStyle(Ink.ink1)
-                if let progress = state.progress {
-                    Text("下载中 \(Int(progress * 100))%")
-                        .font(.system(size: 9.5)).foregroundStyle(Ink.ink4)
-                } else {
-                    Text((state.downloaded ? "已下载 · " : "未下载 · ") + state.sizeText
-                         + " · 与转写模型并行跑")
-                        .font(.system(size: 9.5)).foregroundStyle(Ink.ink4)
-                }
-            }
-            Spacer(minLength: 6)
-            if state.progress != nil {
-                ProgressView().controlSize(.small)
-            } else if state.downloaded {
-                Button("删除") { model.models.deleteDiarization() }.font(.system(size: 11))
-            } else {
-                Button("下载") { model.models.downloadDiarization() }
-                    .font(.system(size: 11))
-                    .disabled(model.models.busy != nil)
-            }
         }
         .padding(.horizontal, 11).padding(.vertical, 7)
         .overlay(alignment: .top) { Divider().overlay(Ink.hair) }

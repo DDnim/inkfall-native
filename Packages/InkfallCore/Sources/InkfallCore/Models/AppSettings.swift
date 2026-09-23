@@ -81,8 +81,6 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public var customPostProcessingPrompt = ""
     public var processingMemoryContext = ""
 
-    public var noteSpeakerDiarizationEnabled = false
-
     // 其他
     public var appLanguage: AppLanguage = .system
     public var micGainBoostEnabled = true
@@ -110,7 +108,6 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case postProcessingPresetModels, selectedOpenAiPostProcessModel
         case selectedGroqPostProcessModel, selectedGeminiPostProcessModel
         case customPostProcessingPrompt, processingMemoryContext
-        case noteSpeakerDiarizationEnabled
         case appLanguage
         case micGainBoostEnabled, micGainBoostTargetPercent
         case hasCompletedOnboarding
@@ -156,8 +153,6 @@ public struct AppSettings: Codable, Sendable, Equatable {
         customPostProcessingPrompt = f(.customPostProcessingPrompt, customPostProcessingPrompt)
         processingMemoryContext = f(.processingMemoryContext, processingMemoryContext)
 
-        noteSpeakerDiarizationEnabled = f(.noteSpeakerDiarizationEnabled,
-                                          noteSpeakerDiarizationEnabled)
 
         appLanguage = f(.appLanguage, appLanguage)
         micGainBoostEnabled = f(.micGainBoostEnabled, micGainBoostEnabled)
@@ -226,14 +221,6 @@ public struct AppSettings: Codable, Sendable, Equatable {
         case .gemini: postProcessingProvider = .gemini
         case .local: break
         }
-    }
-
-    /// 要不要带说话人标签：开关开着**且**走的是本地管线。
-    ///
-    /// 分离是独立能力（Pyannote CoreML），不绑死在某一个模型上；
-    /// 云端路径出不了标签，所以要求 local。带标签的段会跳过 AI 加工。
-    public var noteWantsSpeakerLabels: Bool {
-        noteSpeakerDiarizationEnabled && transcriptionMode == .local
     }
 
     /// 这份配置真正会调用的云供应商 —— 只碰（也只向 Keychain 索要）在用的

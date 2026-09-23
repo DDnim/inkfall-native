@@ -1,7 +1,5 @@
 import Foundation
 import InkfallCore
-import ArgmaxCore
-import SpeakerKit
 import WhisperKit
 
 /// 本地转写。CoreML 运行时随 App 编译进二进制，**用户不需要单独安装任何东西**
@@ -17,8 +15,6 @@ actor LocalTranscriber {
         var language: String?
         /// 专有名词纠错：听错的形态 → 正确写法。解码之后做，不碰提示词。
         var replacements: [String: String] = [:]
-        /// 要不要出说话人标签。开了会额外跑一遍 Pyannote，慢一档。
-        var diarize: Bool = false
     }
 
     struct Result: Sendable {
@@ -26,11 +22,6 @@ actor LocalTranscriber {
         /// Whisper 检测到的语言，用于会话内语言锁定。
         let language: String?
         let elapsed: TimeInterval
-        /// 说话人数量；未开分离时为 nil。
-        let speakerCount: Int?
-        /// 文本里真的带了说话人标签。带标签的结果**不能再过润色** ——
-        /// 「说话人 1：」里那个空格紧跟汉字，规则润色会把它删掉。
-        var labeled = false
     }
 
     enum Failure: LocalizedError {
@@ -39,13 +30,6 @@ actor LocalTranscriber {
         /// 模型有输出，但整段是幻觉或空白 —— 不是错误，是「没听到话」。
         /// 带上被丢弃的原文，否则误杀了根本查不出来。
         case noSpeech(String)
-        /// ⚠️ **转写成功了，却被说话人分离弄丢了。**
-        ///
-        /// pyannote 判出 0 个说话人时贴回的结果是空的，而空结果会被幻觉
-        /// 过滤器当成「没听到话」—— 于是一段好好的文字整段消失。
-        /// 单独立一个 case 是因为它和「真的没听到话」要用户做的事完全不同：
-        /// 前者应该去关掉「区分人物」，后者不用管。
-        case speakerLabelingLostText(String)
 
         var errorDescription: String? {
             switch self {
@@ -54,9 +38,6 @@ actor LocalTranscriber {
             case .noSpeech(let raw):
                 return raw.isEmpty ? "模型没输出文字（这段可能真的没有人说话）"
                                    : "整段被判为幻觉：\(raw.prefix(40))"
-            case .speakerLabelingLostText(let raw):
-                return "说话人分离没认出人，文字被丢了（关掉「区分人物」可避开）："
-                    + raw.prefix(30)
             }
         }
     }
@@ -64,7 +45,6 @@ actor LocalTranscriber {
     /// 已加载的实例按模型 id 缓存。加载一次要几秒（CoreML 要按芯片编译），
     /// 每次录音都重来会让本地路径完全没法用。
     private var loaded: [String: WhisperKit] = [:]
-    private var diarizer: SpeakerKit?
 
     /// 权重目录。放 Application Support 而不是 Caches —— 用户下过的 1.5 GB
     /// 不该被系统在磁盘吃紧时悄悄清掉。
@@ -144,9 +124,6 @@ actor LocalTranscriber {
     /// 释放内存里的模型。turbo 常驻 1.5 GB，用户长时间不说话就该还回去。
     func unload() {
         loaded.removeAll()
-        let speaker = diarizer
-        diarizer = nil
-        Task { await speaker?.unloadModels() }
     }
 
     var isLoaded: Bool { !loaded.isEmpty }
@@ -160,8 +137,7 @@ actor LocalTranscriber {
         let started = Date()
         let kit = try await instance(for: model)
 
-        // ⚠️ 必须自己解码成 float 数组，不能直接把路径丢给 WhisperKit：
-        // 说话人分离要的是同一批采样，重复解码一次既慢又可能对不齐时间轴。
+        // 自己解码成 float 数组：裁剪静音与量能量都要拿到采样。
         guard var samples = try? AudioProcessor.loadAudioAsFloatArray(
             fromPath: request.wavURL.path) else {
             throw Failure.unreadableAudio
@@ -176,9 +152,8 @@ actor LocalTranscriber {
         options.language = request.language
         options.detectLanguage = request.language == nil
         options.skipSpecialTokens = true
-        options.withoutTimestamps = !request.diarize
-        // 说话人对齐要靠词级时间戳；不分离时关掉，省一轮解码。
-        options.wordTimestamps = request.diarize
+        options.withoutTimestamps = true
+        options.wordTimestamps = false
         // 超过一个 30 秒窗口就按语音活动切块并发解码 —— 长录的延迟差一个量级。
         options.chunkingStrategy = samples.count > 16_000 * 30 ? .vad : ChunkingStrategy.none
         // ⚠️ **绝不设 `promptTokens`。** 用它做专有名词提示是很自然的想法，
@@ -188,23 +163,6 @@ actor LocalTranscriber {
 
         let results = try await kit.transcribe(audioArray: samples, decodeOptions: options)
 
-        if request.diarize {
-            // 分离失败不该让整段听写跟着丢 —— 回落到不带标签的纯文本。
-            do {
-                let labeled = try await self.labeled(results, samples: samples)
-                let corrected = VocabularyCorrector(replacements: request.replacements)
-                    .apply(labeled.text)
-                return Result(text: corrected, language: results.first?.language,
-                              elapsed: Date().timeIntervalSince(started),
-                              speakerCount: labeled.speakerCount,
-                              labeled: labeled.labeled)
-            } catch let failure as Failure {
-                throw failure
-            } catch {
-                Log.write("diarize: 失败，回落无标签文本 \(error)")
-            }
-        }
-
         let raw = results.map(\.text).joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         // Whisper 在没有语音的音频上会自信地吐字幕组片尾。整段是套话就丢掉。
@@ -213,106 +171,13 @@ actor LocalTranscriber {
         }
         let text = VocabularyCorrector(replacements: request.replacements).apply(raw)
         return Result(text: text, language: results.first?.language,
-                      elapsed: Date().timeIntervalSince(started), speakerCount: nil)
+                      elapsed: Date().timeIntervalSince(started))
     }
 
     /// 预热：把模型先加载好，让第一次真实录音不必等几秒的 CoreML 编译。
     func prewarm(modelID: String) async {
         guard let model = LocalModels.definition(id: modelID) else { return }
         _ = try? await instance(for: model)
-    }
-
-    // MARK: - 说话人分离
-
-    /// 跑 Pyannote 并把说话人贴回转写段。格式化交给 Core 的
-    /// `SpeakerTranscript`（可测），这里只负责把 SpeakerKit 的类型翻译过去。
-    private func labeled(_ results: [TranscriptionResult],
-                         samples: [Float]) async throws -> SpeakerTranscript.Output {
-        let speaker = try await self.speakerKit()
-        let diarization = try await speaker.diarize(audioArray: samples)
-        let grouped = diarization.addSpeakerInfo(to: results)
-        // Pyannote 自己数出来的人数 vs 贴回转写段之后还剩几个 —— 两者不一致
-        // 说明对齐掉了人，而不是「真的只有一个人在说」。
-        Log.write("diarize: pyannote=\(diarization.speakerCount) 段=\(diarization.segments.count)"
-                  + " 贴回后=\(grouped.flatMap { $0 }.count)")
-
-        let segments = grouped.flatMap { $0 }
-            .map { SpeakerTranscript.Segment(speaker: $0.speaker.speakerId, text: $0.text) }
-        let output = SpeakerTranscript.compose(segments)
-        // 转写本身是有内容的，却被贴标签这一步弄成了空 —— 这是分离的问题，
-        // 不是「没听到话」。分开报，用户才知道该去关哪个开关。
-        let raw = results.map(\.text).joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !raw.isEmpty {
-            throw Failure.speakerLabelingLostText(raw)
-        }
-        guard !HallucinationFilter.isHallucination(output.text) else {
-            throw Failure.noSpeech(output.text)
-        }
-        return output
-    }
-
-    /// 分离模型的下载与体积。它跟 Whisper 完全独立 —— 一共 11 MB，
-    /// 比任何一个转写档位便宜两个数量级。
-    static var diarizationRoot: URL {
-        modelRoot.appendingPathComponent("models/argmaxinc/speakerkit-coreml")
-    }
-
-    nonisolated static var isDiarizationDownloaded: Bool {
-        let files = (try? FileManager.default.contentsOfDirectory(
-            atPath: diarizationRoot.path)) ?? []
-        return files.contains("speaker_embedder") && files.contains("speaker_segmenter")
-    }
-
-    nonisolated static var diarizationBytes: Int64 {
-        isDiarizationDownloaded ? directorySize(diarizationRoot) : 0
-    }
-
-    static func downloadDiarization(progress: @escaping @Sendable (Double) -> Void) async throws {
-        try FileManager.default.createDirectory(at: modelRoot, withIntermediateDirectories: true)
-        // ⚠️ `download` 必须是 **true**。
-        //
-        // 这个 flag 不只管「构造时要不要顺手下」—— 手动调 `downloadModels` 时，
-        // 底下的 `resolveRepo(download: config.download)` 拿的还是它。写成 false
-        // 的话本地没有权重就直接抛
-        // `No local models found for repo … and download is disabled`，
-        // 于是**永远下不下来**。
-        //
-        // 这个 bug 在开发机上看不见：本地早就有那 11 MB，`resolveRepo` 命中本地
-        // 直接返回，看起来一切正常。只有干净的机器才会踩到。
-        let config = PyannoteConfig(downloadBase: modelRoot.path, download: true,
-                                    load: false, verbose: false, logLevel: .none)
-        // 刻意**不**走 `SpeakerKit(config)`：它的 init 会自己 `downloadModels()`
-        // 一遍，那一遍没有进度回调 —— 用户会对着一个不动的进度条等 11 MB。
-        // 直接拿 diarizer，下载这一步就还在我们手里。
-        // 类型标注不能省：`SpeakerKitDiarizer` 同时满足 `Diarizer` 与 `ModelManager`，
-        // 两边都有 `downloadModels(progressCallback:)`，不指定就是歧义。
-        let manager: ModelManager = SpeakerKitDiarizer.pyannote(config: config)
-        try await manager.downloadModels(progressCallback: { progress($0.fractionCompleted) })
-        progress(1)
-    }
-
-    func deleteDiarization() throws {
-        let speaker = diarizer
-        diarizer = nil
-        Task { await speaker?.unloadModels() }
-        if FileManager.default.fileExists(atPath: Self.diarizationRoot.path) {
-            try FileManager.default.removeItem(at: Self.diarizationRoot)
-        }
-    }
-
-    /// 预热分离模型，避免开着「区分人物」时第一段多等几秒。
-    func prewarmDiarization() async {
-        guard Self.isDiarizationDownloaded else { return }
-        _ = try? await speakerKit()
-    }
-
-    private func speakerKit() async throws -> SpeakerKit {
-        if let diarizer { return diarizer }
-        let created = try await SpeakerKit(
-            PyannoteConfig(downloadBase: Self.modelRoot.path, verbose: false, logLevel: .none))
-        diarizer = created
-        return created
     }
 
     // MARK: - 内部
