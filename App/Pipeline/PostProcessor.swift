@@ -1,7 +1,7 @@
 import Foundation
 import InkfallCore
 
-/// 一次加工的执行层：真的发请求 / 真的 fork `claude`。
+/// 一次加工的执行层：真的发请求。
 ///
 /// 「请求长什么样、响应怎么解、这一段该不该加工」全在 InkfallCore 里（有单测），
 /// 这里只剩下三件测不动的事：发出去、把失败分类、把耗时和账单打进日志。
@@ -14,7 +14,6 @@ enum PostProcessor {
     struct Success: Sendable {
         var text: String
         var elapsed: TimeInterval
-        /// Claude Code 那条路会报这一轮的花费；云端不报。
         var costUSD: Double?
     }
 
@@ -25,10 +24,6 @@ enum PostProcessor {
 
     enum Route: Sendable {
         case cloud(provider: CloudProvider, model: String, key: String)
-        /// 本机的命令行助手。`executablePath` 必须是绝对路径 —— App 从
-        /// Finder 起来时 PATH 里没有 homebrew（见 `CLIAgentLocator`）。
-        /// 不带 key：用的是那个工具自己的登录态。
-        case cli(agent: CLIAgentKind, effort: String, model: String, executablePath: String)
     }
 
     struct Request: Sendable {
@@ -38,21 +33,11 @@ enum PostProcessor {
     }
 
     /// 跑一次加工。
-    ///
-    /// `onDelta` 是流式增量（目前只有 Claude Code 那条路会喂）。它在后台线程上
-    /// 被调用，调用方自己负责跳回主 actor。
-    static func run(_ request: Request,
-                    onDelta: (@Sendable (String) -> Void)? = nil) async -> Result<Success, Failure> {
+    static func run(_ request: Request) async -> Result<Success, Failure> {
         switch request.route {
         case .cloud(let provider, let model, let key):
             return await runCloud(provider: provider, model: model, key: key,
                                   instructions: request.instructions, input: request.input)
-        case .cli(let agent, let effort, let model, let executablePath):
-            // 具体是 claude / gemini / codex 由 `CLIAgentKind` 自己知道。
-            return await CLIAgentRunner.runTransform(
-                agent: agent, executablePath: executablePath,
-                instructions: request.instructions, input: request.input,
-                effort: effort, model: model, onDelta: onDelta)
         }
     }
 
