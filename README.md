@@ -106,6 +106,7 @@ open -n build/DerivedData/Build/Products/Debug/Inkfall.app --args --hotkey-selft
 | 参数 | 验什么 |
 |------|--------|
 | `--hotkey-selftest` | 合成右 ⌥ 按住 → tap → 匹配器 → 录音 |
+| `--toggle-selftest` | 合成 ⌥Space 两次：按一下起录、松开 ⌥ 不误停、再按一下停 |
 | `--record-test N` | 真录 N 秒，落 WAV，打出提交裁决 |
 | `--transcribe-test <wav>` | 本地转写连跑三遍，验结果稳定 |
 | `--cloud-transcribe-test <wav> [--mode …]` | 云端转写：key、地址、multipart、解析、降级 |

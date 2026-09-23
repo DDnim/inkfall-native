@@ -171,6 +171,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // 切换录音自测：合成 右⌥+Space 两次，验「按一下起录、再按一下停」，
+        // 以及推杆那截副产物录音被丢掉、松开 ⌥ 不会误停长录。
+        if arguments.contains("--toggle-selftest") {
+            runToggleSelfTest()
+            return
+        }
+
         // 首启，**或者**老用户的辅助功能授权被撤销了 —— 两种情况都弹引导。
         if !store.settings.hasCompletedOnboarding || !permissions.isGranted(.accessibility) {
             showOnboarding()
@@ -746,6 +753,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.flush()
             exit(ok ? 0 : 1)
         }
+    }
+
+    /// ⌥Space 切换录音的回归自测。
+    ///
+    /// 盯的是这个：右⌥ 按下时 matcher 必然先发一次 `.overlayHoldPressed`，
+    /// `beginHold()` 已经起录；Space 随后才到。松开右⌥ 的 `.overlayHoldReleased`
+    /// 不能把切换录音的录音器停掉 —— 所以断言的是**松开 ⌥ 若干秒之后录音器
+    /// 还活着、计时还在走**；再按一次之后录音器必须停。
+    private func runToggleSelfTest() {
+        selfTest = true
+        store.readOnly = true
+        guard AXIsProcessTrusted() else {
+            permissions.request(.accessibility)
+            emit("未授权辅助功能 —— 已打开系统设置，勾选「落音 Inkfall」后重跑本命令")
+            exit(1)
+        }
+        startHotkeys()
+        guard hotkeys != nil else {
+            emit("tap 建立失败")
+            exit(1)
+        }
+        emit("绑定：toggle=\(store.effectiveShortcuts.toggleRecording.displayLabel)")
+
+        func chord(_ label: String) {
+            emit("→ 合成 \(label)：右⌥ 按下 · Space 按下/松开 · 右⌥ 松开")
+            Self.postRightOption(down: true)
+            Thread.sleep(forTimeInterval: 0.08)
+            Self.postSpace(down: true)
+            Thread.sleep(forTimeInterval: 0.05)
+            Self.postSpace(down: false)
+            Thread.sleep(forTimeInterval: 0.08)
+            Self.postRightOption(down: false)
+        }
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) {
+            emit((ok ? "  ✓ " : "  ✗ ") + what)
+            if !ok { failures.append(what) }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { chord("第一次") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [self] in
+            emit("松开 ⌥ 两秒后：录音=\(recorder.isRecording) toggle=\(toggleOwnsRecorder) "
+                 + "hold=\(holdOwnsRecorder) "
+                 + String(format: "已录=%.2fs", recorder.takeDurationSeconds)
+                 + " 刘海=「\(notch.debugMessage)」")
+            check(recorder.isRecording, "第一次按下后录音器在跑")
+            check(toggleOwnsRecorder && !holdOwnsRecorder, "录音器归切换录音，不归推杆")
+            check(recorder.takeDurationSeconds > 1.5, "松开 ⌥ 没有把长录停掉")
+            check(notch.debugMessage.hasPrefix("录音"), "刘海显示切换录音的计时")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.8) { chord("第二次") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.4) { [self] in
+            emit("第二次之后：录音=\(recorder.isRecording) toggle=\(toggleOwnsRecorder) "
+                 + "刘海=「\(notch.debugMessage)」")
+            check(!recorder.isRecording, "第二次按下后录音器停了")
+            check(!toggleOwnsRecorder, "切换状态已清")
+            let toggles = selfTestEvents.filter { $0 == .toggleRecordingPressed }.count
+            check(toggles == 2, "收到两次 toggleRecordingPressed（实际 \(toggles)）")
+            emit("收到事件：\(selfTestEvents.map(String.init(describing:)).joined(separator: " → "))")
+            emit(failures.isEmpty ? "✅ 切换录音链路通" : "❌ \(failures.count) 项不通过")
+            Log.flush()
+            exit(failures.isEmpty ? 0 : 1)
+        }
+    }
+
+    private static func postSpace(down: Bool) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let event = CGEvent(keyboardEventSource: source,
+                                  virtualKey: 49, keyDown: down) else { return }
+        // 右⌥ 还按着，所以 alternate 位（共享位 + 设备位）必须带上，
+        // 否则 matcher 眼里这就是一个裸 Space。
+        event.flags = CGEventFlags(rawValue: HotkeyMask.alternate | HotkeyMask.rightOptionDevice)
+        event.post(tap: .cghidEventTap)
     }
 
     /// 合成一个右 ⌥ 的 flagsChanged。修饰键没有 keyDown/keyUp 事件，
