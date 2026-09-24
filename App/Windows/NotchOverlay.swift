@@ -108,14 +108,6 @@ final class NotchOverlayController {
         model.level = min(max(level, 0), 1)
     }
 
-    /// 关键词扫描 armed。**只管宽度** —— 「宽 = 在扫描」「高 = 在采集」
-    /// 是两根独立的轴，所以先开哪个模式都不影响结果。
-    func setArmed(_ armed: Bool) {
-        model.armed = armed
-    }
-
-    var debugArmed: Bool { model.armed }
-
     // MARK: - 窗口
 
     private func ensureWindow() {
@@ -208,7 +200,6 @@ final class NotchModel {
     var title: String?
     var level: Double = 0
     var visible = false
-    var armed = false
     var compact = false
     var topInset: Double = 32
     var notchWidth: Double = OverlayGeometry.estimatedNotchWidth
@@ -217,7 +208,7 @@ final class NotchModel {
 
     var capsule: CapsuleSize {
         OverlayGeometry.capsule(state: state, topInset: topInset,
-                                notchWidth: notchWidth, armed: armed,
+                                notchWidth: notchWidth,
                                 compact: compact, hoverStrip: hover == .strip)
     }
 }
@@ -243,12 +234,10 @@ struct NotchOverlayView: View {
         switch model.state {
         case .idle, .cancelled: return Color(red: 0.70, green: 0.65, blue: 0.58) // #B3A794
         case .recording: return Color(red: 0.84, green: 0.35, blue: 0.29)        // #D65A4A 朱砂
-        case .transcribing, .jarvisStandby, .jarvisListening:
-            return Color(red: 0.44, green: 0.75, blue: 0.70)                     // #6FBFB2 青
+        case .transcribing: return Color(red: 0.44, green: 0.75, blue: 0.70)     // #6FBFB2 青
         case .processing: return Color(red: 0.73, green: 0.55, blue: 0.88)       // #B98BE0 紫
-        case .success, .jarvisResult: return Color(red: 0.44, green: 0.71, blue: 0.42)
-        case .error, .jarvisError: return Color(red: 0.88, green: 0.64, blue: 0.23) // #E0A33A 琥珀
-        case .jarvisPending: return Color(red: 0.84, green: 0.35, blue: 0.29)
+        case .success: return Color(red: 0.44, green: 0.71, blue: 0.42)
+        case .error: return Color(red: 0.88, green: 0.64, blue: 0.23)            // #E0A33A 琥珀
         case .notePaused: return Color(red: 0.70, green: 0.65, blue: 0.58)
         }
     }
@@ -258,17 +247,15 @@ struct NotchOverlayView: View {
     /// 取消/空操作则要读得很淡。
     private var haloOpacity: Double {
         switch model.state {
-        case .recording, .jarvisListening: return 0.18 + model.level * 0.4
-        case .error, .jarvisError: return 0.50
+        case .recording: return 0.18 + model.level * 0.4
+        case .error: return 0.50
         case .cancelled: return 0.12
         case .notePaused: return 0.0
-        case .success, .jarvisResult: return 0.34
+        case .success: return 0.34
         case .transcribing, .processing: return 0.32
         default: return 0.16
         }
     }
-
-    private var isBand: Bool { model.state == .jarvisStandby }
 
     var body: some View {
         let capsule = model.capsule
@@ -278,8 +265,8 @@ struct NotchOverlayView: View {
             // 菜单栏的点击全吃掉。
             Color.clear.allowsHitTesting(false)
             UnevenRoundedRectangle(
-                bottomLeadingRadius: isBand ? 0 : 18,
-                bottomTrailingRadius: isBand ? 0 : 18)
+                bottomLeadingRadius: 18,
+                bottomTrailingRadius: 18)
                 // ⚠️ 纯黑。任何偏暖的近黑都会在硬件刘海边缘露出接缝。
                 .fill(Color.black)
                 .frame(width: capsule.width, height: capsule.height)
@@ -315,17 +302,10 @@ struct NotchOverlayView: View {
         .frame(width: width, height: bandHeight)
     }
 
-    /// 贾维斯的卡片状态：命令要用等宽字排，而且比正常两行多一条键盘提示。
-    private var isCard: Bool {
-        [.jarvisPending, .jarvisResult, .jarvisError].contains(model.state)
-    }
-
     @ViewBuilder
     private func content(capsule: CapsuleSize) -> some View {
         if model.hover == .strip {
             hoverStrip(capsule: capsule)
-        } else if isCard {
-            jarvisCard(capsule: capsule)
         } else if model.compact {
             // 紧凑胶囊只排一行：计时。胶囊亮着就代表在录音，
             // 不必再写一遍「正在录音」—— 那既占高度又是废话。
@@ -336,7 +316,7 @@ struct NotchOverlayView: View {
                 .padding(.horizontal, 14)
                 .padding(.bottom, 7)
                 .frame(width: capsule.width)
-        } else if !isBand {
+        } else {
             VStack(spacing: 2) {
                 if let title = model.title ?? defaultTitle {
                     Text(title)
@@ -354,49 +334,6 @@ struct NotchOverlayView: View {
             .padding(.bottom, 12)
             .frame(width: capsule.width)
         }
-    }
-
-    /// 命中关键词时掉下来的那张卡。
-    ///
-    /// 决策点在**执行之前**：3 秒倒计时期间 esc 撤销、↩ 立即执行。
-    /// 命令用等宽字排 —— 用户要读的是一行 shell，不是散文。
-    /// 执行失败时卡片不自动收，命令已经躺在剪贴板里（刘海 click-through，
-    /// 没有按钮可点）。
-    private func jarvisCard(capsule: CapsuleSize) -> some View {
-        let paper = Color(red: 0.945, green: 0.91, blue: 0.84)
-        return VStack(alignment: .leading, spacing: 6) {
-            if let title = model.title {
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(model.state == .jarvisError ? tint : paper)
-            }
-            Text(model.message)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(paper.opacity(0.86))
-                .lineLimit(2)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if model.state == .jarvisPending {
-                HStack(spacing: 8) {
-                    keyHint("esc", "撤销")
-                    keyHint("↩", "立即执行")
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 12)
-        .frame(width: capsule.width, alignment: .leading)
-    }
-
-    private func keyHint(_ key: String, _ label: String) -> some View {
-        HStack(spacing: 4) {
-            Text(key)
-                .font(.system(size: 9, design: .monospaced))
-                .padding(.horizontal, 4).padding(.vertical, 1)
-                .background(Color.white.opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
-            Text(label).font(.system(size: 9.5))
-        }
-        .foregroundStyle(Color(red: 0.945, green: 0.91, blue: 0.84).opacity(0.66))
     }
 
     /// 鼠标停在落笔胶囊上时摊开的操作条。
