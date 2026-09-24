@@ -58,10 +58,10 @@ final class OverlayHoverTests: XCTestCase {
         let inset: Double = 32
         let plain = OverlayGeometry.capsule(state: .recording, topInset: inset,
                                             notchWidth: OverlayGeometry.estimatedNotchWidth,
-                                            armed: false, compact: true)
+                                            compact: true)
         let hovered = OverlayGeometry.capsule(state: .recording, topInset: inset,
                                               notchWidth: OverlayGeometry.estimatedNotchWidth,
-                                              armed: false, compact: true, hoverStrip: true)
+                                              compact: true, hoverStrip: true)
         XCTAssertGreaterThan(hovered.height, plain.height)
         XCTAssertEqual(hovered.height, OverlayGeometry.noteHoverStripSpan + inset)
         XCTAssertEqual(hovered.width, plain.width, "hover 不该改宽度")
@@ -71,17 +71,17 @@ final class OverlayHoverTests: XCTestCase {
     func testPausedCapsuleAlsoMakesRoom() {
         let hovered = OverlayGeometry.capsule(state: .notePaused, topInset: 32,
                                               notchWidth: OverlayGeometry.estimatedNotchWidth,
-                                              armed: false, compact: true, hoverStrip: true)
+                                              compact: true, hoverStrip: true)
         XCTAssertEqual(hovered.height, OverlayGeometry.noteHoverStripSpan + 32)
     }
 
-    /// 非紧凑状态（转写中、结果卡）不受 hover 条影响：那些状态没有条。
+    /// 非紧凑状态（转写中、结果）不受 hover 条影响：那些状态没有条。
     func testHoverStripDoesNotResizeOrdinaryStates() {
-        for state in [OverlayState.transcribing, .success, .jarvisPending] {
+        for state in [OverlayState.transcribing, .success, .error] {
             let plain = OverlayGeometry.capsule(state: state, topInset: 32,
-                                                notchWidth: 184, armed: true, compact: false)
+                                                notchWidth: 184, compact: false)
             let hovered = OverlayGeometry.capsule(state: state, topInset: 32,
-                                                  notchWidth: 184, armed: true, compact: false,
+                                                  notchWidth: 184, compact: false,
                                                   hoverStrip: true)
             XCTAssertEqual(plain, hovered, "\(state) 被 hover 条改了尺寸")
         }
@@ -92,7 +92,7 @@ final class OverlayHoverTests: XCTestCase {
         for inset in [0.0, 32.0] {
             let c = OverlayGeometry.capsule(state: .recording, topInset: inset,
                                             notchWidth: inset > 0 ? 184 : 0,
-                                            armed: true, compact: true, hoverStrip: true)
+                                            compact: true, hoverStrip: true)
             XCTAssertLessThanOrEqual(c.height, OverlayGeometry.canvasHeight(topInset: inset))
             XCTAssertLessThanOrEqual(c.width, OverlayGeometry.canvasWidth)
         }
