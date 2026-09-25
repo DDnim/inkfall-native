@@ -53,7 +53,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var holdOwnsRecorder = false
     /// 切换录音进行中（按一下开始、再按一下结束）。
     private var toggleOwnsRecorder = false
-    private var modelDownloading = false
 
     /// 会话内语言锁定：**两段判出同一种语言才锁**（见 `SessionLanguageLock`）。
     /// Whisper 对短句的自动检测经常判错，一句两个字的中文被当成英文，
@@ -62,7 +61,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sessionLanguage: TranscriptionLanguage? { languageLock.locked }
     /// 空闲一段时间就把模型还给系统 —— turbo 常驻 1.5 GB。
     private var unloadTimer: Timer?
-    private var modelMenuItem: NSMenuItem?
 
     private var hotkeys: HotkeyMonitor?
     private var levelTimer: Timer?
@@ -216,10 +214,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "设置…", action: #selector(showSettings), keyEquivalent: ",")
         menu.addItem(.separator())
-        let models = NSMenuItem(title: "本地模型", action: nil, keyEquivalent: "")
-        models.submenu = buildModelMenu()
-        menu.addItem(models)
-        modelMenuItem = models
         menu.addItem(withTitle: "刘海自测", action: #selector(testOverlay), keyEquivalent: "")
         menu.addItem(withTitle: "重新打开引导", action: #selector(reopenOnboarding), keyEquivalent: "")
         menu.addItem(.separator())
@@ -228,70 +222,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for menuItem in menu.items { menuItem.target = self }
         item.menu = menu
         statusItem = item
-    }
-
-    /// 模型子菜单：勾选当前在用的，标出已下载/未下载，并给出下载与删除。
-    ///
-    /// 每次打开都重建 —— 下载状态是磁盘上的事实，缓存了就会骗人。
-    private func buildModelMenu() -> NSMenu {
-        let menu = NSMenu()
-        menu.delegate = self
-        // ⚠️ 必须关掉自动启用：开着时 AppKit 只按「target 响应得了 action 吗」
-        // 决定可用性，我们手动设的 isEnabled 会被忽略。
-        menu.autoenablesItems = false
-        models.refresh()
-        for entry in models.entries {
-            let suffix = entry.downloaded ? "已下载 \(entry.sizeText)"
-                                          : "未下载 \(entry.sizeText)"
-            let item = NSMenuItem(title: "\(entry.model.name) · \(suffix)",
-                                  action: #selector(selectModel(_:)), keyEquivalent: "")
-            item.representedObject = entry.id
-            item.state = entry.id == models.selectedID ? .on : .off
-            item.target = self
-            menu.addItem(item)
-        }
-        menu.addItem(.separator())
-
-        let downloaded = models.selected?.downloaded ?? false
-        let download = NSMenuItem(
-            title: downloaded ? "重新下载当前模型" : "下载当前模型",
-            action: #selector(downloadLocalModel), keyEquivalent: "")
-        download.target = self
-        menu.addItem(download)
-
-        let delete = NSMenuItem(title: "删除当前模型的权重",
-                                action: #selector(deleteLocalModel), keyEquivalent: "")
-        delete.target = self
-        delete.isEnabled = downloaded
-        menu.addItem(delete)
-
-        let reveal = NSMenuItem(title: "在访达中显示权重目录",
-                                action: #selector(revealModelFolder), keyEquivalent: "")
-        reveal.target = self
-        menu.addItem(reveal)
-        return menu
-    }
-
-    @objc private func selectModel(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String, id != models.selectedID,
-              let model = LocalModels.definition(id: id) else { return }
-        models.select(id)
-        flash(models.selected?.downloaded == true ? .success : .cancelled,
-              models.selected?.downloaded == true
-                  ? "已切到 \(model.name)" : "\(model.name)：还没下载",
-              seconds: 1.6)
-    }
-
-    @objc private func deleteLocalModel() {
-        guard let entry = models.selected else { return }
-        models.delete(entry.id)
-        flash(.success, "已删除 \(entry.model.name) 的权重", seconds: 1.6)
-    }
-
-    @objc private func revealModelFolder() {
-        try? FileManager.default.createDirectory(
-            at: LocalTranscriber.modelRoot, withIntermediateDirectories: true)
-        NSWorkspace.shared.activateFileViewerSelecting([LocalTranscriber.modelRoot])
     }
 
     @objc private func reopenOnboarding() { showOnboarding() }
@@ -1401,45 +1331,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - 本地模型
-
-    @objc private func downloadLocalModel() {
-        guard !modelDownloading else { return }
-        let id = store.settings.selectedLocalModelId
-        guard let model = LocalModels.definition(id: id) else { return }
-        if LocalTranscriber.isDownloaded(model) {
-            flash(.success, "\(model.name) 已就绪", seconds: 1.6)
-            Task { [transcriber] in await transcriber.prewarm(modelID: id) }
-            return
-        }
-
-        modelDownloading = true
-        hideTimer?.invalidate()
-        notch.show(state: .transcribing, message: "下载 \(model.name) \(model.sizeLabel)")
-        Task {
-            do {
-                try await LocalTranscriber.download(model) { fraction in
-                    Task { @MainActor in
-                        AppDelegate.shared?.notch.show(
-                            state: .transcribing,
-                            message: "下载 \(model.name) \(Int(fraction * 100))%")
-                    }
-                }
-                await MainActor.run {
-                    AppDelegate.shared?.modelDownloading = false
-                    AppDelegate.shared?.flash(.success, "\(model.name) 已就绪", seconds: 1.6)
-                }
-                await transcriber.prewarm(modelID: id)
-            } catch {
-                Log.write("model: 下载失败 \(error)")
-                await MainActor.run {
-                    AppDelegate.shared?.modelDownloading = false
-                    AppDelegate.shared?.flash(.error, Self.short(error), seconds: 3.0)
-                }
-            }
-        }
-    }
-
     private func startLevelTicker() {
         levelTimer?.invalidate()
         levelTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
@@ -1513,14 +1404,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onboardingWindow?.orderOut(nil)
         // 引导里刚授权的辅助功能 —— 立刻接管热键，不等下次启动。
         startHotkeys()
-    }
-}
-
-extension AppDelegate: NSMenuDelegate {
-    /// 每次展开都按磁盘现状重建模型菜单 —— 下载/删除完不刷新就会显示旧状态。
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        guard menu === modelMenuItem?.submenu else { return }
-        modelMenuItem?.submenu = buildModelMenu()
     }
 }
 
