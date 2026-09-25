@@ -909,6 +909,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         holdOwnsRecorder = true
         // 必须在起录时抓，不能等转写回来 —— 那时用户多半已经切走了。
         pasteTarget = PasteTarget.current()
+        Log.write("hotkey: 粘贴目标=\(pasteTarget?.appName ?? "无")")
         hideTimer?.invalidate()
         // 紧凑胶囊：只排一行计时。
         // 不写「正在录音」，也不写「松开结束」—— 手正按着那个键，
@@ -954,6 +955,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggleOwnsRecorder = true
         // 必须在起录时抓，不能等转写回来 —— 那时用户多半已经切走了。
         pasteTarget = PasteTarget.current()
+        Log.write("toggle: 粘贴目标=\(pasteTarget?.appName ?? "无")")
         hideTimer?.invalidate()
         lastHoldNotchSecond = -1
         notch.show(state: .recording, message: "录音 00:00", compact: true)

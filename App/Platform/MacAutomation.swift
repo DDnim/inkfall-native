@@ -19,8 +19,16 @@ struct PasteTarget: @unchecked Sendable {
     let window: AXUIElement?
 
     static func current() -> PasteTarget? {
-        guard let pid = MacAutomation.frontmostPID(),
-              let app = NSRunningApplication(processIdentifier: pid) else { return nil }
+        // AX 问不到时退到 NSWorkspace：起录发生在主线程上、没有任何阻塞，
+        // 这时它的值是准的（插入路径上不能用它，见 `frontmostPID`）。
+        // 有的 App（Chrome 一类）不肯回答系统级的「谁是焦点 App」，
+        // 但它确实就在前台，不该因此丢掉粘贴目标。
+        guard let pid = MacAutomation.frontmostPID()
+                ?? NSWorkspace.shared.frontmostApplication?.processIdentifier else { return nil }
+        guard let app = NSRunningApplication(processIdentifier: pid) else {
+            Log.write("paste: 前台 pid=\(pid) 不是可识别的 App")
+            return nil
+        }
         return PasteTarget(
             bundleID: app.bundleIdentifier,
             processID: pid,
@@ -28,7 +36,13 @@ struct PasteTarget: @unchecked Sendable {
             window: MacAutomation.focusedWindow(pid: pid))
     }
 
-    var isFrontmost: Bool { MacAutomation.frontmostPID() == processID }
+    var isFrontmost: Bool {
+        if let pid = MacAutomation.frontmostPID() { return pid == processID }
+        // AX 答不上来（目标不响应 AX）时退到 NSWorkspace。它在主线程堵住时会
+        // 过期，但那只影响「切走之后」的判断；这里错判成前台的后果是
+        // ⌘V 直接发出去，正是目标真在前台时该做的事。
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier == processID
+    }
 
     /// 目标进程还活着吗。
     ///
@@ -203,10 +217,16 @@ enum MacAutomation {
     /// ⌘V 打到别人窗口里去。AX 是直接问系统，永远是当下的真相。
     static func frontmostPID() -> pid_t? {
         var focused: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
+        let status = AXUIElementCopyAttributeValue(
             AXUIElementCreateSystemWide(),
-            kAXFocusedApplicationAttribute as CFString, &focused) == .success,
-            let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+            kAXFocusedApplicationAttribute as CFString, &focused)
+        guard status == .success else {
+            // 抓不到前台就没有粘贴目标 —— 错误码是唯一的线索
+            // （-25211 = 没授权，-25204 = 目标没响应 AX，-25205 = 没有焦点 App）。
+            Log.write("paste: 抓前台失败 AXError=\(status.rawValue) trusted=\(AXIsProcessTrusted())")
+            return nil
+        }
+        guard let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
         var pid: pid_t = 0
         guard AXUIElementGetPid(focused as! AXUIElement, &pid) == .success else { return nil }
         return pid
