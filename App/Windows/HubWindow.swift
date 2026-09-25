@@ -148,6 +148,9 @@ struct HubView: View {
 
     private var transcriptionPage: some View {
         VStack(alignment: .leading, spacing: 9) {
+            group("语言") {
+                languageRow
+            }
             group("来源") {
                 HStack(spacing: 6) {
                     sourceCard("本地", "离线 · CoreML",
@@ -361,6 +364,40 @@ struct HubView: View {
     private var presetRow: some View {
         pickerRow("预设", Binding(get: { model.settings.postProcessingPreset },
                                  set: { model.settings.postProcessingPreset = $0 }))
+    }
+
+    /// 转写语言：自动，或固定成中 / 英 / 日。
+    ///
+    /// 固定模式每段都直接给语言码；自动模式靠前两段一致的检测结果锁定整场
+    /// （`SessionLanguageLock`）。短句在自动下经常判错，所以只说一种语言的话
+    /// 固定住最稳。
+    private var languageRow: some View {
+        let selection = Binding<String>(
+            get: {
+                model.settings.transcriptionLanguageMode == .fixed
+                    ? model.settings.fixedTranscriptionLanguage.rawValue : "auto"
+            },
+            set: { value in
+                if let language = TranscriptionLanguage(rawValue: value) {
+                    model.settings.transcriptionLanguageMode = .fixed
+                    model.settings.fixedTranscriptionLanguage = language
+                } else {
+                    model.settings.transcriptionLanguageMode = .auto
+                }
+            })
+        return HStack(spacing: 9) {
+            Text("转写语言").font(.system(size: 12)).foregroundStyle(Ink.ink1)
+            Spacer(minLength: 6)
+            Picker("", selection: selection) {
+                Text("自动检测").tag("auto")
+                ForEach([TranscriptionLanguage.zh, .en, .ja], id: \.rawValue) {
+                    Text($0.nativeLabel).tag($0.rawValue)
+                }
+            }
+            .labelsHidden().controlSize(.small).frame(width: 150)
+        }
+        .padding(.horizontal, 11).padding(.vertical, 7)
+        .overlay(alignment: .top) { Divider().overlay(Ink.hair) }
     }
 
     private func pickerRow(_ label: String,
