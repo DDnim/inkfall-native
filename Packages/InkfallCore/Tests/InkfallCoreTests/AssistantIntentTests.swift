@@ -54,15 +54,15 @@ final class KanbanHandoffTests: XCTestCase {
 
     func testRequest() throws {
         let config = KanbanHandoffAPI.Config(port: 8765, token: "abc")
-        XCTAssertEqual(KanbanHandoffAPI.endpoint(config).absoluteString, "http://127.0.0.1:8765/api/create")
+        XCTAssertEqual(KanbanHandoffAPI.endpoint(config).absoluteString, "http://127.0.0.1:8765/api/open-issue")
         XCTAssertEqual(KanbanHandoffAPI.headers(config)["Authorization"], "Bearer abc")
         let body = try XCTUnwrap(KanbanHandoffAPI.body(text: "总结一下这个网页"))
         XCTAssertEqual(String(decoding: body, as: UTF8.self),
-                       #"{"input":"总结一下这个网页","mode":"work-only","project":""}"#)
+                       #"{"input":"总结一下这个网页"}"#)
     }
 
-    func testParseCardName() throws {
-        XCTAssertEqual(try KanbanHandoffAPI.parseCardName(Data(#"{"path":"Task/总结一下这个网页.md"}"#.utf8)), "总结一下这个网页")
-        XCTAssertThrowsError(try KanbanHandoffAPI.parseCardName(Data(#"{"error":"x"}"#.utf8)))
+    func testParseOpened() {
+        XCTAssertTrue(KanbanHandoffAPI.parseOpened(Data(#"{"opened":true}"#.utf8)))
+        XCTAssertFalse(KanbanHandoffAPI.parseOpened(Data(#"{"error":"見つかりません"}"#.utf8)))
     }
 }
