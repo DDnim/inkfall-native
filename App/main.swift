@@ -44,6 +44,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 试做：Jev 判成 call 的话放进 Obsidian 看板的起票面板，不粘贴。
     private let kanban = KanbanHandoff()
 
+    /// 切换录音的自动分段：停顿 1.3 秒就切一段送去转写，不等再按一下。
+    private var segmenter = SilenceSegmenter()
+    private var lastSegmentTick: CFAbsoluteTime = 0
+    /// 刘海上的总时长。`takeDurationSeconds` 每切一段就归零，不能拿来显示。
+    private var toggleStartedAt: CFAbsoluteTime = 0
+    /// 这一场长录音已经送出去几段。> 0 时，最后那截静音不再提示「太短了」。
+    private var toggleSegmentsSent = 0
+    /// 单段硬上限：说了三分钟没停顿也要切，转写延迟和失败代价随时长线性上涨。
+    private static let hardCutSeconds: Double = 180
+    /// 切段时给下一段留的尾巴，免得把词头切秃。
+    private static let retainTailMs: UInt64 = 300
+
+    /// 一段一段来：前一段走完（粘上 / 交给看板 / 丢弃 / 失败）才放下一段。
+    /// 并发跑的话，云端先回来的后一段会先粘出去，顺序就乱了。
+    private var takeQueue: [(audio: RecordedAudio, tag: String, target: PasteTarget?, quiet: Bool)] = []
+    private var takeInFlight = false
+
     /// 录音**开始那一刻**的前台窗口。等转写回来再看前台是谁，就粘到别人窗口里了。
     private var pasteTarget: PasteTarget?
 
@@ -943,7 +960,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             flash(.error, "录音结束失败", seconds: 2.0)
             return
         }
-        submit(audio, tag: "hotkey")
+        enqueue(audio, tag: "hotkey")
     }
 
     // MARK: - 切换录音
@@ -966,6 +983,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         toggleOwnsRecorder = true
+        segmenter.reset()
+        lastSegmentTick = CFAbsoluteTimeGetCurrent()
+        toggleStartedAt = lastSegmentTick
+        toggleSegmentsSent = 0
         // 必须在起录时抓，不能等转写回来 —— 那时用户多半已经切走了。
         pasteTarget = PasteTarget.current()
         Log.write("toggle: 粘贴目标=\(pasteTarget?.appName ?? "无")")
@@ -986,16 +1007,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             flash(.error, "录音结束失败", seconds: 2.0)
             return
         }
-        submit(audio, tag: "toggle")
+        enqueue(audio, tag: "toggle", quiet: toggleSegmentsSent > 0)
+    }
+
+    /// 录音不停，把到这里为止的切成一段排进队列。
+    private func cutToggleSegment(reason: String) {
+        guard let audio = try? recorder.flushSegment(retainingTailMs: Self.retainTailMs) else { return }
+        segmenter.resetSegment()
+        guard RecordingSubmissionPolicy.default.verdict(for: audio) == .submit else {
+            Log.write("toggle: \(reason)，丢弃过短/静音的一段 \(audio.durationMs)ms")
+            return
+        }
+        Log.write("toggle: \(reason)，切出一段 \(audio.durationMs)ms")
+        toggleSegmentsSent += 1
+        enqueue(audio, tag: "toggle-seg")
+    }
+
+    private func enqueue(_ audio: RecordedAudio, tag: String, quiet: Bool = false) {
+        takeQueue.append((audio, tag, pasteTarget, quiet))
+        pumpTakes()
+    }
+
+    private func pumpTakes() {
+        guard !takeInFlight, !takeQueue.isEmpty else { return }
+        takeInFlight = true
+        let take = takeQueue.removeFirst()
+        submit(take.audio, tag: take.tag, target: take.target, quiet: take.quiet)
+    }
+
+    /// 管线的每个终点都要调一次（粘完、交给看板、丢弃、失败）。
+    private func takeFinished() {
+        guard takeInFlight else { return }
+        takeInFlight = false
+        pumpTakes()
     }
 
     /// 两个手势共用的尾巴：太短 / 全静音的一段不进管线 —— 但**必须给反馈**。
     /// 早先这里是直接 `notch.hide()`：用户说了一句、刘海一闪就没了，
     /// 分不清是「没录上」还是「转写失败了」，只能干等。
-    private func submit(_ audio: RecordedAudio, tag: String) {
+    private func submit(_ audio: RecordedAudio, tag: String, target: PasteTarget?, quiet: Bool) {
         let verdict = RecordingSubmissionPolicy.default.verdict(for: audio)
         guard verdict == .submit else {
             Log.write("\(tag): 丢弃 \(verdict.rawValue) durationMs=\(audio.durationMs)")
+            defer { takeFinished() }
+            // 分段送过了，最后那截多半是按停之前的静音，不值得一句「太短了」。
+            if quiet { return }
             switch verdict {
             case .tooShort: flash(.cancelled, "太短了，没录上", seconds: 1.4)
             case .silent: flash(.cancelled, "没有听到声音", seconds: 1.4)
@@ -1004,19 +1060,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         Log.write("\(tag): 采集完成 \(audio.data.count) 字节 / \(audio.durationMs) ms")
-        transcribeAndInsert(audio)
+        transcribeAndInsert(audio, target: target)
     }
 
     // MARK: - 转写 → 加工 → 粘贴
 
     /// 转写（云端或本地，见 `Transcriber`）→ 加工 → 送回起录时的那个窗口。
     /// 加工那一段九个预设都在，见 `PostProcessingCoordinator`。
-    private func transcribeAndInsert(_ audio: RecordedAudio) {
+    private func transcribeAndInsert(_ audio: RecordedAudio, target: PasteTarget?) {
         let durationMs = audio.durationMs
         let settings = store.settings
         let modelID = settings.selectedLocalModelId
         let name = Transcriber.label(for: settings)
-        let target = pasteTarget
         notch.show(state: .transcribing, message: "\(name) 转写中")
 
         let url = FileManager.default.temporaryDirectory
@@ -1025,6 +1080,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try audio.data.write(to: url)
         } catch {
             flash(.error, "写入临时文件失败", seconds: 2.0)
+            takeFinished()
             return
         }
 
@@ -1050,6 +1106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Log.write("transcribe: 失败 \(error)")
                 await MainActor.run {
                     AppDelegate.shared?.flash(.error, Self.short(error), seconds: 3.0)
+                    AppDelegate.shared?.takeFinished()
                 }
             }
         }
@@ -1068,6 +1125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                          durationMs: UInt64, route: String = "local") {
         guard !result.text.trimmingCharacters(in: .whitespaces).isEmpty else {
             flash(.cancelled, "没听清", seconds: 1.2)
+            takeFinished()
             return
         }
         Log.write(String(format: "transcribe: %@ %.2fs lang=%@ → %d 字",
@@ -1106,6 +1164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         Log.write(String(format: "kanban: 已打开起票 p=%.2f", judgement.p))
                         self.pendingIntentNotice = nil
                         self.flash(.success, String(format: "已放进看板起票 %.2f", judgement.p), seconds: 2.0)
+                        self.takeFinished()
                         return
                     }
                     self.pendingIntentNotice = String(format: "Jev %.2f，看板没连上，已照常粘贴", judgement.p)
@@ -1120,6 +1179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let text = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             flash(.cancelled, "没听清", seconds: 1.2)
+            takeFinished()
             return
         }
         // ⚠️ 提示不能在这里 flash：紧接着的「粘贴中」和粘完的「已粘回 X」
@@ -1144,6 +1204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func reportPaste(_ result: PasteResult, appName: String?) {
+        defer { takeFinished() }
         var message = AutoPaste.message(result.outcome, appName: appName)
         var state: OverlayState = result.outcome.landedInTarget ? .success : .cancelled
         var seconds = result.outcome.landedInTarget ? 1.6 : 2.4
@@ -1415,7 +1476,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func pushLevel() {
         notch.setLevel(Double(recorder.level))
         guard holdOwnsRecorder || toggleOwnsRecorder, recorder.isRecording else { return }
-        let whole = Int(recorder.takeDurationSeconds)
+        if toggleOwnsRecorder {
+            let now = CFAbsoluteTimeGetCurrent()
+            let delta = now - lastSegmentTick
+            lastSegmentTick = now
+            if recorder.takeDurationSeconds >= Self.hardCutSeconds {
+                cutToggleSegment(reason: "到达 \(Int(Self.hardCutSeconds))s 硬上限")
+            } else if segmenter.feed(level: recorder.level, delta: delta) {
+                cutToggleSegment(reason: "停顿切段")
+            }
+        }
+        let whole = toggleOwnsRecorder
+            ? Int(CFAbsoluteTimeGetCurrent() - toggleStartedAt)
+            : Int(recorder.takeDurationSeconds)
         guard whole != lastHoldNotchSecond else { return }
         lastHoldNotchSecond = whole
         // ⚠️ 切换录音的前缀必须在这里也带上。这个函数 30 Hz 在跑，
@@ -1436,7 +1509,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hideTimer?.invalidate()
         notch.show(state: state, message: message)
         hideTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { _ in
-            Task { @MainActor in AppDelegate.shared?.notch.hide() }
+            Task { @MainActor in AppDelegate.shared?.flashEnded() }
+        }
+    }
+
+    /// 长录音还在录（前面切出的段刚粘完）：别收起刘海，下一拍 `pushLevel` 把计时画回来。
+    private func flashEnded() {
+        if toggleOwnsRecorder, recorder.isRecording {
+            lastHoldNotchSecond = -1
+        } else {
+            notch.hide()
         }
     }
 
