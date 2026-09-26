@@ -7,8 +7,8 @@
    "punct": false,
    "gold": true,
    "hard": false,
-   "p": 0.86,
-   "ms": 227
+   "p": 0.85,
+   "ms": 799
   },
   {
    "lang": "zh",
@@ -18,7 +18,7 @@
    "gold": true,
    "hard": false,
    "p": 0.78,
-   "ms": 238
+   "ms": 800
   },
   {
    "lang": "zh",
@@ -27,8 +27,8 @@
    "punct": false,
    "gold": true,
    "hard": false,
-   "p": 0.76,
-   "ms": 236
+   "p": 0.73,
+   "ms": 760
   },
   {
    "lang": "zh",
@@ -38,7 +38,7 @@
    "gold": true,
    "hard": false,
    "p": 0.74,
-   "ms": 215
+   "ms": 742
   },
   {
    "lang": "zh",
@@ -48,7 +48,7 @@
    "gold": true,
    "hard": false,
    "p": 0.78,
-   "ms": 244
+   "ms": 779
   },
   {
    "lang": "zh",
@@ -57,8 +57,8 @@
    "punct": false,
    "gold": true,
    "hard": false,
-   "p": 0.8,
-   "ms": 212
+   "p": 0.81,
+   "ms": 754
   },
   {
    "lang": "zh",
@@ -67,8 +67,8 @@
    "punct": false,
    "gold": true,
    "hard": false,
-   "p": 0.72,
-   "ms": 226
+   "p": 0.73,
+   "ms": 214
   },
   {
    "lang": "ja",
@@ -78,7 +78,7 @@
    "gold": true,
    "hard": false,
    "p": 0.87,
-   "ms": 184
+   "ms": 171
   },
   {
    "lang": "ja",
@@ -87,8 +87,8 @@
    "punct": false,
    "gold": true,
    "hard": false,
-   "p": 0.82,
-   "ms": 208
+   "p": 0.83,
+   "ms": 183
   },
   {
    "lang": "ja",
@@ -97,8 +97,8 @@
    "punct": false,
    "gold": true,
    "hard": false,
-   "p": 0.78,
-   "ms": 169
+   "p": 0.79,
+   "ms": 213
   },
   {
    "lang": "en",
@@ -107,8 +107,8 @@
    "punct": false,
    "gold": true,
    "hard": false,
-   "p": 0.82,
-   "ms": 226
+   "p": 0.81,
+   "ms": 182
   },
   {
    "lang": "en",
@@ -117,8 +117,8 @@
    "punct": false,
    "gold": true,
    "hard": false,
-   "p": 0.66,
-   "ms": 164
+   "p": 0.64,
+   "ms": 199
   },
   {
    "lang": "zh",
@@ -127,8 +127,8 @@
    "punct": false,
    "gold": true,
    "hard": false,
-   "p": 0.75,
-   "ms": 192
+   "p": 0.74,
+   "ms": 197
   },
   {
    "lang": "zh",
@@ -137,8 +137,8 @@
    "punct": false,
    "gold": true,
    "hard": false,
-   "p": 0.81,
-   "ms": 189
+   "p": 0.83,
+   "ms": 257
   },
   {
    "lang": "zh",
@@ -148,7 +148,7 @@
    "gold": false,
    "hard": false,
    "p": 0.09,
-   "ms": 201
+   "ms": 172
   },
   {
    "lang": "zh",
@@ -157,8 +157,8 @@
    "punct": false,
    "gold": false,
    "hard": false,
-   "p": 0.1,
-   "ms": 222
+   "p": 0.09,
+   "ms": 176
   },
   {
    "lang": "zh",
@@ -167,8 +167,8 @@
    "punct": false,
    "gold": false,
    "hard": false,
-   "p": 0.08,
-   "ms": 177
+   "p": 0.1,
+   "ms": 227
   },
   {
    "lang": "zh",
@@ -177,8 +177,8 @@
    "punct": false,
    "gold": false,
    "hard": false,
-   "p": 0.09,
-   "ms": 190
+   "p": 0.08,
+   "ms": 191
   },
   {
    "lang": "zh",
@@ -187,8 +187,8 @@
    "punct": false,
    "gold": false,
    "hard": false,
-   "p": 0.13,
-   "ms": 176
+   "p": 0.12,
+   "ms": 183
   },
   {
    "lang": "zh",
@@ -197,8 +197,8 @@
    "punct": false,
    "gold": false,
    "hard": false,
-   "p": 0.11,
-   "ms": 239
+   "p": 0.09,
+   "ms": 180
   },
   {
    "lang": "zh",
@@ -208,7 +208,7 @@
    "gold": false,
    "hard": false,
    "p": 0.09,
-   "ms": 188
+   "ms": 212
   },
   {
    "lang": "zh",
@@ -217,8 +217,8 @@
    "punct": false,
    "gold": false,
    "hard": false,
-   "p": 0.09,
-   "ms": 226
+   "p": 0.08,
+   "ms": 198
   },
   {
    "lang": "zh",
@@ -227,8 +227,8 @@
    "punct": false,
    "gold": false,
    "hard": false,
-   "p": 0.11,
-   "ms": 206
+   "p": 0.12,
+   "ms": 184
   },
   {
    "lang": "zh",
@@ -238,7 +238,7 @@
    "gold": false,
    "hard": false,
    "p": 0.13,
-   "ms": 184
+   "ms": 227
   },
   {
    "lang": "ja",
@@ -247,8 +247,8 @@
    "punct": false,
    "gold": false,
    "hard": false,
-   "p": 0.14,
-   "ms": 200
+   "p": 0.15,
+   "ms": 195
   },
   {
    "lang": "ja",
@@ -257,8 +257,8 @@
    "punct": false,
    "gold": false,
    "hard": false,
-   "p": 0.17,
-   "ms": 176
+   "p": 0.14,
+   "ms": 174
   },
   {
    "lang": "ja",
@@ -267,8 +267,8 @@
    "punct": false,
    "gold": false,
    "hard": false,
-   "p": 0.13,
-   "ms": 174
+   "p": 0.12,
+   "ms": 173
   },
   {
    "lang": "en",
@@ -277,8 +277,8 @@
    "punct": false,
    "gold": false,
    "hard": false,
-   "p": 0.07,
-   "ms": 177
+   "p": 0.08,
+   "ms": 185
   },
   {
    "lang": "en",
@@ -287,8 +287,8 @@
    "punct": false,
    "gold": false,
    "hard": false,
-   "p": 0.08,
-   "ms": 229
+   "p": 0.07,
+   "ms": 205
   },
   {
    "lang": "en",
@@ -298,7 +298,7 @@
    "gold": false,
    "hard": false,
    "p": 0.07,
-   "ms": 187
+   "ms": 182
   },
   {
    "lang": "zh",
@@ -307,8 +307,8 @@
    "punct": true,
    "gold": true,
    "hard": false,
-   "p": 0.87,
-   "ms": 208
+   "p": 0.86,
+   "ms": 200
   },
   {
    "lang": "zh",
@@ -317,8 +317,8 @@
    "punct": true,
    "gold": true,
    "hard": false,
-   "p": 0.82,
-   "ms": 178
+   "p": 0.81,
+   "ms": 186
   },
   {
    "lang": "zh",
@@ -327,8 +327,8 @@
    "punct": true,
    "gold": true,
    "hard": false,
-   "p": 0.8,
-   "ms": 178
+   "p": 0.77,
+   "ms": 186
   },
   {
    "lang": "zh",
@@ -337,8 +337,8 @@
    "punct": true,
    "gold": true,
    "hard": false,
-   "p": 0.79,
-   "ms": 186
+   "p": 0.8,
+   "ms": 180
   },
   {
    "lang": "zh",
@@ -348,7 +348,7 @@
    "gold": true,
    "hard": false,
    "p": 0.81,
-   "ms": 194
+   "ms": 220
   },
   {
    "lang": "zh",
@@ -358,7 +358,7 @@
    "gold": true,
    "hard": false,
    "p": 0.81,
-   "ms": 183
+   "ms": 195
   },
   {
    "lang": "zh",
@@ -367,8 +367,8 @@
    "punct": true,
    "gold": true,
    "hard": false,
-   "p": 0.78,
-   "ms": 174
+   "p": 0.75,
+   "ms": 214
   },
   {
    "lang": "ja",
@@ -377,8 +377,8 @@
    "punct": true,
    "gold": true,
    "hard": false,
-   "p": 0.88,
-   "ms": 188
+   "p": 0.89,
+   "ms": 260
   },
   {
    "lang": "ja",
@@ -387,8 +387,8 @@
    "punct": true,
    "gold": true,
    "hard": false,
-   "p": 0.84,
-   "ms": 177
+   "p": 0.85,
+   "ms": 236
   },
   {
    "lang": "ja",
@@ -397,8 +397,8 @@
    "punct": true,
    "gold": true,
    "hard": false,
-   "p": 0.82,
-   "ms": 170
+   "p": 0.81,
+   "ms": 236
   },
   {
    "lang": "en",
@@ -407,8 +407,8 @@
    "punct": true,
    "gold": true,
    "hard": false,
-   "p": 0.86,
-   "ms": 193
+   "p": 0.85,
+   "ms": 221
   },
   {
    "lang": "en",
@@ -417,8 +417,8 @@
    "punct": true,
    "gold": true,
    "hard": false,
-   "p": 0.74,
-   "ms": 196
+   "p": 0.71,
+   "ms": 205
   },
   {
    "lang": "zh",
@@ -427,8 +427,8 @@
    "punct": true,
    "gold": true,
    "hard": false,
-   "p": 0.78,
-   "ms": 209
+   "p": 0.77,
+   "ms": 193
   },
   {
    "lang": "zh",
@@ -437,8 +437,8 @@
    "punct": true,
    "gold": true,
    "hard": false,
-   "p": 0.84,
-   "ms": 177
+   "p": 0.85,
+   "ms": 315
   },
   {
    "lang": "zh",
@@ -447,8 +447,8 @@
    "punct": true,
    "gold": false,
    "hard": false,
-   "p": 0.1,
-   "ms": 178
+   "p": 0.11,
+   "ms": 196
   },
   {
    "lang": "zh",
@@ -457,8 +457,8 @@
    "punct": true,
    "gold": false,
    "hard": false,
-   "p": 0.09,
-   "ms": 186
+   "p": 0.1,
+   "ms": 179
   },
   {
    "lang": "zh",
@@ -467,8 +467,8 @@
    "punct": true,
    "gold": false,
    "hard": false,
-   "p": 0.13,
-   "ms": 217
+   "p": 0.14,
+   "ms": 216
   },
   {
    "lang": "zh",
@@ -477,8 +477,8 @@
    "punct": true,
    "gold": false,
    "hard": false,
-   "p": 0.08,
-   "ms": 203
+   "p": 0.09,
+   "ms": 209
   },
   {
    "lang": "zh",
@@ -488,7 +488,7 @@
    "gold": false,
    "hard": false,
    "p": 0.16,
-   "ms": 190
+   "ms": 215
   },
   {
    "lang": "zh",
@@ -497,8 +497,8 @@
    "punct": true,
    "gold": false,
    "hard": false,
-   "p": 0.12,
-   "ms": 214
+   "p": 0.11,
+   "ms": 247
   },
   {
    "lang": "zh",
@@ -508,7 +508,7 @@
    "gold": false,
    "hard": false,
    "p": 0.1,
-   "ms": 194
+   "ms": 203
   },
   {
    "lang": "zh",
@@ -527,8 +527,8 @@
    "punct": true,
    "gold": false,
    "hard": false,
-   "p": 0.18,
-   "ms": 203
+   "p": 0.19,
+   "ms": 169
   },
   {
    "lang": "zh",
@@ -537,8 +537,8 @@
    "punct": true,
    "gold": false,
    "hard": false,
-   "p": 0.28,
-   "ms": 198
+   "p": 0.25,
+   "ms": 177
   },
   {
    "lang": "ja",
@@ -548,7 +548,7 @@
    "gold": false,
    "hard": false,
    "p": 0.2,
-   "ms": 225
+   "ms": 208
   },
   {
    "lang": "ja",
@@ -557,8 +557,8 @@
    "punct": true,
    "gold": false,
    "hard": false,
-   "p": 0.23,
-   "ms": 220
+   "p": 0.24,
+   "ms": 205
   },
   {
    "lang": "ja",
@@ -567,8 +567,8 @@
    "punct": true,
    "gold": false,
    "hard": false,
-   "p": 0.15,
-   "ms": 198
+   "p": 0.16,
+   "ms": 194
   },
   {
    "lang": "en",
@@ -578,7 +578,7 @@
    "gold": false,
    "hard": false,
    "p": 0.09,
-   "ms": 186
+   "ms": 226
   },
   {
    "lang": "en",
@@ -588,7 +588,7 @@
    "gold": false,
    "hard": false,
    "p": 0.07,
-   "ms": 176
+   "ms": 179
   },
   {
    "lang": "en",
@@ -597,8 +597,8 @@
    "punct": true,
    "gold": false,
    "hard": false,
-   "p": 0.07,
-   "ms": 185
+   "p": 0.08,
+   "ms": 205
   },
   {
    "lang": "zh",
@@ -607,8 +607,8 @@
    "punct": false,
    "gold": true,
    "hard": true,
-   "p": 0.32,
-   "ms": 189
+   "p": 0.33,
+   "ms": 192
   },
   {
    "lang": "zh",
@@ -617,8 +617,8 @@
    "punct": false,
    "gold": true,
    "hard": true,
-   "p": 0.78,
-   "ms": 186
+   "p": 0.76,
+   "ms": 177
   },
   {
    "lang": "zh",
@@ -627,8 +627,8 @@
    "punct": false,
    "gold": true,
    "hard": true,
-   "p": 0.68,
-   "ms": 185
+   "p": 0.7,
+   "ms": 171
   },
   {
    "lang": "zh",
@@ -637,8 +637,8 @@
    "punct": false,
    "gold": true,
    "hard": true,
-   "p": 0.65,
-   "ms": 218
+   "p": 0.66,
+   "ms": 186
   },
   {
    "lang": "ja",
@@ -647,7 +647,7 @@
    "punct": false,
    "gold": true,
    "hard": true,
-   "p": 0.48,
+   "p": 0.46,
    "ms": 172
   },
   {
@@ -658,7 +658,7 @@
    "gold": true,
    "hard": true,
    "p": 0.82,
-   "ms": 177
+   "ms": 181
   },
   {
    "lang": "zh",
@@ -667,8 +667,8 @@
    "punct": false,
    "gold": false,
    "hard": true,
-   "p": 0.26,
-   "ms": 187
+   "p": 0.23,
+   "ms": 171
   },
   {
    "lang": "zh",
@@ -677,8 +677,8 @@
    "punct": false,
    "gold": false,
    "hard": true,
-   "p": 0.11,
-   "ms": 179
+   "p": 0.12,
+   "ms": 169
   },
   {
    "lang": "zh",
@@ -687,8 +687,8 @@
    "punct": false,
    "gold": false,
    "hard": true,
-   "p": 0.11,
-   "ms": 198
+   "p": 0.1,
+   "ms": 210
   },
   {
    "lang": "zh",
@@ -698,7 +698,7 @@
    "gold": false,
    "hard": true,
    "p": 0.1,
-   "ms": 199
+   "ms": 191
   },
   {
    "lang": "zh",
@@ -707,8 +707,8 @@
    "punct": false,
    "gold": false,
    "hard": true,
-   "p": 0.13,
-   "ms": 224
+   "p": 0.15,
+   "ms": 198
   },
   {
    "lang": "ja",
@@ -717,8 +717,8 @@
    "punct": false,
    "gold": false,
    "hard": true,
-   "p": 0.14,
-   "ms": 188
+   "p": 0.13,
+   "ms": 185
   },
   {
    "lang": "en",
@@ -728,7 +728,7 @@
    "gold": false,
    "hard": true,
    "p": 0.1,
-   "ms": 189
+   "ms": 202
   }
  ],
  "intent": [
@@ -737,340 +737,576 @@
    "text": "Claude，帮我把这个函数重构一下",
    "gold": true,
    "hard": false,
-   "p": 0.91,
+   "fresh": false,
+   "p": 0.93,
+   "p2": 0.76,
    "kind": "assistant",
    "kw": true,
-   "ms": 217
+   "ms": 197
   },
   {
    "app": "VS Code",
    "text": "嘿 Claude，跑一下测试看看有没有挂",
    "gold": true,
    "hard": false,
+   "fresh": false,
    "p": 0.91,
+   "p2": 0.85,
    "kind": "assistant",
    "kw": true,
-   "ms": 189
+   "ms": 180
   },
   {
    "app": "Notes",
    "text": "Claude 帮我把刚才那段翻译成日语",
    "gold": true,
    "hard": false,
-   "p": 0.93,
+   "fresh": false,
+   "p": 0.92,
+   "p2": 0.9,
    "kind": "assistant",
    "kw": true,
-   "ms": 213
+   "ms": 180
   },
   {
    "app": "Terminal",
    "text": "クロード、このブランチのテストを回して",
    "gold": true,
    "hard": false,
+   "fresh": false,
    "p": 0.91,
+   "p2": 0.81,
    "kind": "assistant",
    "kw": true,
-   "ms": 215
+   "ms": 212
   },
   {
    "app": "VS Code",
    "text": "Hey Claude, open a PR for this branch",
    "gold": true,
    "hard": false,
-   "p": 0.88,
+   "fresh": false,
+   "p": 0.9,
+   "p2": 0.85,
    "kind": "assistant",
    "kw": true,
-   "ms": 199
+   "ms": 192
   },
   {
    "app": "Notes",
    "text": "今天会议的要点如下，第一预算不变，第二下周上线。Claude，帮我把这段整理成要点",
    "gold": true,
    "hard": false,
-   "p": 0.9,
+   "fresh": false,
+   "p": 0.89,
+   "p2": 0.85,
    "kind": "assistant",
    "kw": true,
-   "ms": 188
+   "ms": 246
   },
   {
    "app": "Terminal",
    "text": "帮我看一下为什么构建失败了",
    "gold": true,
    "hard": false,
+   "fresh": false,
    "p": 0.89,
+   "p2": 0.62,
    "kind": "assistant",
    "kw": false,
-   "ms": 193
+   "ms": 183
   },
   {
    "app": "VS Code",
    "text": "把这个文件里所有的 print 都删掉",
    "gold": true,
    "hard": false,
-   "p": 0.85,
+   "fresh": false,
+   "p": 0.87,
+   "p2": 0.75,
    "kind": "assistant",
    "kw": false,
-   "ms": 180
+   "ms": 210
   },
   {
    "app": "Notes",
    "text": "把刚才那段改得正式一点",
    "gold": true,
    "hard": false,
-   "p": 0.86,
+   "fresh": false,
+   "p": 0.85,
+   "p2": 0.78,
    "kind": "assistant",
    "kw": false,
-   "ms": 183
+   "ms": 185
   },
   {
    "app": "Terminal",
    "text": "查一下这个仓库最近一周谁提交最多",
    "gold": true,
    "hard": false,
-   "p": 0.85,
+   "fresh": false,
+   "p": 0.86,
+   "p2": 0.63,
    "kind": "assistant",
    "kw": false,
-   "ms": 173
+   "ms": 177
   },
   {
    "app": "Safari",
    "text": "总结一下这个网页讲了什么",
    "gold": true,
    "hard": false,
-   "p": 0.85,
+   "fresh": false,
+   "p": 0.87,
+   "p2": 0.73,
    "kind": "assistant",
    "kw": false,
-   "ms": 183
+   "ms": 207
   },
   {
    "app": "VS Code",
    "text": "run the tests and tell me what failed",
    "gold": true,
    "hard": false,
-   "p": 0.87,
+   "fresh": false,
+   "p": 0.86,
+   "p2": 0.79,
    "kind": "assistant",
    "kw": false,
-   "ms": 175
+   "ms": 214
   },
   {
    "app": "Notes",
    "text": "我昨天用 Claude Code 重构了半个项目，效果还不错",
    "gold": false,
    "hard": false,
+   "fresh": false,
    "p": 0.04,
+   "p2": 0.09,
    "kind": "dictation",
    "kw": true,
-   "ms": 181
+   "ms": 236
   },
   {
    "app": "Slack",
    "text": "Claude 这个名字挺好听的",
    "gold": false,
    "hard": false,
+   "fresh": false,
    "p": 0.06,
+   "p2": 0.08,
    "kind": "dictation",
    "kw": true,
-   "ms": 218
+   "ms": 172
   },
   {
    "app": "Notes",
    "text": "I told Claude to open a PR but it failed",
    "gold": false,
    "hard": false,
+   "fresh": false,
    "p": 0.09,
+   "p2": 0.13,
    "kind": "dictation",
    "kw": true,
-   "ms": 185
+   "ms": 191
   },
   {
    "app": "Slack",
    "text": "你们有人试过让 Claude 自动跑测试吗",
    "gold": false,
    "hard": false,
-   "p": 0.13,
+   "fresh": false,
+   "p": 0.12,
+   "p2": 0.12,
    "kind": "dictation",
    "kw": true,
-   "ms": 194
+   "ms": 196
   },
   {
    "app": "Slack",
    "text": "请大家在周五之前把周报发给我",
    "gold": false,
    "hard": false,
+   "fresh": false,
    "p": 0.05,
+   "p2": 0.07,
    "kind": "dictation",
    "kw": false,
-   "ms": 180
+   "ms": 184
   },
   {
    "app": "Slack",
    "text": "你帮我看一下这个 PR 有没有问题",
    "gold": false,
    "hard": false,
+   "fresh": false,
    "p": 0.83,
+   "p2": 0.34,
    "kind": "assistant",
    "kw": false,
-   "ms": 168
+   "ms": 180
   },
   {
    "app": "Mail",
    "text": "田中さん、お疲れ様です。明日の会議の資料を送ります",
    "gold": false,
    "hard": false,
+   "fresh": false,
    "p": 0.04,
+   "p2": 0.06,
    "kind": "dictation",
    "kw": false,
-   "ms": 203
+   "ms": 218
   },
   {
    "app": "Mail",
    "text": "Please review the attached contract and let me know by Monday",
    "gold": false,
    "hard": false,
-   "p": 0.18,
+   "fresh": false,
+   "p": 0.2,
+   "p2": 0.11,
    "kind": "dictation",
    "kw": false,
-   "ms": 215
+   "ms": 210
   },
   {
    "app": "Notes",
    "text": "明天记得买牛奶和鸡蛋",
    "gold": false,
    "hard": false,
-   "p": 0.17,
+   "fresh": false,
+   "p": 0.15,
+   "p2": 0.16,
    "kind": "dictation",
    "kw": false,
-   "ms": 187
+   "ms": 193
   },
   {
    "app": "Notes",
    "text": "这个方案的核心是把转写和加工拆成两步",
    "gold": false,
    "hard": false,
+   "fresh": false,
    "p": 0.09,
+   "p2": 0.14,
    "kind": "dictation",
    "kw": false,
-   "ms": 201
+   "ms": 194
   },
   {
    "app": "Notes",
    "text": "整体来说转化率涨了百分之五",
    "gold": false,
    "hard": false,
+   "fresh": false,
    "p": 0.05,
+   "p2": 0.08,
    "kind": "dictation",
    "kw": false,
-   "ms": 181
+   "ms": 189
   },
   {
    "app": "Slack",
    "text": "好的没问题，我下午处理",
    "gold": false,
    "hard": false,
+   "fresh": false,
    "p": 0.12,
+   "p2": 0.12,
    "kind": "dictation",
    "kw": false,
-   "ms": 198
+   "ms": 226
   },
   {
    "app": "Notes",
    "text": "今日は天気がいいので散歩に行きました",
    "gold": false,
    "hard": false,
+   "fresh": false,
    "p": 0.03,
+   "p2": 0.04,
    "kind": "dictation",
    "kw": false,
-   "ms": 191
+   "ms": 239
   },
   {
    "app": "Slack",
    "text": "帮我看一下为什么构建失败了",
    "gold": false,
    "hard": false,
-   "p": 0.77,
+   "fresh": false,
+   "p": 0.78,
+   "p2": 0.26,
    "kind": "assistant",
    "kw": false,
-   "ms": 220
+   "ms": 337
   },
   {
    "app": "Terminal",
    "text": "你帮我看一下这个 PR 有没有问题",
    "gold": true,
    "hard": false,
-   "p": 0.88,
+   "fresh": false,
+   "p": 0.89,
+   "p2": 0.63,
    "kind": "assistant",
    "kw": false,
-   "ms": 215
+   "ms": 172
   },
   {
    "app": "Terminal",
    "text": "修复登录页在 iPad 上布局错乱的问题",
    "gold": false,
    "hard": true,
-   "p": 0.73,
+   "fresh": false,
+   "p": 0.72,
+   "p2": 0.34,
    "kind": "assistant",
    "kw": false,
-   "ms": 238
+   "ms": 199
   },
   {
    "app": "Notes",
    "text": "给 Claude 的提示词写成：请帮我把这个函数重构一下",
    "gold": false,
    "hard": true,
-   "p": 0.43,
+   "fresh": false,
+   "p": 0.46,
+   "p2": 0.54,
    "kind": "dictation",
    "kw": true,
-   "ms": 228
+   "ms": 187
   },
   {
    "app": "Slack",
    "text": "Claude 说测试都过了",
    "gold": false,
    "hard": true,
+   "fresh": false,
    "p": 0.09,
+   "p2": 0.13,
    "kind": "dictation",
    "kw": true,
-   "ms": 198
+   "ms": 224
   },
   {
    "app": "Notes",
    "text": "Claude 你觉得这个方案怎么样",
    "gold": true,
    "hard": true,
+   "fresh": false,
    "p": 0.74,
+   "p2": 0.7,
    "kind": "dictation",
    "kw": true,
-   "ms": 194
+   "ms": 216
   },
   {
    "app": "Mail",
    "text": "翻译成英文：我明天请假",
    "gold": true,
    "hard": true,
-   "p": 0.72,
+   "fresh": false,
+   "p": 0.74,
+   "p2": 0.64,
    "kind": "assistant",
    "kw": false,
-   "ms": 216
+   "ms": 190
   },
   {
    "app": "Notes",
    "text": "等一下，把上一句删掉",
    "gold": true,
    "hard": true,
+   "fresh": false,
    "p": 0.75,
+   "p2": 0.69,
    "kind": "assistant",
    "kw": false,
-   "ms": 172
+   "ms": 181
   },
   {
    "app": "Notes",
    "text": "帮我记一下，下周试试 Jev",
    "gold": false,
    "hard": true,
-   "p": 0.53,
+   "fresh": false,
+   "p": 0.54,
+   "p2": 0.42,
    "kind": "dictation",
    "kw": false,
+   "ms": 227
+  },
+  {
+   "app": "Slack",
+   "text": "麻烦把昨天的会议纪要发一下",
+   "gold": false,
+   "hard": false,
+   "fresh": true,
+   "p": 0.5,
+   "p2": 0.19,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 202
+  },
+  {
+   "app": "Slack",
+   "text": "能不能帮我 review 一下这个改动",
+   "gold": false,
+   "hard": false,
+   "fresh": true,
+   "p": 0.59,
+   "p2": 0.2,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 221
+  },
+  {
+   "app": "Mail",
+   "text": "请查收附件中的报价单",
+   "gold": false,
+   "hard": false,
+   "fresh": true,
+   "p": 0.1,
+   "p2": 0.08,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 180
+  },
+  {
+   "app": "Terminal",
+   "text": "把 node_modules 删了重新装一遍",
+   "gold": true,
+   "hard": false,
+   "fresh": true,
+   "p": 0.77,
+   "p2": 0.5,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 185
+  },
+  {
+   "app": "Terminal",
+   "text": "看看是哪个进程占了 3000 端口",
+   "gold": true,
+   "hard": false,
+   "fresh": true,
+   "p": 0.82,
+   "p2": 0.62,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 192
+  },
+  {
+   "app": "VS Code",
+   "text": "给这个函数补个单元测试",
+   "gold": true,
+   "hard": false,
+   "fresh": true,
+   "p": 0.84,
+   "p2": 0.78,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 211
+  },
+  {
+   "app": "VS Code",
+   "text": "这个函数负责解析用户输入的日期",
+   "gold": false,
+   "hard": false,
+   "fresh": true,
+   "p": 0.09,
+   "p2": 0.16,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 181
+  },
+  {
+   "app": "Notes",
+   "text": "帮我把上面三段合成一段",
+   "gold": true,
+   "hard": false,
+   "fresh": true,
+   "p": 0.89,
+   "p2": 0.81,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 202
+  },
+  {
+   "app": "Notes",
+   "text": "周三要跟设计确认首页的配色",
+   "gold": false,
+   "hard": false,
+   "fresh": true,
+   "p": 0.11,
+   "p2": 0.1,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 393
+  },
+  {
+   "app": "Slack",
+   "text": "Claude，把这个频道今天的讨论总结一下",
+   "gold": true,
+   "hard": false,
+   "fresh": true,
+   "p": 0.89,
+   "p2": 0.86,
+   "kind": "assistant",
+   "kw": true,
+   "ms": 198
+  },
+  {
+   "app": "Mail",
+   "text": "Claude 帮我把这封邮件改得客气一点",
+   "gold": true,
+   "hard": false,
+   "fresh": true,
+   "p": 0.94,
+   "p2": 0.89,
+   "kind": "assistant",
+   "kw": true,
    "ms": 201
+  },
+  {
+   "app": "Slack",
+   "text": "我让 Claude 跑了一下，结果没问题",
+   "gold": false,
+   "hard": false,
+   "fresh": true,
+   "p": 0.05,
+   "p2": 0.09,
+   "kind": "dictation",
+   "kw": true,
+   "ms": 224
+  },
+  {
+   "app": "Safari",
+   "text": "这个页面的价格是多少",
+   "gold": true,
+   "hard": false,
+   "fresh": true,
+   "p": 0.63,
+   "p2": 0.5,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 181
+  },
+  {
+   "app": "Notes",
+   "text": "今天学到的：Jev 不看前台应用",
+   "gold": false,
+   "hard": false,
+   "fresh": true,
+   "p": 0.05,
+   "p2": 0.07,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 174
   }
  ]
 }

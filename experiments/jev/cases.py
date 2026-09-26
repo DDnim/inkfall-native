@@ -108,3 +108,21 @@ INTENT_HARD = [
     ("Notes", "等一下，把上一句删掉", True),
     ("Notes", "帮我记一下，下周试试 Jev", False),              # 口语的「帮我记一下」后面是正文
 ]
+
+# --- 验证集：写 app_kind 提问之后才补的新句子，用来查是不是只记住了上面的错例 ---
+INTENT_FRESH = [
+    ("Slack", "麻烦把昨天的会议纪要发一下", False),
+    ("Slack", "能不能帮我 review 一下这个改动", False),
+    ("Mail", "请查收附件中的报价单", False),
+    ("Terminal", "把 node_modules 删了重新装一遍", True),
+    ("Terminal", "看看是哪个进程占了 3000 端口", True),
+    ("VS Code", "给这个函数补个单元测试", True),
+    ("VS Code", "这个函数负责解析用户输入的日期", False),   # 口述注释
+    ("Notes", "帮我把上面三段合成一段", True),
+    ("Notes", "周三要跟设计确认首页的配色", False),
+    ("Slack", "Claude，把这个频道今天的讨论总结一下", True),
+    ("Mail", "Claude 帮我把这封邮件改得客气一点", True),
+    ("Slack", "我让 Claude 跑了一下，结果没问题", False),
+    ("Safari", "这个页面的价格是多少", True),
+    ("Notes", "今天学到的：Jev 不看前台应用", False),
+]

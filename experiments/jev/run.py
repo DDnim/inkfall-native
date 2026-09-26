@@ -5,7 +5,7 @@
 """
 import json, os, time, urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from cases import SEG, INTENT, SEG_HARD, INTENT_HARD, KEYWORDS
+from cases import SEG, INTENT, SEG_HARD, INTENT_HARD, INTENT_FRESH, KEYWORDS
 
 KEY = os.environ.get("TYPESAFE_API_KEY") or open(os.path.expanduser("~/.config/typesafe/api_key")).read().strip()
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +26,14 @@ INTENT_Q = {
         "assistant": "a request for the voice assistant to do something (edit, translate, run, look up, summarise)",
     }},
 }
+# v2：把前台应用的用途写进 state，并点明两类误叫（看着 v1 的错例写的，所以另有 INTENT_FRESH 验证）
+APP_KIND = {"Slack": "chat with other people", "Mail": "email to other people", "Terminal": "developer tool",
+            "VS Code": "developer tool", "Notes": "personal notes", "Safari": "web browser"}
+INTENT_Q2 = {"assistant": {"type": "noul", "instructions":
+    "The user speaks into a dictation app that normally types their words into `app` (`app_kind` says what it is for). They can also talk to a voice "
+    "assistant (Claude Code) that performs tasks on their computer. Is `text` (or its last sentence) addressed to the assistant as a request to do "
+    "something, rather than content the user wants typed out? In chat or email apps, requests like \"帮我看一下…\" are usually written to a colleague, "
+    "not to the assistant, unless the assistant is named. In a terminal, a short description of a change is usually a commit message being dictated."}}
 
 
 def ask(state, questions):
@@ -48,16 +56,17 @@ def seg_job(case, punct, hard=False):
     return {"lang": lang, "previous": prev, "segment": text, "punct": punct, "gold": gold, "hard": hard, "p": a["complete"]["noul"], "ms": ms}
 
 
-def intent_job(case, hard=False):
+def intent_job(case, hard=False, fresh=False):
     app, text, gold = case
     a, ms = ask({"app": app, "text": text}, INTENT_Q)
-    return {"app": app, "text": text, "gold": gold, "hard": hard, "p": a["assistant"]["noul"], "kind": a["kind"]["choice"],
-            "kw": any(k in text.lower() for k in KEYWORDS), "ms": ms}
+    a2, _ = ask({"app": app, "app_kind": APP_KIND[app], "text": text}, INTENT_Q2)
+    return {"app": app, "text": text, "gold": gold, "hard": hard, "fresh": fresh, "p": a["assistant"]["noul"],
+            "p2": a2["assistant"]["noul"], "kind": a["kind"]["choice"], "kw": any(k in text.lower() for k in KEYWORDS), "ms": ms}
 
 
 def summary(name, rows, pred, prob=lambda r: r["p"]):
     ok = [r for r in rows if pred(r) == r["gold"]]
-    fp =sum(pred(r) and not r["gold"] for r in rows)
+    fp = sum(pred(r) and not r["gold"] for r in rows)
     fn = sum(not pred(r) and r["gold"] for r in rows)
     brier = sum((prob(r) - r["gold"]) ** 2 for r in rows) / len(rows)
     print(f"  {name:28} acc {len(ok)}/{len(rows)}  FP {fp}  FN {fn}  Brier {brier:.3f}")
@@ -66,7 +75,8 @@ def summary(name, rows, pred, prob=lambda r: r["p"]):
 with ThreadPoolExecutor(6) as ex:
     seg = list(ex.map(lambda a: seg_job(*a), [(c, p, False) for p in (False, True) for c in SEG]
                                               + [(c, False, True) for c in SEG_HARD]))
-    intent = list(ex.map(lambda a: intent_job(*a), [(c, False) for c in INTENT] + [(c, True) for c in INTENT_HARD]))
+    intent = list(ex.map(lambda a: intent_job(*a), [(c, False, False) for c in INTENT] + [(c, True, False) for c in INTENT_HARD]
+                                                + [(c, False, True) for c in INTENT_FRESH]))
 
 json.dump({"seg": seg, "intent": intent}, open(f"{HERE}/results.json", "w"), ensure_ascii=False, indent=1)
 
@@ -81,15 +91,28 @@ for r in seg:
         print(f"    ✗ {'难' if r['hard'] else ' '}{'。' if r['punct'] else ' '} p={r['p']:.2f} gold={r['gold']!s:5} {r['segment']}")
 
 print("\n② 叫助手（assistant ≥ 0.5）")
-base = [r for r in intent if not r["hard"]]
+base = [r for r in intent if not r["hard"] and not r["fresh"]]
 summary("Jev noul", base, lambda r: r["p"] >= 0.5)
 summary("Jev choice", base, lambda r: r["kind"] == "assistant")
 summary("基线：关键词", base, lambda r: r["kw"], lambda r: float(r["kw"]))
 summary("Jev noul 难例", [r for r in intent if r["hard"]], lambda r: r["p"] >= 0.5)
 summary("基线：关键词 难例", [r for r in intent if r["hard"]], lambda r: r["kw"], lambda r: float(r["kw"]))
+fresh = [r for r in intent if r["fresh"]]
+summary("Jev noul 验证集", fresh, lambda r: r["p"] >= 0.5)
+summary("Jev v2(app_kind) 全部", intent, lambda r: r["p2"] >= 0.5, lambda r: r["p2"])
+summary("Jev v2(app_kind) 验证集", fresh, lambda r: r["p2"] >= 0.5, lambda r: r["p2"])
+t = [r["p2"] for r in intent if r["gold"]]; f = [r["p2"] for r in intent if not r["gold"]]
+print(f"  v2 叫助手最低 {min(t):.2f} / 误叫最高 {max(f):.2f}")
+# 激进方案：Jev 先判。≥0.6 直接交给助手，0.4–0.6 在刘海问一句，<0.4 当正文（有唤醒词也不叫）
+zone = lambda r: "call" if r["p2"] >= 0.6 else "ask" if r["p2"] >= 0.4 else "text"
+print("  三段式(v2)：", {z: sum(zone(r) == z for r in intent) for z in ("call", "ask", "text")},
+      "直接叫错", sum(zone(r) == "call" and not r["gold"] for r in intent),
+      "当正文漏", sum(zone(r) == "text" and r["gold"] for r in intent))
+for r in intent:
+    if zone(r) == "ask": print(f"    ? p2={r['p2']:.2f} gold={r['gold']!s:5} [{r['app']}] {r['text']}")
 for r in intent:
     if (r["p"] >= 0.5) != r["gold"]:
-        print(f"    ✗ {'难' if r['hard'] else ' '} p={r['p']:.2f} gold={r['gold']!s:5} [{r['app']}] {r['text']}")
+        print(f"    ✗ {'难' if r['hard'] else '验' if r['fresh'] else ' '} p={r['p']:.2f} p2={r['p2']:.2f} gold={r['gold']!s:5} [{r['app']}] {r['text']}")
 
 ms = sorted(r["ms"] for r in seg + intent)
 print(f"\nlatency p50 {ms[len(ms)//2]}ms  p90 {ms[int(len(ms)*.9)]}ms  n={len(ms)}")
