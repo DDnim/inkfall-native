@@ -41,3 +41,28 @@ final class AssistantIntentTests: XCTestCase {
         XCTAssertThrowsError(try AssistantIntentAPI.parse(Data(#"{"answers":{"assistant":{"noul":1.5}}}"#.utf8)))
     }
 }
+
+final class KanbanHandoffTests: XCTestCase {
+
+    func testConfigNeedsEnabledPortAndToken() {
+        let ok = Data(#"{"mobileControl":{"enabled":true,"port":8765,"token":"abc"}}"#.utf8)
+        XCTAssertEqual(KanbanHandoffAPI.config(fromPluginData: ok), .init(port: 8765, token: "abc"))
+        XCTAssertNil(KanbanHandoffAPI.config(fromPluginData: Data(#"{"mobileControl":{"enabled":false,"port":8765,"token":"abc"}}"#.utf8)))
+        XCTAssertNil(KanbanHandoffAPI.config(fromPluginData: Data(#"{"mobileControl":{"enabled":true,"port":8765,"token":""}}"#.utf8)))
+        XCTAssertNil(KanbanHandoffAPI.config(fromPluginData: Data(#"{}"#.utf8)))
+    }
+
+    func testRequest() throws {
+        let config = KanbanHandoffAPI.Config(port: 8765, token: "abc")
+        XCTAssertEqual(KanbanHandoffAPI.endpoint(config).absoluteString, "http://127.0.0.1:8765/api/create")
+        XCTAssertEqual(KanbanHandoffAPI.headers(config)["Authorization"], "Bearer abc")
+        let body = try XCTUnwrap(KanbanHandoffAPI.body(text: "总结一下这个网页"))
+        XCTAssertEqual(String(decoding: body, as: UTF8.self),
+                       #"{"input":"总结一下这个网页","mode":"work-only","project":""}"#)
+    }
+
+    func testParseCardName() throws {
+        XCTAssertEqual(try KanbanHandoffAPI.parseCardName(Data(#"{"path":"Task/总结一下这个网页.md"}"#.utf8)), "总结一下这个网页")
+        XCTAssertThrowsError(try KanbanHandoffAPI.parseCardName(Data(#"{"error":"x"}"#.utf8)))
+    }
+}
