@@ -1,6 +1,6 @@
 """插话纠错的离线评测：① Jev 单独判「说错了吗」 ② Jev 门 + 加工模型核对（App 的 --interject-eval，提示词与 App 同一份）。
 
-    python3 experiments/interject/run.py [--providers groq,openai,gemini]
+    python3 experiments/interject/run.py [--providers=groq,openai,gemini] [--model=qwen/qwen3-32b] [--gated-only]
 先构建 App（见 CLAUDE.md）。加工模型的 key 由 App 自己从钥匙串读；TypeSafe key 取 TYPESAFE_API_KEY
 或 ~/.config/typesafe/api_key。结果写 experiments/interject/results.json。只用标准库。
 """
@@ -45,7 +45,9 @@ def jev(c):
 def app_eval(provider, gate=True):
     src, out = os.path.join(HERE, "cases.json"), os.path.join(HERE, f"out-{provider}{'' if gate else '-nogate'}.json")
     json.dump([{k: c[k] for k in ("id", "previous", "text")} for c in cases], open(src, "w"), ensure_ascii=False)
-    args = [APP, "--interject-eval", src, out, "--provider", provider, "--pace", "15"] + ([] if gate else ["--no-gate"])
+    model = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--model=")), None)
+    args = [APP, "--interject-eval", src, out, "--provider", provider, "--pace", "15"] + ([] if gate else ["--no-gate"]) \
+        + (["--model", model] if model else [])
     p = subprocess.run(args, capture_output=True, text=True, timeout=900)
     if p.returncode != 0 or not os.path.exists(out):
         print(f"  {provider}: App 评测失败 {p.stdout[-300:]} {p.stderr[-300:]}")
@@ -75,7 +77,7 @@ print(f"{len(cases)} 条（应插 {sum(c['gold'] for c in cases)}）")
 summary = [report("Jev 单独 p_false ≥ 0.5", lambda c: jev_rows[c["id"]]["p_false"] >= 0.5),
            report("Jev 单独 p_false ≥ 0.7", lambda c: jev_rows[c["id"]]["p_false"] >= 0.7)]
 for provider in providers:
-    for gate in (True, False):
+    for gate in ((True,) if "--gated-only" in sys.argv else (True, False)):
         rows = app_eval(provider, gate)
         if rows is None: break
         results["apps"][f"{provider}{'' if gate else '-nogate'}"] = rows

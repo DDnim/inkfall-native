@@ -1210,7 +1210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             let delay = CFAbsoluteTimeGetCurrent() - transcribedAt
-            let decision = interject.decide(check, delay: delay, laterSegments: interject.segments(after: index))
+            let decision = interject.decide(check, segment: outcome.segment, delay: delay,
+                                           laterSegments: interject.segments(after: index))
             let verdict: String
             switch decision {
             case .show(let correction): verdict = "shown「\(correction)」"
@@ -1493,7 +1494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 emit(String(format: "%@ %dms kind=%@ wrong=%@ p=%.2f", outcome.route, outcome.checkMs,
                             check.kind.rawValue, check.wrong ? "y" : "n", check.confidence))
                 emit("correction=\(check.correction) detail=\(check.detail)")
-                let decision = interject.decide(check, delay: 1, laterSegments: [])
+                let decision = interject.decide(check, segment: sample, delay: 1, laterSegments: [])
                 emit("→ \(decision)")
             } else {
                 emit("停在 \(outcome.stoppedAt ?? "?")")
@@ -1542,7 +1543,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         row["confidence"] = check.confidence; row["correction"] = check.correction
                         row["detail"] = check.detail
                         var fresh = InterjectionPolicy()  // 评测看单句，不带冷却
-                        if case .show = fresh.decide(check, delay: 1, laterSegments: [], now: Date()) { row["shown"] = true }
+                        if case .show = fresh.decide(check, segment: item.text, delay: 1, laterSegments: [], now: Date()) { row["shown"] = true }
                     }
                     rows.append(row)
                     emit("\(item.id) \(outcome.stoppedAt ?? outcome.check.map { "\($0.kind.rawValue) \($0.correction)" } ?? "")")

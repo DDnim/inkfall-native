@@ -81,8 +81,9 @@ public enum InterjectionAPI {
     Reply with only one JSON object, no code fence, no other text:
     {"wrong": true or false, "kind": "clear_error" | "disputed" | "outdated" | "not_claim" | "correct", "confidence": 0.0 to 1.0, "correction": "...", "detail": "..."}
 
-    - correction: only when wrong — the corrected fact in the speaker's language, stated plainly with no preamble. \
-    At most 20 characters for Chinese or Japanese, at most 12 words otherwise. Example: 苹果是水果
+    - correction: only when wrong — one short sentence stating the correct fact, written in the same language as \
+    `segment` (Chinese segment → Chinese), with no preamble. At most 20 characters for Chinese or Japanese, at most 12 \
+    words otherwise. Example: 苹果是水果
     - detail: only when wrong — one short sentence of evidence in the speaker's language
     - when not wrong, correction and detail are empty strings
     """

@@ -134,8 +134,9 @@ final class InterjectionProbe {
     }
 
     /// 策略裁决（有状态：冷却、去重）。
-    func decide(_ check: InterjectionAPI.Check, delay: TimeInterval, laterSegments: [String]) -> InterjectionPolicy.Decision {
-        policy.decide(check, delay: delay, laterSegments: laterSegments, now: Date())
+    func decide(_ check: InterjectionAPI.Check, segment: String, delay: TimeInterval,
+                laterSegments: [String]) -> InterjectionPolicy.Decision {
+        policy.decide(check, segment: segment, delay: delay, laterSegments: laterSegments, now: Date())
     }
 
     private func gate(key: String, previous: [String], segment: String) async -> InterjectionAPI.Gate? {

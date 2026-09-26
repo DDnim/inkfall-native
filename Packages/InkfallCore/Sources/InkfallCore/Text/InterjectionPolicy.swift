@@ -18,6 +18,12 @@ public struct InterjectionPolicy: Sendable {
         "no wait", "i mean", "actually", "sorry,",
     ]
 
+    /// 同一段里出现这些就当已经当场改口（「水50度就开，说错了，100度」—— 评测里 gpt-oss-20b 照样纠正了它）。
+    /// 比上面那张表窄：「不是」「actually」在一句话里太常见，放进来会把「鲸鱼不是哺乳动物」这种真错也放过。
+    public static let inSegmentCorrectionMarkers = [
+        "不对", "说错", "我是说", "口误", "啊不是", "哦不是", "呃不是", "じゃなくて", "間違えた", "no wait", "i mean",
+    ]
+
     public enum Decision: Sendable, Equatable {
         case show(correction: String)
         case drop(Reason)
@@ -41,7 +47,8 @@ public struct InterjectionPolicy: Sendable {
 
     /// - `delay`: 这一段转写好到现在过了多久
     /// - `laterSegments`: 这一段之后已经转写出来的话（看本人有没有改口）
-    public mutating func decide(_ check: InterjectionAPI.Check, delay: TimeInterval,
+    /// - `segment`: 被核对的这一段本身（看有没有当场改口）
+    public mutating func decide(_ check: InterjectionAPI.Check, segment: String = "", delay: TimeInterval,
                                 laterSegments: [String], now: Date) -> Decision {
         guard check.wrong else { return .drop(.notWrong) }
         guard check.kind == .clearError else { return .drop(.notClearError) }
@@ -50,7 +57,9 @@ public struct InterjectionPolicy: Sendable {
         guard !correction.isEmpty else { return .drop(.emptyCorrection) }
         guard delay <= Self.maxDelay else { return .drop(.stale) }
         let later = laterSegments.joined(separator: " ").lowercased()
-        guard !Self.selfCorrectionMarkers.contains(where: later.contains) else { return .drop(.selfCorrected) }
+        guard !Self.selfCorrectionMarkers.contains(where: later.contains),
+              !Self.inSegmentCorrectionMarkers.contains(where: segment.lowercased().contains)
+        else { return .drop(.selfCorrected) }
         guard !shown.contains(correction) else { return .drop(.duplicate) }
         if let last = lastShownAt, now.timeIntervalSince(last) < Self.cooldown { return .drop(.cooldown) }
         lastShownAt = now

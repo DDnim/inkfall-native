@@ -83,6 +83,15 @@ final class InterjectionPolicyTests: XCTestCase {
         XCTAssertEqual(policy.decide(wrong(), delay: 1, laterSegments: ["然后我们去买了香蕉"], now: t0), .show(correction: "苹果是水果"))
     }
 
+    func testSelfCorrectedWithinSegment() {
+        var policy = InterjectionPolicy()
+        XCTAssertEqual(policy.decide(wrong("水100度沸腾"), segment: "水50度就开，说错了，100度", delay: 1, laterSegments: [], now: t0),
+                       .drop(.selfCorrected))
+        // 「不是」只在后面的话里算改口，同一段里太常见
+        XCTAssertEqual(policy.decide(wrong("鲸鱼是哺乳动物"), segment: "鲸鱼不是哺乳动物", delay: 1, laterSegments: [], now: t0),
+                       .show(correction: "鲸鱼是哺乳动物"))
+    }
+
     func testCooldownAndDuplicate() {
         var policy = InterjectionPolicy()
         XCTAssertEqual(policy.decide(wrong(), delay: 1, laterSegments: [], now: t0), .show(correction: "苹果是水果"))
