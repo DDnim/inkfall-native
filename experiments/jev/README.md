@@ -100,11 +100,12 @@ Jev 是 early access 的云 API：离线不可用、按量计费，要进 App �
 
 ### 接上看板（2026-09-27）
 
-判成 **call（≥ 0.6）** 的那段话不再粘贴，原话交给 Obsidian 看板：md-kanban mobile control 的
-`POST 127.0.0.1:<port>/api/create`（`mode: "work-only"`、`project: ""` = 全体），起一张卡并直接派发。
-刘海显示「已交给看板 0.83：<卡片名>」。ask / text 照旧粘贴。
+判成 **call（≥ 0.6）** 的那段话不粘贴，原话放进 Obsidian 看板的**起票面板**（md-kanban mobile control 的
+`POST 127.0.0.1:<port>/api/open-issue`，md-kanban commit 47c1adc），再把 Obsidian 叫到前台。**不建卡**：作成先、模型由人选了再发，
+Jev 判错的代价只是多开一次面板。刘海显示「已放进看板起票 0.83」。ask / text 照旧粘贴。
 
+- 起初是 `/api/create`（直接建卡并派发），境说「能调用起票吗，而不是直接创建」，改成只开面板
 - 端口与 token 每次现读 `~/repos/Memo/.obsidian/plugins/md-kanban/data.json` 的 `mobileControl`（`INKFALL_KANBAN_VAULT` 可改 vault）
-- Obsidian 没开 / 没开 mobile control / 1.5 秒不回 → 照常粘贴，刘海说「看板没连上」
+- Obsidian 没开 / 旧版插件（没有这个端点）/ 1.5 秒不回 → 照常粘贴，刘海说「看板没连上」
 - 送的是**加工前**的原话（加工会改写请求本身）
 - 代码：`InkfallCore/Net/KanbanHandoffAPI.swift`（单测 `KanbanHandoffTests`）、`App/Pipeline/KanbanHandoff.swift`
