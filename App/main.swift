@@ -43,6 +43,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let intent = AssistantIntentProbe()
     /// 试做：Jev 判成 call 的话放进 Obsidian 看板的起票面板，不粘贴。
     private let kanban = KanbanHandoff()
+    /// 试做：切换录音的每段旁路核对「说错了没有」，说错就在刘海上纠正一句（不改粘贴）。
+    private let interject = InterjectionProbe()
+    /// 刘海上的纠正要停留到这一刻。长录音的计时 30 Hz 在重画，不挡住就一闪而过。
+    private var notchHoldUntil: CFAbsoluteTime = 0
 
     /// 切换录音的自动分段：停顿 1.3 秒就切一段送去转写，不等再按一下。
     private var segmenter = SilenceSegmenter()
@@ -123,6 +127,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let index = arguments.firstIndex(of: "--intent-test") {
             runIntentTest(text: arguments[safe: index + 1] ?? "",
                           bundleID: arguments.firstIndex(of: "--bundle").flatMap { arguments[safe: $0 + 1] })
+            return
+        }
+
+        // 插话纠错自测（试做）：`--interject-test "<文字>" [--previous "<前文>"]`，真跑 Jev 门 + 加工模型核对。
+        // 评测：`--interject-eval <cases.json> <out.json> [--provider groq] [--model m] [--no-gate] [--pace 秒]`。
+        if let index = arguments.firstIndex(of: "--interject-test") {
+            runInterjectTest(text: arguments[safe: index + 1] ?? "",
+                             previous: arguments.firstIndex(of: "--previous").flatMap { arguments[safe: $0 + 1] })
+            return
+        }
+        if let index = arguments.firstIndex(of: "--interject-eval") {
+            runInterjectEval(cases: arguments[safe: index + 1] ?? "", out: arguments[safe: index + 2] ?? "")
             return
         }
 
@@ -987,6 +1003,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lastSegmentTick = CFAbsoluteTimeGetCurrent()
         toggleStartedAt = lastSegmentTick
         toggleSegmentsSent = 0
+        interject.reset()
         // 必须在起录时抓，不能等转写回来 —— 那时用户多半已经切走了。
         pasteTarget = PasteTarget.current()
         Log.write("toggle: 粘贴目标=\(pasteTarget?.appName ?? "无")")
@@ -1060,19 +1077,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         Log.write("\(tag): 采集完成 \(audio.data.count) 字节 / \(audio.durationMs) ms")
-        transcribeAndInsert(audio, target: target)
+        transcribeAndInsert(audio, target: target, interjecting: tag.hasPrefix("toggle"))
     }
 
     // MARK: - 转写 → 加工 → 粘贴
 
     /// 转写（云端或本地，见 `Transcriber`）→ 加工 → 送回起录时的那个窗口。
     /// 加工那一段九个预设都在，见 `PostProcessingCoordinator`。
-    private func transcribeAndInsert(_ audio: RecordedAudio, target: PasteTarget?) {
+    private func transcribeAndInsert(_ audio: RecordedAudio, target: PasteTarget?, interjecting: Bool = false) {
         let durationMs = audio.durationMs
         let settings = store.settings
         let modelID = settings.selectedLocalModelId
         let name = Transcriber.label(for: settings)
-        notch.show(state: .transcribing, message: "\(name) 转写中")
+        if !notchHeld { notch.show(state: .transcribing, message: "\(name) 转写中") }
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("inkfall-take-\(UUID().uuidString).wav")
@@ -1100,7 +1117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     AppDelegate.shared?.lockSessionLanguage(outcome.result.language, policy: policy)
                     AppDelegate.shared?.pendingTranscriptionNotice = outcome.notice
                     AppDelegate.shared?.deliver(outcome.result, into: target, durationMs: durationMs,
-                                                route: outcome.route)
+                                                route: outcome.route, interjecting: interjecting)
                 }
             } catch {
                 Log.write("transcribe: 失败 \(error)")
@@ -1122,7 +1139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func deliver(_ result: LocalTranscriber.Result, into target: PasteTarget?,
-                         durationMs: UInt64, route: String = "local") {
+                         durationMs: UInt64, route: String = "local", interjecting: Bool = false) {
         guard !result.text.trimmingCharacters(in: .whitespaces).isEmpty else {
             flash(.cancelled, "没听清", seconds: 1.2)
             takeFinished()
@@ -1131,6 +1148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.write(String(format: "transcribe: %@ %.2fs lang=%@ → %d 字",
                          route, result.elapsed, result.language ?? "?", result.text.count))
         scheduleModelUnload()
+        if interjecting { startInterjection(result.text) }
 
         // 加工可能要一次网络往返或 fork 一个 claude，所以整条尾巴是异步的。
         // 不加工的分支不会真的挂起，行为和以前一样立刻粘出去。
@@ -1147,6 +1165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 settings: store.settings,
                 durationMs: durationMs,
                 onRemoteStart: { [weak self] preset in
+                    guard self?.notchHeld == false else { return }
                     self?.notch.show(state: .processing, message: "\(preset.label) · 加工中")
                 })
             if let judgement = await judged.value {
@@ -1177,6 +1196,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 试做：旁路核对这一段。不等它、不改粘贴；说错了就在刘海上纠正一句，其余只进日志。
+    private func startInterjection(_ text: String) {
+        guard interject.hasGateKey else { return }
+        let index = interject.register(text)
+        let transcribedAt = CFAbsoluteTimeGetCurrent()
+        let settings = store.settings
+        Task { [interject] in
+            let outcome = await interject.run(segment: text, settings: settings)
+            let gate = outcome.gate.map { String(format: "complete=%.2f claim=%.2f", $0.complete, $0.claim) } ?? "无"
+            guard let check = outcome.check else {
+                Log.write("interject: \(gate) \(outcome.gateMs)ms → \(outcome.stoppedAt ?? "?")")
+                return
+            }
+            let delay = CFAbsoluteTimeGetCurrent() - transcribedAt
+            let decision = interject.decide(check, delay: delay, laterSegments: interject.segments(after: index))
+            let verdict: String
+            switch decision {
+            case .show(let correction): verdict = "shown「\(correction)」"
+            case .drop(let reason): verdict = "dropped(\(reason.rawValue))"
+            }
+            Log.write(String(format: "interject: %@ %dms · %@ %@ wrong=%@ p=%.2f %dms · %.1fs → %@ · %@",
+                             gate, outcome.gateMs, outcome.route, check.kind.rawValue, check.wrong ? "y" : "n",
+                             check.confidence, outcome.checkMs, delay, verdict, check.detail))
+            if case .show(let correction) = decision { self.showCorrection(correction) }
+        }
+    }
+
+    private func showCorrection(_ correction: String) {
+        let seconds = 4.0
+        notchHoldUntil = 0
+        flash(.error, "纠正：\(correction)", seconds: seconds)
+        notchHoldUntil = CFAbsoluteTimeGetCurrent() + seconds
+    }
+
+    private var notchHeld: Bool { CFAbsoluteTimeGetCurrent() < notchHoldUntil }
+
     /// 加工结果 → 剪贴板/目标窗口。降级提示先说，再粘。
     private func insert(_ outcome: PostProcessingCoordinator.Outcome, into target: PasteTarget?) {
         let text = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1193,7 +1248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingTranscriptionNotice = nil
 
         let options = PasteOptions(settings: store.settings)
-        notch.show(state: .processing, message: options.autoPasteEnabled ? "粘贴中" : "复制中")
+        if !notchHeld { notch.show(state: .processing, message: options.autoPasteEnabled ? "粘贴中" : "复制中") }
         // ⚠️ 插入路径里是一连串 `Thread.sleep`（等剪贴板、等激活、等目标读完）。
         // 放主线程会把刘海动画连同整个 UI 冻住半秒以上，所以丢到后台队列。
         DispatchQueue.global(qos: .userInitiated).async {
@@ -1406,6 +1461,100 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 自测 / 评测用的核对路：`--provider` / `--model` 覆盖，只活在内存里。
+    private func interjectRouteForSelfTest() async -> PostProcessor.Route? {
+        store.readOnly = true
+        let arguments = ProcessInfo.processInfo.arguments
+        store.settings.postProcessingEnabled = true
+        if let raw = arguments.firstIndex(of: "--provider").flatMap({ arguments[safe: $0 + 1] }),
+           let provider = CloudProvider(rawValue: raw) {
+            store.settings.postProcessingProvider = provider
+        }
+        if store.settings.postProcessingPreset.isLocal { store.settings.postProcessingPreset = .light }
+        guard let route = await interject.checkRoute(settings: store.settings) else { return nil }
+        if let model = arguments.firstIndex(of: "--model").flatMap({ arguments[safe: $0 + 1] }),
+           case .cloud(let provider, _, let key) = route {
+            return .cloud(provider: provider, model: model, key: key)
+        }
+        return route
+    }
+
+    private func runInterjectTest(text: String, previous: String?) {
+        selfTest = true
+        let sample = text.isEmpty || text.hasPrefix("--") ? "苹果是一种蔬菜，我每天都吃" : text
+        Task { [interject] in
+            let route = await interjectRouteForSelfTest()
+            let outcome = await interject.judge(segment: sample, previous: previous.map { [$0] } ?? [], route: route)
+            emit("segment=\(sample)")
+            if let gate = outcome.gate {
+                emit(String(format: "Jev complete=%.2f claim=%.2f %dms", gate.complete, gate.claim, outcome.gateMs))
+            }
+            if let check = outcome.check {
+                emit(String(format: "%@ %dms kind=%@ wrong=%@ p=%.2f", outcome.route, outcome.checkMs,
+                            check.kind.rawValue, check.wrong ? "y" : "n", check.confidence))
+                emit("correction=\(check.correction) detail=\(check.detail)")
+                let decision = interject.decide(check, delay: 1, laterSegments: [])
+                emit("→ \(decision)")
+            } else {
+                emit("停在 \(outcome.stoppedAt ?? "?")")
+            }
+            Log.flush()
+            exit(0)
+        }
+    }
+
+    /// 评测：cases.json = [{"id", "previous": [..], "text"}]，逐条跑（4 条并行），结果写 out.json。
+    private func runInterjectEval(cases: String, out: String) {
+        selfTest = true
+        struct Case: Decodable { let id: String; let previous: [String]; let text: String }
+        guard let data = FileManager.default.contents(atPath: cases),
+              let items = try? JSONDecoder().decode([Case].self, from: data), !out.isEmpty else {
+            emit("用法：--interject-eval <cases.json> <out.json>")
+            exit(2)
+        }
+        let skipGate = ProcessInfo.processInfo.arguments.contains("--no-gate")
+        Task { [interject] in
+            let route = await interjectRouteForSelfTest()
+            if !skipGate && !interject.hasGateKey { emit("没有 TypeSafe key"); exit(1) }
+            emit("route=\(route.map { "\($0)".components(separatedBy: "key:").first ?? "" } ?? "无") cases=\(items.count) gate=\(!skipGate)")
+            var rows: [[String: Any]] = []
+            for chunk in stride(from: 0, to: items.count, by: 4).map({ Array(items[$0..<min($0 + 4, items.count)]) }) {
+                let tasks = chunk.map { item in
+                    Task { @MainActor in
+                        await interject.judge(segment: item.text, previous: item.previous,
+                                              route: route, skipGate: skipGate)
+                    }
+                }
+                var outcomes: [InterjectionProbe.Outcome] = []
+                for task in tasks { outcomes.append(await task.value) }
+                // 免费档的加工 key 有每分钟请求数上限（Groq 429），评测按 `--pace <秒>` 一组一组放。
+                if let pace = ProcessInfo.processInfo.arguments.firstIndex(of: "--pace")
+                    .flatMap({ ProcessInfo.processInfo.arguments[safe: $0 + 1] }).flatMap(Double.init) {
+                    try? await Task.sleep(nanoseconds: UInt64(pace * 1_000_000_000))
+                }
+                for (item, outcome) in zip(chunk, outcomes) {
+                    var row: [String: Any] = ["id": item.id, "text": item.text, "route": outcome.route,
+                                              "gate_ms": outcome.gateMs, "check_ms": outcome.checkMs,
+                                              "stopped": outcome.stoppedAt ?? ""]
+                    if let gate = outcome.gate { row["complete"] = gate.complete; row["claim"] = gate.claim }
+                    if let check = outcome.check {
+                        row["wrong"] = check.wrong; row["kind"] = check.kind.rawValue
+                        row["confidence"] = check.confidence; row["correction"] = check.correction
+                        row["detail"] = check.detail
+                        var fresh = InterjectionPolicy()  // 评测看单句，不带冷却
+                        if case .show = fresh.decide(check, delay: 1, laterSegments: [], now: Date()) { row["shown"] = true }
+                    }
+                    rows.append(row)
+                    emit("\(item.id) \(outcome.stoppedAt ?? outcome.check.map { "\($0.kind.rawValue) \($0.correction)" } ?? "")")
+                }
+            }
+            let json = try? JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
+            FileManager.default.createFile(atPath: out, contents: json)
+            Log.flush()
+            exit(0)
+        }
+    }
+
     private func runProcessTest(text: String) {
         selfTest = true
         // ⚠️ 自测期间禁止落盘，否则临时改的开关会写进用户的 settings.json
@@ -1493,6 +1642,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ? Int(CFAbsoluteTimeGetCurrent() - toggleStartedAt)
             : Int(recorder.takeDurationSeconds)
         guard whole != lastHoldNotchSecond else { return }
+        guard !notchHeld else { return }
         lastHoldNotchSecond = whole
         // ⚠️ 切换录音的前缀必须在这里也带上。这个函数 30 Hz 在跑，
         // `beginToggle()` 写的那行会在第一拍就被它盖掉。
@@ -1509,6 +1659,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func flash(_ state: OverlayState, _ message: String, seconds: Double) {
+        // 纠正还挂在刘海上：后面那段的「已粘回 X」之类不去盖它。
+        guard !notchHeld else { return }
         hideTimer?.invalidate()
         notch.show(state: state, message: message)
         hideTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { _ in
