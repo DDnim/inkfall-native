@@ -41,6 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingIntentNotice: String?
     /// 试做：每段问一次 Jev「是不是在叫助手」，只记日志 + 提示，不改粘贴。
     private let intent = AssistantIntentProbe()
+    /// 试做：Jev 判成 call 的话交给 Obsidian 看板去做，不粘贴。
+    private let kanban = KanbanHandoff()
 
     /// 录音**开始那一刻**的前台窗口。等转写回来再看前台是谁，就粘到别人窗口里了。
     private var pasteTarget: PasteTarget?
@@ -1074,7 +1076,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 加工可能要一次网络往返或 fork 一个 claude，所以整条尾巴是异步的。
         // 不加工的分支不会真的挂起，行为和以前一样立刻粘出去。
-        Task { [processing, store, intent] in
+        Task { [processing, store, intent, kanban] in
             // Jev 与加工并行跑；没 key 就不问。最多等 `AssistantIntentProbe.timeout`。
             let judged = Task { [text = result.text] in
                 intent.isEnabled
@@ -1096,6 +1098,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  AssistantIntentAPI.appKind(bundleID: target?.bundleID)))
                 self.pendingIntentNotice = judgement.verdict == .text ? nil
                     : String(format: "Jev：%@ %.2f", judgement.verdict.label, judgement.p)
+                // call → 交给看板（原话，不用加工后的：加工会改写请求本身）。
+                // 看板不通就照常粘贴，文字不能丢。
+                if judgement.verdict == .call {
+                    self.notch.show(state: .processing, message: "交给看板中")
+                    if let card = await kanban.send(result.text) {
+                        Log.write(String(format: "kanban: 已起卡 p=%.2f %@", judgement.p, card))
+                        self.pendingIntentNotice = nil
+                        self.flash(.success, String(format: "已交给看板 %.2f：%@", judgement.p, card),
+                                   seconds: 2.6)
+                        return
+                    }
+                    self.pendingIntentNotice = String(format: "Jev %.2f，看板没连上，已照常粘贴", judgement.p)
+                }
             }
             self.insert(outcome, into: target)
         }

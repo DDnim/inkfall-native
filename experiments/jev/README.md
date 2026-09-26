@@ -97,3 +97,14 @@ Jev 是 early access 的云 API：离线不可用、按量计费，要进 App �
 - 自测：`Inkfall --intent-test "<文字>" [--bundle com.apple.Terminal]`
 - 代价：不加工时粘贴要多等 Jev 一次（p50 约 200ms，最多 0.8 秒）
 - 真机上说一阵之后，`grep intent: ` 日志就是真实录音的回放数据（上面「局限」说缺的那份）
+
+### 接上看板（2026-09-27）
+
+判成 **call（≥ 0.6）** 的那段话不再粘贴，原话交给 Obsidian 看板：md-kanban mobile control 的
+`POST 127.0.0.1:<port>/api/create`（`mode: "work-only"`、`project: ""` = 全体），起一张卡并直接派发。
+刘海显示「已交给看板 0.83：<卡片名>」。ask / text 照旧粘贴。
+
+- 端口与 token 每次现读 `~/repos/Memo/.obsidian/plugins/md-kanban/data.json` 的 `mobileControl`（`INKFALL_KANBAN_VAULT` 可改 vault）
+- Obsidian 没开 / 没开 mobile control / 1.5 秒不回 → 照常粘贴，刘海说「看板没连上」
+- 送的是**加工前**的原话（加工会改写请求本身）
+- 代码：`InkfallCore/Net/KanbanHandoffAPI.swift`（单测 `KanbanHandoffTests`）、`App/Pipeline/KanbanHandoff.swift`
