@@ -1162,8 +1162,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.notch.show(state: .processing, message: "打开看板起票")
                     if await kanban.send(result.text) {
                         Log.write(String(format: "kanban: 已打开起票 p=%.2f", judgement.p))
+                        // 同一段话也放进剪贴板：起票面板之外还想贴到别处时不用再说一遍。
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(result.text, forType: .string)
                         self.pendingIntentNotice = nil
-                        self.flash(.success, String(format: "已放进看板起票 %.2f", judgement.p), seconds: 2.0)
+                        self.flash(.success, String(format: "已放进看板起票并复制 %.2f", judgement.p), seconds: 2.0)
                         self.takeFinished()
                         return
                     }
