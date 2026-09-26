@@ -1,0 +1,1076 @@
+{
+ "seg": [
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "明天下午三点开会，记得把上周的数据带上",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.86,
+   "ms": 227
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "这个方案我觉得可以直接上线",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.78,
+   "ms": 238
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "帮我把这段话改得正式一点",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.76,
+   "ms": 236
+  },
+  {
+   "lang": "zh",
+   "previous": "我们先看一下上个月的数据。",
+   "segment": "整体来说转化率涨了百分之五",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.74,
+   "ms": 215
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "好的没问题",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.78,
+   "ms": 244
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "为什么这个接口每次都超时呢",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.8,
+   "ms": 212
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "第一点是性能，第二点是稳定性，第三点是成本",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.72,
+   "ms": 226
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "明日の会議は十時からに変更になりました",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.87,
+   "ms": 184
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "この件については来週改めて相談させてください",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.82,
+   "ms": 208
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "了解です",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.78,
+   "ms": 169
+  },
+  {
+   "lang": "en",
+   "previous": "",
+   "segment": "Let's ship this on Friday",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.82,
+   "ms": 226
+  },
+  {
+   "lang": "en",
+   "previous": "",
+   "segment": "I think the bug is in the retry logic",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.66,
+   "ms": 164
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "我今天用 Claude Code 重构了半个项目效果还不错",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.75,
+   "ms": 192
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "如果明天下雨的话我们就改到线上开",
+   "punct": false,
+   "gold": true,
+   "hard": false,
+   "p": 0.81,
+   "ms": 189
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "我觉得这个方案的问题在于",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.09,
+   "ms": 201
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "然后我们",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.1,
+   "ms": 222
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "因为上周的数据显示",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.08,
+   "ms": 177
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "这个功能主要是给那些",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.09,
+   "ms": 190
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "嗯就是说",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.13,
+   "ms": 176
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "第一点是性能，第二点是",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.11,
+   "ms": 239
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "如果明天下雨的话",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.09,
+   "ms": 188
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "我想跟你确认一下关于",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.09,
+   "ms": 226
+  },
+  {
+   "lang": "zh",
+   "previous": "我们先看一下上个月的数据。",
+   "segment": "整体来说转化率",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.11,
+   "ms": 206
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "所以",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.13,
+   "ms": 184
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "明日の会議なんですが",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.14,
+   "ms": 200
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "この件については",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.17,
+   "ms": 176
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "えっと、それで",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.13,
+   "ms": 174
+  },
+  {
+   "lang": "en",
+   "previous": "",
+   "segment": "I think the bug is in the",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.07,
+   "ms": 177
+  },
+  {
+   "lang": "en",
+   "previous": "",
+   "segment": "Let's ship this on Friday but",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.08,
+   "ms": 229
+  },
+  {
+   "lang": "en",
+   "previous": "",
+   "segment": "So the reason we",
+   "punct": false,
+   "gold": false,
+   "hard": false,
+   "p": 0.07,
+   "ms": 187
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "明天下午三点开会，记得把上周的数据带上",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.87,
+   "ms": 208
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "这个方案我觉得可以直接上线",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.82,
+   "ms": 178
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "帮我把这段话改得正式一点",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.8,
+   "ms": 178
+  },
+  {
+   "lang": "zh",
+   "previous": "我们先看一下上个月的数据。",
+   "segment": "整体来说转化率涨了百分之五",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.79,
+   "ms": 186
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "好的没问题",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.81,
+   "ms": 194
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "为什么这个接口每次都超时呢",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.81,
+   "ms": 183
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "第一点是性能，第二点是稳定性，第三点是成本",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.78,
+   "ms": 174
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "明日の会議は十時からに変更になりました",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.88,
+   "ms": 188
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "この件については来週改めて相談させてください",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.84,
+   "ms": 177
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "了解です",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.82,
+   "ms": 170
+  },
+  {
+   "lang": "en",
+   "previous": "",
+   "segment": "Let's ship this on Friday",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.86,
+   "ms": 193
+  },
+  {
+   "lang": "en",
+   "previous": "",
+   "segment": "I think the bug is in the retry logic",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.74,
+   "ms": 196
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "我今天用 Claude Code 重构了半个项目效果还不错",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.78,
+   "ms": 209
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "如果明天下雨的话我们就改到线上开",
+   "punct": true,
+   "gold": true,
+   "hard": false,
+   "p": 0.84,
+   "ms": 177
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "我觉得这个方案的问题在于",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.1,
+   "ms": 178
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "然后我们",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.09,
+   "ms": 186
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "因为上周的数据显示",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.13,
+   "ms": 217
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "这个功能主要是给那些",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.08,
+   "ms": 203
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "嗯就是说",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.16,
+   "ms": 190
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "第一点是性能，第二点是",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.12,
+   "ms": 214
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "如果明天下雨的话",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.1,
+   "ms": 194
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "我想跟你确认一下关于",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.09,
+   "ms": 193
+  },
+  {
+   "lang": "zh",
+   "previous": "我们先看一下上个月的数据。",
+   "segment": "整体来说转化率",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.18,
+   "ms": 203
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "所以",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.28,
+   "ms": 198
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "明日の会議なんですが",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.2,
+   "ms": 225
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "この件については",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.23,
+   "ms": 220
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "えっと、それで",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.15,
+   "ms": 198
+  },
+  {
+   "lang": "en",
+   "previous": "",
+   "segment": "I think the bug is in the",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.09,
+   "ms": 186
+  },
+  {
+   "lang": "en",
+   "previous": "",
+   "segment": "Let's ship this on Friday but",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.07,
+   "ms": 176
+  },
+  {
+   "lang": "en",
+   "previous": "",
+   "segment": "So the reason we",
+   "punct": true,
+   "gold": false,
+   "hard": false,
+   "p": 0.07,
+   "ms": 185
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "对",
+   "punct": false,
+   "gold": true,
+   "hard": true,
+   "p": 0.32,
+   "ms": 189
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "行吧明天再说",
+   "punct": false,
+   "gold": true,
+   "hard": true,
+   "p": 0.78,
+   "ms": 186
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "这个我不同意",
+   "punct": false,
+   "gold": true,
+   "hard": true,
+   "p": 0.68,
+   "ms": 185
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "有三个问题需要讨论",
+   "punct": false,
+   "gold": true,
+   "hard": true,
+   "p": 0.65,
+   "ms": 218
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "そうですね",
+   "punct": false,
+   "gold": true,
+   "hard": true,
+   "p": 0.48,
+   "ms": 172
+  },
+  {
+   "lang": "en",
+   "previous": "",
+   "segment": "git push origin main",
+   "punct": false,
+   "gold": true,
+   "hard": true,
+   "p": 0.82,
+   "ms": 177
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "他说",
+   "punct": false,
+   "gold": false,
+   "hard": true,
+   "p": 0.26,
+   "ms": 187
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "我昨天看到那个",
+   "punct": false,
+   "gold": false,
+   "hard": true,
+   "p": 0.11,
+   "ms": 179
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "不是因为贵而是",
+   "punct": false,
+   "gold": false,
+   "hard": true,
+   "p": 0.11,
+   "ms": 198
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "这个 bug 其实是",
+   "punct": false,
+   "gold": false,
+   "hard": true,
+   "p": 0.1,
+   "ms": 199
+  },
+  {
+   "lang": "zh",
+   "previous": "",
+   "segment": "有三个问题，第一个",
+   "punct": false,
+   "gold": false,
+   "hard": true,
+   "p": 0.13,
+   "ms": 224
+  },
+  {
+   "lang": "ja",
+   "previous": "",
+   "segment": "それはつまり",
+   "punct": false,
+   "gold": false,
+   "hard": true,
+   "p": 0.14,
+   "ms": 188
+  },
+  {
+   "lang": "en",
+   "previous": "",
+   "segment": "The main reason is",
+   "punct": false,
+   "gold": false,
+   "hard": true,
+   "p": 0.1,
+   "ms": 189
+  }
+ ],
+ "intent": [
+  {
+   "app": "Terminal",
+   "text": "Claude，帮我把这个函数重构一下",
+   "gold": true,
+   "hard": false,
+   "p": 0.91,
+   "kind": "assistant",
+   "kw": true,
+   "ms": 217
+  },
+  {
+   "app": "VS Code",
+   "text": "嘿 Claude，跑一下测试看看有没有挂",
+   "gold": true,
+   "hard": false,
+   "p": 0.91,
+   "kind": "assistant",
+   "kw": true,
+   "ms": 189
+  },
+  {
+   "app": "Notes",
+   "text": "Claude 帮我把刚才那段翻译成日语",
+   "gold": true,
+   "hard": false,
+   "p": 0.93,
+   "kind": "assistant",
+   "kw": true,
+   "ms": 213
+  },
+  {
+   "app": "Terminal",
+   "text": "クロード、このブランチのテストを回して",
+   "gold": true,
+   "hard": false,
+   "p": 0.91,
+   "kind": "assistant",
+   "kw": true,
+   "ms": 215
+  },
+  {
+   "app": "VS Code",
+   "text": "Hey Claude, open a PR for this branch",
+   "gold": true,
+   "hard": false,
+   "p": 0.88,
+   "kind": "assistant",
+   "kw": true,
+   "ms": 199
+  },
+  {
+   "app": "Notes",
+   "text": "今天会议的要点如下，第一预算不变，第二下周上线。Claude，帮我把这段整理成要点",
+   "gold": true,
+   "hard": false,
+   "p": 0.9,
+   "kind": "assistant",
+   "kw": true,
+   "ms": 188
+  },
+  {
+   "app": "Terminal",
+   "text": "帮我看一下为什么构建失败了",
+   "gold": true,
+   "hard": false,
+   "p": 0.89,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 193
+  },
+  {
+   "app": "VS Code",
+   "text": "把这个文件里所有的 print 都删掉",
+   "gold": true,
+   "hard": false,
+   "p": 0.85,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 180
+  },
+  {
+   "app": "Notes",
+   "text": "把刚才那段改得正式一点",
+   "gold": true,
+   "hard": false,
+   "p": 0.86,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 183
+  },
+  {
+   "app": "Terminal",
+   "text": "查一下这个仓库最近一周谁提交最多",
+   "gold": true,
+   "hard": false,
+   "p": 0.85,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 173
+  },
+  {
+   "app": "Safari",
+   "text": "总结一下这个网页讲了什么",
+   "gold": true,
+   "hard": false,
+   "p": 0.85,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 183
+  },
+  {
+   "app": "VS Code",
+   "text": "run the tests and tell me what failed",
+   "gold": true,
+   "hard": false,
+   "p": 0.87,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 175
+  },
+  {
+   "app": "Notes",
+   "text": "我昨天用 Claude Code 重构了半个项目，效果还不错",
+   "gold": false,
+   "hard": false,
+   "p": 0.04,
+   "kind": "dictation",
+   "kw": true,
+   "ms": 181
+  },
+  {
+   "app": "Slack",
+   "text": "Claude 这个名字挺好听的",
+   "gold": false,
+   "hard": false,
+   "p": 0.06,
+   "kind": "dictation",
+   "kw": true,
+   "ms": 218
+  },
+  {
+   "app": "Notes",
+   "text": "I told Claude to open a PR but it failed",
+   "gold": false,
+   "hard": false,
+   "p": 0.09,
+   "kind": "dictation",
+   "kw": true,
+   "ms": 185
+  },
+  {
+   "app": "Slack",
+   "text": "你们有人试过让 Claude 自动跑测试吗",
+   "gold": false,
+   "hard": false,
+   "p": 0.13,
+   "kind": "dictation",
+   "kw": true,
+   "ms": 194
+  },
+  {
+   "app": "Slack",
+   "text": "请大家在周五之前把周报发给我",
+   "gold": false,
+   "hard": false,
+   "p": 0.05,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 180
+  },
+  {
+   "app": "Slack",
+   "text": "你帮我看一下这个 PR 有没有问题",
+   "gold": false,
+   "hard": false,
+   "p": 0.83,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 168
+  },
+  {
+   "app": "Mail",
+   "text": "田中さん、お疲れ様です。明日の会議の資料を送ります",
+   "gold": false,
+   "hard": false,
+   "p": 0.04,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 203
+  },
+  {
+   "app": "Mail",
+   "text": "Please review the attached contract and let me know by Monday",
+   "gold": false,
+   "hard": false,
+   "p": 0.18,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 215
+  },
+  {
+   "app": "Notes",
+   "text": "明天记得买牛奶和鸡蛋",
+   "gold": false,
+   "hard": false,
+   "p": 0.17,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 187
+  },
+  {
+   "app": "Notes",
+   "text": "这个方案的核心是把转写和加工拆成两步",
+   "gold": false,
+   "hard": false,
+   "p": 0.09,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 201
+  },
+  {
+   "app": "Notes",
+   "text": "整体来说转化率涨了百分之五",
+   "gold": false,
+   "hard": false,
+   "p": 0.05,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 181
+  },
+  {
+   "app": "Slack",
+   "text": "好的没问题，我下午处理",
+   "gold": false,
+   "hard": false,
+   "p": 0.12,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 198
+  },
+  {
+   "app": "Notes",
+   "text": "今日は天気がいいので散歩に行きました",
+   "gold": false,
+   "hard": false,
+   "p": 0.03,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 191
+  },
+  {
+   "app": "Slack",
+   "text": "帮我看一下为什么构建失败了",
+   "gold": false,
+   "hard": false,
+   "p": 0.77,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 220
+  },
+  {
+   "app": "Terminal",
+   "text": "你帮我看一下这个 PR 有没有问题",
+   "gold": true,
+   "hard": false,
+   "p": 0.88,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 215
+  },
+  {
+   "app": "Terminal",
+   "text": "修复登录页在 iPad 上布局错乱的问题",
+   "gold": false,
+   "hard": true,
+   "p": 0.73,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 238
+  },
+  {
+   "app": "Notes",
+   "text": "给 Claude 的提示词写成：请帮我把这个函数重构一下",
+   "gold": false,
+   "hard": true,
+   "p": 0.43,
+   "kind": "dictation",
+   "kw": true,
+   "ms": 228
+  },
+  {
+   "app": "Slack",
+   "text": "Claude 说测试都过了",
+   "gold": false,
+   "hard": true,
+   "p": 0.09,
+   "kind": "dictation",
+   "kw": true,
+   "ms": 198
+  },
+  {
+   "app": "Notes",
+   "text": "Claude 你觉得这个方案怎么样",
+   "gold": true,
+   "hard": true,
+   "p": 0.74,
+   "kind": "dictation",
+   "kw": true,
+   "ms": 194
+  },
+  {
+   "app": "Mail",
+   "text": "翻译成英文：我明天请假",
+   "gold": true,
+   "hard": true,
+   "p": 0.72,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 216
+  },
+  {
+   "app": "Notes",
+   "text": "等一下，把上一句删掉",
+   "gold": true,
+   "hard": true,
+   "p": 0.75,
+   "kind": "assistant",
+   "kw": false,
+   "ms": 172
+  },
+  {
+   "app": "Notes",
+   "text": "帮我记一下，下周试试 Jev",
+   "gold": false,
+   "hard": true,
+   "p": 0.53,
+   "kind": "dictation",
+   "kw": false,
+   "ms": 201
+  }
+ ]
+}
