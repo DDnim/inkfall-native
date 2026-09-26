@@ -1,6 +1,6 @@
 # Jev 实验：断句 & 叫助手判定（2026-09-26）
 
-分支 `exp/jev-segment-intent`。只有离线评测脚本，没有改 App。
+分支 `exp/jev-segment-intent`。离线评测脚本 + ②' 的 App 试做（见文末）。
 
 - `cases.py` — 手写用例（断句 30 + 难例 13，叫助手 27 + 难例 7 + 验证集 14）
 - `run.py` — 调 TypeSafe Jev（`jev-latest`，`/v1/systemone`），结果写 `results.json`
@@ -85,3 +85,15 @@ Jev 是 early access 的云 API：离线不可用、按量计费，要进 App �
 ## 局限
 
 用例是手写的、量小、标签是一个人定的。下一步应该用真实录音的切段日志（带时间戳的转写）回放。
+
+## App 试做：叫助手判定接进听写（2026-09-26）
+
+减法版没有助手可叫，所以只是**影子模式**：每段转写完，与加工并行问一次 Jev（v2 提问 + `app_kind`），
+写日志 `intent: p=… → call|ask|text`，判成 call / ask 时在刘海「已粘回 X」后面加一句「Jev：像在叫助手 0.83」。
+**粘贴行为不变**；没 key、超时（0.8 秒）、HTTP 失败都当没问过。
+
+- 纯逻辑：`Packages/InkfallCore/Sources/InkfallCore/Net/AssistantIntentAPI.swift`（提问逐字抄 `INTENT_Q2`、三段式、bundle ID → app_kind 表），单测 `AssistantIntentTests`
+- 网络：`App/Pipeline/AssistantIntentProbe.swift`，key 同上（`TYPESAFE_API_KEY` 或 `~/.config/typesafe/api_key`）
+- 自测：`Inkfall --intent-test "<文字>" [--bundle com.apple.Terminal]`
+- 代价：不加工时粘贴要多等 Jev 一次（p50 约 200ms，最多 0.8 秒）
+- 真机上说一阵之后，`grep intent: ` 日志就是真实录音的回放数据（上面「局限」说缺的那份）

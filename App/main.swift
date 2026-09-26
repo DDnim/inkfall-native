@@ -37,6 +37,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pendingProcessingNotice: (text: String, isProblem: Bool)?
     /// 转写那一步的提示（云端没连上、没配 key 时的降级）。加工没话说时才轮到它。
     private var pendingTranscriptionNotice: String?
+    /// 试做：Jev 判出「像在叫助手」时的那句话。同样攒到粘贴结果那一刻说。
+    private var pendingIntentNotice: String?
+    /// 试做：每段问一次 Jev「是不是在叫助手」，只记日志 + 提示，不改粘贴。
+    private let intent = AssistantIntentProbe()
 
     /// 录音**开始那一刻**的前台窗口。等转写回来再看前台是谁，就粘到别人窗口里了。
     private var pasteTarget: PasteTarget?
@@ -93,6 +97,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let index = arguments.firstIndex(of: "--process-test") {
             let next = arguments[safe: index + 1] ?? ""
             runProcessTest(text: next.hasPrefix("--") ? "" : next)
+            return
+        }
+
+        // 叫助手判定自测（试做）：`--intent-test "<文字>" [--bundle <bundle ID>]`，真发一次 Jev。
+        if let index = arguments.firstIndex(of: "--intent-test") {
+            runIntentTest(text: arguments[safe: index + 1] ?? "",
+                          bundleID: arguments.firstIndex(of: "--bundle").flatMap { arguments[safe: $0 + 1] })
             return
         }
 
@@ -1063,7 +1074,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 加工可能要一次网络往返或 fork 一个 claude，所以整条尾巴是异步的。
         // 不加工的分支不会真的挂起，行为和以前一样立刻粘出去。
-        Task { [processing, store] in
+        Task { [processing, store, intent] in
+            // Jev 与加工并行跑；没 key 就不问。最多等 `AssistantIntentProbe.timeout`。
+            let judged = Task { [text = result.text] in
+                intent.isEnabled
+                    ? await intent.judge(text: text, appName: target?.appName ?? "unknown",
+                                         bundleID: target?.bundleID)
+                    : nil
+            }
             let outcome = await processing.process(
                 result.text,
                 settings: store.settings,
@@ -1071,6 +1089,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onRemoteStart: { [weak self] preset in
                     self?.notch.show(state: .processing, message: "\(preset.label) · 加工中")
                 })
+            if let judgement = await judged.value {
+                Log.write(String(format: "intent: p=%.2f → %@ %dms app=%@ kind=%@",
+                                 judgement.p, judgement.verdict.rawValue, judgement.elapsedMs,
+                                 target?.appName ?? "无",
+                                 AssistantIntentAPI.appKind(bundleID: target?.bundleID)))
+                self.pendingIntentNotice = judgement.verdict == .text ? nil
+                    : String(format: "Jev：%@ %.2f", judgement.verdict.label, judgement.p)
+            }
             self.insert(outcome, into: target)
         }
     }
@@ -1115,6 +1141,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 seconds = 3.4
             }
             pendingProcessingNotice = nil
+        }
+        if let notice = pendingIntentNotice {
+            message += " · \(notice)"
+            seconds = max(seconds, 2.6)
+            pendingIntentNotice = nil
         }
         flash(state, message, seconds: seconds)
         guard result.outcome.needsAccessibilityPrompt else { return }
@@ -1270,6 +1301,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Log.flush()
                 exit(1)
             }
+        }
+    }
+
+    private func runIntentTest(text: String, bundleID: String?) {
+        selfTest = true
+        guard intent.isEnabled else {
+            emit("没有 TypeSafe key（TYPESAFE_API_KEY 或 ~/.config/typesafe/api_key）")
+            Log.flush()
+            exit(1)
+        }
+        let sample = text.isEmpty || text.hasPrefix("--") ? "帮我把刚才那段改得正式一点" : text
+        let appName = bundleID.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }?
+            .deletingPathExtension().lastPathComponent ?? "unknown"
+        emit("app=\(appName) kind=\(AssistantIntentAPI.appKind(bundleID: bundleID)) text=\(sample)")
+        Task { [intent] in
+            guard let judgement = await intent.judge(text: sample, appName: appName, bundleID: bundleID) else {
+                emit("Jev 没有回答（见日志）")
+                Log.flush()
+                exit(1)
+            }
+            emit(String(format: "p=%.2f → %@（%@）%dms", judgement.p, judgement.verdict.rawValue,
+                        judgement.verdict.label, judgement.elapsedMs))
+            Log.flush()
+            exit(0)
         }
     }
 
