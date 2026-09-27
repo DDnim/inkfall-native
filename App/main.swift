@@ -142,11 +142,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // 插话纠错自测（试做）：`--interject-test "<文字>" [--previous "<前文>"]`，真跑 Jev 门 + 加工模型核对。
+        // 助手模式自测（试做）：`--interject-test "<文字>"`，真跑 Jev 分流 + 回答 / 核对（不发看板）。
         // 评测：`--interject-eval <cases.json> <out.json> [--provider groq] [--model m] [--no-gate] [--pace 秒]`。
         if let index = arguments.firstIndex(of: "--interject-test") {
-            runInterjectTest(text: arguments[safe: index + 1] ?? "",
-                             previous: arguments.firstIndex(of: "--previous").flatMap { arguments[safe: $0 + 1] })
+            runInterjectTest(text: arguments[safe: index + 1] ?? "", previous: nil)
             return
         }
         if let index = arguments.firstIndex(of: "--interject-eval") {
@@ -1158,14 +1157,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         Log.write("\(tag): 采集完成 \(audio.data.count) 字节 / \(audio.durationMs) ms")
-        transcribeAndInsert(audio, target: target, interjecting: tag.hasPrefix("toggle"))
+        transcribeAndInsert(audio, target: target, pauseCut: tag == "toggle-seg")
     }
 
     // MARK: - 转写 → 加工 → 粘贴
 
     /// 转写（云端或本地，见 `Transcriber`）→ 加工 → 送回起录时的那个窗口。
     /// 加工那一段九个预设都在，见 `PostProcessingCoordinator`。
-    private func transcribeAndInsert(_ audio: RecordedAudio, target: PasteTarget?, interjecting: Bool = false) {
+    private func transcribeAndInsert(_ audio: RecordedAudio, target: PasteTarget?, pauseCut: Bool = false) {
         let durationMs = audio.durationMs
         let settings = store.settings
         let modelID = settings.selectedLocalModelId
@@ -1198,7 +1197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     AppDelegate.shared?.lockSessionLanguage(outcome.result.language, policy: policy)
                     AppDelegate.shared?.pendingTranscriptionNotice = outcome.notice
                     AppDelegate.shared?.deliver(outcome.result, into: target, durationMs: durationMs,
-                                                route: outcome.route, interjecting: interjecting)
+                                                route: outcome.route, pauseCut: pauseCut)
                 }
             } catch {
                 Log.write("transcribe: 失败 \(error)")
@@ -1220,7 +1219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func deliver(_ result: LocalTranscriber.Result, into target: PasteTarget?,
-                         durationMs: UInt64, route: String = "local", interjecting: Bool = false) {
+                         durationMs: UInt64, route: String = "local", pauseCut: Bool = false) {
         guard !result.text.trimmingCharacters(in: .whitespaces).isEmpty else {
             flash(.cancelled, "没听清", seconds: 1.2)
             takeFinished()
@@ -1229,18 +1228,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.write(String(format: "transcribe: %@ %.2fs lang=%@ → %d 字",
                          route, result.elapsed, result.language ?? "?", result.text.count))
         scheduleModelUnload()
-        if interjecting { startInterjection(result.text) }
 
-        // 加工可能要一次网络往返或 fork 一个 claude，所以整条尾巴是异步的。
+        // 加工可能要一次网络往返，所以整条尾巴是异步的。
         // 不加工的分支不会真的挂起，行为和以前一样立刻粘出去。
-        Task { [processing, store, intent, kanban] in
-            // Jev 与加工并行跑；没 key 就不问。最多等 `AssistantIntentProbe.timeout`。
-            let judged = Task { [text = result.text] in
-                intent.isEnabled
-                    ? await intent.judge(text: text, appName: target?.appName ?? "unknown",
-                                         bundleID: target?.bundleID)
-                    : nil
-            }
+        Task { [processing, store] in
             let outcome = await processing.process(
                 result.text,
                 settings: store.settings,
@@ -1249,90 +1240,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard self?.notchHeld == false else { return }
                     self?.notch.show(state: .processing, message: "\(preset.label) · 加工中")
                 })
-            // 助手模式：先记进历史（交给看板也记，这样历史里是完整的）。
-            let assistant = self.assistantMode
-            if assistant { self.recordAssistantTake(source: result.text, outcome: outcome) }
-            if let judgement = await judged.value {
-                Log.write(String(format: "intent: p=%.2f → %@ %dms app=%@ kind=%@",
-                                 judgement.p, judgement.verdict.rawValue, judgement.elapsedMs,
-                                 target?.appName ?? "无",
-                                 AssistantIntentAPI.appKind(bundleID: target?.bundleID)))
-                self.pendingIntentNotice = judgement.verdict == .text ? nil
-                    : String(format: "Jev：%@ %.2f", judgement.verdict.label, judgement.p)
-                // call → 放进看板的起票面板（原话，不用加工后的：加工会改写请求本身）。
-                // 看板不通就照常粘贴，文字不能丢。
-                if judgement.verdict == .call {
-                    self.notch.show(state: .processing, message: "打开看板起票")
-                    if await kanban.send(result.text) {
-                        Log.write(String(format: "kanban: 已打开起票 p=%.2f", judgement.p))
-                        // 同一段话也放进剪贴板：起票面板之外还想贴到别处时不用再说一遍。
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(result.text, forType: .string)
-                        self.pendingIntentNotice = nil
-                        self.flash(.success, String(format: "已放进看板起票并复制 %.2f", judgement.p), seconds: 2.0)
-                        self.takeFinished()
-                        return
-                    }
-                    self.pendingIntentNotice = String(format: "Jev %.2f，看板没连上，已照常粘贴", judgement.p)
-                }
-            }
-            if assistant {
-                // 不粘贴。提示攒着的话一起说。
-                var message = "已记进历史"
-                if let notice = self.pendingIntentNotice { message += " · \(notice)" }
-                self.pendingIntentNotice = nil
-                self.pendingProcessingNotice = nil
-                self.pendingTranscriptionNotice = nil
-                self.flash(.success, message, seconds: 1.6)
-                self.takeFinished()
+            // 输入模式：录音 → 转写 → 粘贴，别的都不做。
+            guard self.assistantMode else {
+                self.insert(outcome, into: target)
                 return
             }
-            self.insert(outcome, into: target)
+            // 助手模式：不粘贴，记进历史，放下一段进来；分流（任务 / 提问 / 纠错）在旁路跑。
+            self.recordAssistantTake(source: result.text, outcome: outcome)
+            self.pendingProcessingNotice = nil
+            self.pendingTranscriptionNotice = nil
+            self.flash(.success, "已记进历史", seconds: 1.2)
+            self.takeFinished()
+            self.startAssistant(result.text, pauseCut: pauseCut)
         }
     }
 
-    /// 试做：旁路核对这一段。不等它、不改粘贴；说错了就在刘海上纠正一句，其余只进日志。
-    private func startInterjection(_ text: String) {
-        guard interject.hasGateKey else { return }
+    /// 助手模式的三件事：布置任务 → 看板起票；提问 → 语音回答；说错 → 语音纠正。
+    private func startAssistant(_ text: String, pauseCut: Bool) {
+        guard interject.hasGateKey else {
+            Log.write("assistant: 没有 TypeSafe key，只记历史")
+            return
+        }
         let index = interject.register(text)
         let transcribedAt = CFAbsoluteTimeGetCurrent()
         let settings = store.settings
-        Task { [interject] in
-            let outcome = await interject.run(segment: text, settings: settings)
-            let gate = outcome.gate.map { String(format: "complete=%.2f claim=%.2f", $0.complete, $0.claim) } ?? "无"
-            guard let check = outcome.check else {
-                Log.write("interject: \(gate) \(outcome.gateMs)ms → \(outcome.stoppedAt ?? "?")")
-                return
+        Task { [interject, kanban] in
+            let outcome = await interject.run(segment: text, settings: settings, checkComplete: pauseCut)
+            let gate = outcome.gate.map {
+                String(format: "complete=%.2f task=%.2f question=%.2f claim=%.2f", $0.complete, $0.task, $0.question, $0.claim)
+            } ?? "无"
+            let head = "assistant: \(gate) \(outcome.gateMs)ms → \(outcome.route.rawValue)"
+            switch outcome.route {
+            case .task:
+                // 原话（不用加工后的），只打开起票面板，作成先和模型由境选。
+                self.notch.show(state: .processing, message: "打开看板起票")
+                if await kanban.send(outcome.segment) {
+                    Log.write("\(head) · 已打开看板起票")
+                    self.flash(.success, "已放进看板起票", seconds: 2.0)
+                } else {
+                    Log.write("\(head) · 看板没连上")
+                    self.flash(.error, "看板没连上，已记进历史", seconds: 2.4)
+                }
+
+            case .question:
+                guard let answer = outcome.answer else {
+                    Log.write("\(head) · \(outcome.stoppedAt ?? "?")")
+                    return
+                }
+                Log.write("\(head) · \(outcome.model) \(outcome.checkMs)ms 答「\(answer)」")
+                self.history.append(HistoryEntry(title: "回答", sourceText: outcome.segment, finalText: answer,
+                                                 transcriptionMode: settings.transcriptionMode,
+                                                 postProcessingEnabled: false, postProcessingPreset: nil))
+                self.rebuildHistoryMenu()
+                self.present(answer, prefix: "答：")
+
+            case .check:
+                guard let check = outcome.check else {
+                    Log.write("\(head) · \(outcome.stoppedAt ?? "?")")
+                    return
+                }
+                let delay = CFAbsoluteTimeGetCurrent() - transcribedAt
+                let decision = interject.decide(check, segment: outcome.segment, delay: delay,
+                                               laterSegments: interject.segments(after: index))
+                let verdict: String
+                switch decision {
+                case .show(let correction): verdict = "shown「\(correction)」"
+                case .drop(let reason): verdict = "dropped(\(reason.rawValue))"
+                }
+                Log.write(String(format: "%@ · %@ %@ wrong=%@ p=%.2f %dms · %.1fs → %@ · %@",
+                                 head, outcome.model, check.kind.rawValue, check.wrong ? "y" : "n",
+                                 check.confidence, outcome.checkMs, delay, verdict, check.detail))
+                if case .show(let correction) = decision { self.present(correction, prefix: "纠正：") }
+
+            case .incomplete, .none:
+                Log.write("\(head)\(outcome.stoppedAt.map { " · \($0)" } ?? "")")
             }
-            let delay = CFAbsoluteTimeGetCurrent() - transcribedAt
-            let decision = interject.decide(check, segment: outcome.segment, delay: delay,
-                                           laterSegments: interject.segments(after: index))
-            let verdict: String
-            switch decision {
-            case .show(let correction): verdict = "shown「\(correction)」"
-            case .drop(let reason): verdict = "dropped(\(reason.rawValue))"
-            }
-            Log.write(String(format: "interject: %@ %dms · %@ %@ wrong=%@ p=%.2f %dms · %.1fs → %@ · %@",
-                             gate, outcome.gateMs, outcome.route, check.kind.rawValue, check.wrong ? "y" : "n",
-                             check.confidence, outcome.checkMs, delay, verdict, check.detail))
-            if case .show(let correction) = decision { self.showCorrection(correction) }
         }
     }
 
-    private func showCorrection(_ correction: String) {
-        let seconds = 4.0
+    /// 刘海显示并念出来（纠正 / 回答）。刘海停到念完为止，按字数估。
+    private func present(_ text: String, prefix: String) {
+        let seconds = min(15, max(4, Double(text.count) / 5))
         notchHoldUntil = 0
-        flash(.error, "纠正：\(correction)", seconds: seconds)
+        flash(.error, prefix + text, seconds: seconds)
         notchHoldUntil = CFAbsoluteTimeGetCurrent() + seconds
-        interjectVoice.speak(correction, onStart: { [weak self] in
-            // 念之前把已经说的话先切出去（照常转写粘贴），念的这段之后整段扔掉。
+        interjectVoice.speak(text, onStart: { [weak self] in
+            // 念之前把已经说的话先切出去（照常转写），念的这段之后整段扔掉。
             guard let self, self.toggleOwnsRecorder, self.recorder.isRecording else { return }
             self.cutToggleSegment(reason: "插话前")
         }, onFinish: { [weak self] in
             guard let self, self.toggleOwnsRecorder, self.recorder.isRecording else { return }
             let dropped = (try? self.recorder.flushSegment(retainingTailMs: 0))?.durationMs ?? 0
             self.segmenter.resetSegment()
-            Log.write("interject: 念完，扔掉念的期间录到的 \(dropped)ms")
+            Log.write("assistant: 念完，扔掉念的期间录到的 \(dropped)ms")
         })
     }
 
@@ -1587,15 +1587,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func runInterjectTest(text: String, previous: String?) {
         selfTest = true
         let sample = text.isEmpty || text.hasPrefix("--") ? "苹果是一种蔬菜，我每天都吃" : text
-        Task { [interject] in
-            let route = await interjectRouteForSelfTest()
-            let outcome = await interject.judge(segment: sample, previous: previous.map { [$0] } ?? [], route: route)
+        Task { [interject, store] in
+            // 走真的助手模式分流（按住说话那样：不看「说完了吗」），用户实际的设置。
+            store.readOnly = true
+            let outcome = await interject.run(segment: sample, settings: store.settings, checkComplete: false)
             emit("segment=\(sample)")
             if let gate = outcome.gate {
-                emit(String(format: "Jev complete=%.2f claim=%.2f %dms", gate.complete, gate.claim, outcome.gateMs))
+                emit(String(format: "Jev complete=%.2f task=%.2f question=%.2f claim=%.2f %dms → %@",
+                            gate.complete, gate.task, gate.question, gate.claim, outcome.gateMs, outcome.route.rawValue))
             }
-            if let check = outcome.check {
-                emit(String(format: "%@ %dms kind=%@ wrong=%@ p=%.2f", outcome.route, outcome.checkMs,
+            if let answer = outcome.answer {
+                emit("\(outcome.model) \(outcome.checkMs)ms 答：\(answer)")
+            } else if outcome.route == .task {
+                emit("→ 看板起票（自测不发）")
+            } else if let check = outcome.check {
+                emit(String(format: "%@ %dms kind=%@ wrong=%@ p=%.2f", outcome.model, outcome.checkMs,
                             check.kind.rawValue, check.wrong ? "y" : "n", check.confidence))
                 emit("correction=\(check.correction) detail=\(check.detail)")
                 let decision = interject.decide(check, segment: sample, delay: 1, laterSegments: [])
@@ -1638,7 +1644,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? await Task.sleep(nanoseconds: UInt64(pace * 1_000_000_000))
                 }
                 for (item, outcome) in zip(chunk, outcomes) {
-                    var row: [String: Any] = ["id": item.id, "text": item.text, "route": outcome.route,
+                    var row: [String: Any] = ["id": item.id, "text": item.text, "route": outcome.model,
                                               "gate_ms": outcome.gateMs, "check_ms": outcome.checkMs,
                                               "stopped": outcome.stoppedAt ?? ""]
                     if let gate = outcome.gate { row["complete"] = gate.complete; row["claim"] = gate.claim }

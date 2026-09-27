@@ -12,18 +12,36 @@ final class InterjectionAPITests: XCTestCase {
         XCTAssertEqual(root["model"] as? String, "jev-latest")
         XCTAssertEqual(root["state"] as? [String: String], ["previous": "今天去超市", "segment": "苹果是蔬菜"])
         let questions = try XCTUnwrap(root["questions"] as? [String: [String: String]])
-        XCTAssertEqual(Set(questions.keys), ["complete", "claim"])
+        XCTAssertEqual(Set(questions.keys), ["complete", "claim", "task", "question"])
         XCTAssertEqual(questions["complete"]?["instructions"], InterjectionAPI.completeQuestion)
         XCTAssertEqual(questions["claim"]?["type"], "noul")
     }
 
     func testParseGateAndThresholds() throws {
-        let gate = try InterjectionAPI.parseGate(Data(#"{"answers":{"complete":{"noul":0.8},"claim":{"noul":0.9}}}"#.utf8))
-        XCTAssertEqual(gate, .init(complete: 0.8, claim: 0.9))
+        let gate = try InterjectionAPI.parseGate(Data(
+            #"{"answers":{"complete":{"noul":0.8},"claim":{"noul":0.9},"task":{"noul":0.1},"question":{"noul":0.2}}}"#.utf8))
+        XCTAssertEqual(gate, .init(complete: 0.8, claim: 0.9, task: 0.1, question: 0.2))
         XCTAssertTrue(gate.passes)
         XCTAssertFalse(InterjectionAPI.Gate(complete: 0.29, claim: 0.9).passes)  // 没说完
         XCTAssertFalse(InterjectionAPI.Gate(complete: 0.9, claim: 0.49).passes)  // 没有事实断言
         XCTAssertThrowsError(try InterjectionAPI.parseGate(Data(#"{"answers":{"complete":{"noul":0.8}}}"#.utf8)))
+    }
+
+    func testRoute() {
+        typealias G = InterjectionAPI.Gate
+        XCTAssertEqual(G(complete: 0.9, claim: 0.1, task: 0.95, question: 0.02).route(checkComplete: true), .task)
+        XCTAssertEqual(G(complete: 0.9, claim: 0.1, task: 0.02, question: 0.96).route(checkComplete: true), .question)
+        XCTAssertEqual(G(complete: 0.9, claim: 0.9, task: 0.02, question: 0.04).route(checkComplete: true), .check)
+        XCTAssertEqual(G(complete: 0.9, claim: 0.1, task: 0.1, question: 0.28).route(checkComplete: true), .none)
+        // 两项都高：取高的
+        XCTAssertEqual(G(complete: 0.9, claim: 0, task: 0.7, question: 0.9).route(checkComplete: true), .question)
+        // 没说完：切换录音的段才管；按住说话松手就算说完
+        XCTAssertEqual(G(complete: 0.2, claim: 0, task: 0, question: 0.9).route(checkComplete: true), .incomplete)
+        XCTAssertEqual(G(complete: 0.2, claim: 0, task: 0, question: 0.9).route(checkComplete: false), .question)
+    }
+
+    func testCleanAnswerForSpeech() {
+        XCTAssertEqual(InterjectionAPI.cleanAnswer("**东京**。\n- 人口约 1400 万"), "东京。 人口约 1400 万")
     }
 
     func testCheckInput() {

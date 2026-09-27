@@ -1,9 +1,10 @@
 import Foundation
 
-/// 插话纠错（试做，分支 `exp/interject`）不碰网络的那一半：Jev 的门、核对的提示词、JSON 解析。
+/// 助手模式（试做，分支 `exp/interject`）不碰网络的那一半：Jev 的门、核对与回答的提示词、JSON 解析。
 ///
-/// 两步：Jev 一次请求问两件事（说完了吗 / 有没有可核对的事实）→ 过了门才用**加工模型**
-/// 另发一次请求核对。核对不能并进加工提示词：那样加工会把「苹果是蔬菜」悄悄改成
+/// 助手模式的三件事：布置任务（→ 看板起票）、回答提问（语音）、纠正说错的事实（语音）。
+/// Jev 一次请求问四件事（说完了吗 / 布置任务吗 / 提问吗 / 有没有可核对的事实）分流，
+/// 回答和核对再用**加工模型**另发一次请求。核对不能并进加工提示词：那样加工会把「苹果是蔬菜」悄悄改成
 /// 「苹果是水果」粘出去。提示词是 verbatim，改了要重跑 `experiments/interject`。
 /// 设计：vault `Wiki/inkfall-AI插话纠错设计.md`。
 public enum InterjectionAPI {
@@ -26,18 +27,61 @@ public enum InterjectionAPI {
 
     /// 低于它就是「没说完」，把这段留着拼到下一段前面再问（断句实验：句中停顿 ≤ 0.26）。
     public static let completeThreshold = 0.3
+    // verbatim：2026-09-27 手试 16 句，任务 0.94–0.97 / 提问 ≤ 0.10 / 陈述 ≤ 0.09
+    public static let taskQuestion =
+        "The user talks to a voice assistant. `segment` is what they just said. Is `segment` asking the assistant to take on a task "
+        + "or piece of work to be done later (build, fix, write, send, schedule, remind, file a ticket) — rather than asking a question "
+        + "they want answered right now, or just talking?"
+
+    // verbatim：同上，提问 0.93–0.97 / 任务 ≤ 0.10 / 陈述 ≤ 0.28（「他问我日本的首都是哪里」）
+    public static let questionQuestion =
+        "The user talks to a voice assistant. `segment` is what they just said. Is `segment` a genuine question the speaker wants "
+        + "answered right now with information or an explanation — rather than a request to do some work, a rhetorical question, "
+        + "or a statement?"
+
     /// 低于它就不去核对。
     public static let claimThreshold = 0.5
+    /// 布置任务 / 提问的门槛。
+    public static let taskThreshold = 0.6
+    public static let questionThreshold = 0.6
 
     public struct Gate: Sendable, Equatable {
         public let complete: Double
         public let claim: Double
-        public init(complete: Double, claim: Double) {
+        public let task: Double
+        public let question: Double
+        public init(complete: Double, claim: Double, task: Double = 0, question: Double = 0) {
             self.complete = complete
             self.claim = claim
+            self.task = task
+            self.question = question
         }
         public var isComplete: Bool { complete >= completeThreshold }
         public var passes: Bool { isComplete && claim >= claimThreshold }
+
+        /// 分流。优先级：任务 > 提问 > 纠错。任务和提问两项都高时取高的那个。
+        /// - `checkComplete`: 切换录音按停顿切出的段才看「说完了吗」；按住说话松手就是说完了。
+        public func route(checkComplete: Bool) -> Route {
+            if checkComplete && !isComplete { return .incomplete }
+            let isTask = task >= taskThreshold, isQuestion = question >= questionThreshold
+            if isTask && (!isQuestion || task >= question) { return .task }
+            if isQuestion { return .question }
+            if claim >= claimThreshold { return .check }
+            return .none
+        }
+    }
+
+    public enum Route: String, Sendable, Equatable {
+        /// 没说完：拼到下一段再问
+        case incomplete
+        /// 布置任务 → 看板起票
+        case task
+        /// 提问 → 回答并念出来
+        case question
+        /// 有事实断言 → 核对，说错了就纠正
+        case check
+        /// 什么都不做（只记历史）
+        case none
     }
 
     public static func gateBody(previous: [String], segment: String) -> Data? {
@@ -47,6 +91,8 @@ public enum InterjectionAPI {
             "questions": [
                 "complete": ["type": "noul", "instructions": completeQuestion],
                 "claim": ["type": "noul", "instructions": claimQuestion],
+                "task": ["type": "noul", "instructions": taskQuestion],
+                "question": ["type": "noul", "instructions": questionQuestion],
             ],
         ]
         return try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
@@ -54,12 +100,14 @@ public enum InterjectionAPI {
 
     public static func parseGate(_ data: Data) throws -> Gate {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let answers = root["answers"] as? [String: Any],
-              let complete = ((answers["complete"] as? [String: Any])?["noul"] as? NSNumber)?.doubleValue,
-              let claim = ((answers["claim"] as? [String: Any])?["noul"] as? NSNumber)?.doubleValue,
-              (0...1).contains(complete), (0...1).contains(claim)
+              let answers = root["answers"] as? [String: Any]
         else { throw TextGenerationAPI.Failure.malformedResponse }
-        return Gate(complete: complete, claim: claim)
+        func p(_ key: String) throws -> Double {
+            guard let value = ((answers[key] as? [String: Any])?["noul"] as? NSNumber)?.doubleValue,
+                  (0...1).contains(value) else { throw TextGenerationAPI.Failure.malformedResponse }
+            return value
+        }
+        return Gate(complete: try p("complete"), claim: try p("claim"), task: try p("task"), question: try p("question"))
     }
 
     // MARK: - 核对（加工模型）
@@ -87,6 +135,28 @@ public enum InterjectionAPI {
     - detail: only when wrong — one short sentence of evidence in the speaker's language
     - when not wrong, correction and detail are empty strings
     """
+
+    // MARK: - 回答（加工模型）
+
+    public static let answerInstructions = """
+    You are a voice assistant. The user just asked `question` aloud (`previous` is what they said just before, context \
+    only). Answer it so it can be read aloud: in the same language as the question, one to three short sentences, the \
+    answer first, no markdown, no lists, no preamble. If you do not know or it depends on recent events, say so in one sentence.
+    """
+
+    public static func answerInput(previous: [String], question: String) -> String {
+        let context = previous.isEmpty ? "(none)" : previous.joined(separator: "\n")
+        return "previous:\n\(context)\n\nquestion:\n\(question)"
+    }
+
+    /// 回答念出来之前的清理：小模型偶尔还是会带 markdown 符号，念出来是「星号星号」。
+    public static func cleanAnswer(_ text: String) -> String {
+        var s = text
+        for mark in ["**", "__", "`", "#"] { s = s.replacingOccurrences(of: mark, with: "") }
+        return s.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { $0.hasPrefix("- ") ? String($0.dropFirst(2)) : $0 }
+            .filter { !$0.isEmpty }.joined(separator: " ")
+    }
 
     public static func checkInput(previous: [String], segment: String) -> String {
         let context = previous.isEmpty ? "(none)" : previous.joined(separator: "\n")

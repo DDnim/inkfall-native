@@ -1,29 +1,32 @@
 import Foundation
 import InkfallCore
 
-/// 试做：切换录音的每一段转写完，旁路问「说错了没有」，说错了就在刘海上纠正一句。
-///
-/// 两步：Jev 的门（说完了吗 / 有没有可核对的事实，一次请求）→ 过门才用加工模型另发
-/// 一次核对。**绝不改变粘贴行为**，也不等它：粘贴照常走，纠正晚一两秒出来。
-/// 没有 TypeSafe key、没配加工那家的 key，整条关掉（加工本身开没开、是不是本地预设都不管）。
+/// 试做：助手模式的分流与执行。每段转写完问 Jev 一次（说完了吗 / 布置任务吗 / 提问吗 /
+/// 有没有可核对的事实），再按分流：任务交给调用方放进看板，提问用加工模型回答，
+/// 事实用加工模型核对。输入模式不走这里。
+/// 没有 TypeSafe key 就不分流（只记历史）；没配加工那家的 key 就不回答、不核对。
 @MainActor
 final class InterjectionProbe {
 
     struct Outcome: Sendable {
         var segment: String
         var gate: InterjectionAPI.Gate?
+        var route: InterjectionAPI.Route = .none
         var check: InterjectionAPI.Check?
+        var answer: String?
         /// 为什么停在这一步（日志用）
         var stoppedAt: String?
         var gateMs = 0
         var checkMs = 0
-        var route = ""
+        var model = ""
     }
 
     /// Jev 最多等这么久（p90 226ms）。
     static let gateTimeout: TimeInterval = 0.8
     /// 核对最多等这么久。再晚 `InterjectionPolicy.maxDelay` 也会把它丢掉。
     static let checkTimeout: TimeInterval = 4.5
+    /// 回答是用户在等的，可以久一点。
+    static let answerTimeout: TimeInterval = 10
     /// 带给模型的前文段数。
     static let contextSegments = 3
 
@@ -82,22 +85,55 @@ final class InterjectionProbe {
         return .cloud(provider: provider, model: settings.postProcessingModel(for: settings.postProcessingPreset), key: key)
     }
 
-    /// 实际使用的一次：维护前文和半句，失败一律当「不插」。
-    func run(segment raw: String, settings: AppSettings) async -> Outcome {
+    /// 助手模式的一段：Jev 分流 → 回答 / 核对（任务由调用方交给看板）。维护前文和半句。
+    /// - `checkComplete`: 切换录音按停顿切出的段才看「说完了吗」。
+    func run(segment raw: String, settings: AppSettings, checkComplete: Bool) async -> Outcome {
         let segment = fragment.isEmpty ? raw : fragment + raw
         let previous = Array(recent.suffix(Self.contextSegments))
-        let outcome = await judge(segment: segment, previous: previous, route: await checkRoute(settings: settings))
-        if let gate = outcome.gate, !gate.isComplete {
+        var outcome = Outcome(segment: segment)
+        guard let key = typesafeKey else { outcome.stoppedAt = "no-typesafe-key"; return outcome }
+        let started = CFAbsoluteTimeGetCurrent()
+        outcome.gate = await gate(key: key, previous: previous, segment: segment)
+        outcome.gateMs = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
+        guard let gate = outcome.gate else { outcome.stoppedAt = "gate-failed"; return outcome }
+        outcome.route = gate.route(checkComplete: checkComplete)
+        if outcome.route == .incomplete {
             fragment = segment
-        } else {
-            fragment = ""
-            recent.append(segment)
-            if recent.count > Self.contextSegments { recent.removeFirst(recent.count - Self.contextSegments) }
+            return outcome
+        }
+        fragment = ""
+        recent.append(segment)
+        if recent.count > Self.contextSegments { recent.removeFirst(recent.count - Self.contextSegments) }
+
+        switch outcome.route {
+        case .question:
+            guard let route = await checkRoute(settings: settings) else { outcome.stoppedAt = "no-check-route"; break }
+            outcome.model = Self.label(route)
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let result = await withTimeout(Self.answerTimeout) {
+                await PostProcessor.run(.init(instructions: InterjectionAPI.answerInstructions,
+                                              input: InterjectionAPI.answerInput(previous: previous, question: segment),
+                                              route: route))
+            }
+            outcome.checkMs = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            switch result {
+            case .none: outcome.stoppedAt = "answer-timeout"
+            case .some(.failure(let failure)):
+                Log.write("assistant: 回答失败 \(failure.message)")
+                outcome.stoppedAt = "answer-failed"
+            case .some(.success(let success)):
+                let answer = InterjectionAPI.cleanAnswer(success.text)
+                if answer.isEmpty { outcome.stoppedAt = "answer-empty" } else { outcome.answer = answer }
+            }
+        case .check:
+            await check(&outcome, previous: previous, route: await checkRoute(settings: settings))
+        case .task, .none, .incomplete:
+            break
         }
         return outcome
     }
 
-    /// 无状态的一次判定（自测和评测也走这里）。`route == nil` 就只问 Jev。
+    /// 无状态的一次核对（自测和评测走这里）。`route == nil` 就只问 Jev。
     func judge(segment: String, previous: [String], route: PostProcessor.Route?,
                skipGate: Bool = false) async -> Outcome {
         var outcome = Outcome(segment: segment)
@@ -107,11 +143,18 @@ final class InterjectionProbe {
             outcome.gate = await gate(key: key, previous: previous, segment: segment)
             outcome.gateMs = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
             guard let gate = outcome.gate else { outcome.stoppedAt = "gate-failed"; return outcome }
+            outcome.route = gate.route(checkComplete: true)
             guard gate.isComplete else { outcome.stoppedAt = "incomplete"; return outcome }
             guard gate.passes else { outcome.stoppedAt = "no-claim"; return outcome }
         }
-        guard let route else { outcome.stoppedAt = "no-check-route"; return outcome }
-        if case .cloud(let provider, let model, _) = route { outcome.route = "\(provider.label)/\(model)" }
+        await check(&outcome, previous: previous, route: route)
+        return outcome
+    }
+
+    private func check(_ outcome: inout Outcome, previous: [String], route: PostProcessor.Route?) async {
+        guard let route else { outcome.stoppedAt = "no-check-route"; return }
+        outcome.model = Self.label(route)
+        let segment = outcome.segment
         let started = CFAbsoluteTimeGetCurrent()
         let result = await withTimeout(Self.checkTimeout) {
             await PostProcessor.run(.init(instructions: InterjectionAPI.checkInstructions,
@@ -133,7 +176,11 @@ final class InterjectionProbe {
                 outcome.stoppedAt = "check-unparsable"
             }
         }
-        return outcome
+    }
+
+    private static func label(_ route: PostProcessor.Route) -> String {
+        if case .cloud(let provider, let model, _) = route { return "\(provider.label)/\(model)" }
+        return ""
     }
 
     /// 策略裁决（有状态：冷却、去重）。
