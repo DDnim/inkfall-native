@@ -47,6 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let interject = InterjectionProbe()
     /// 刘海上的纠正要停留到这一刻。长录音的计时 30 Hz 在重画，不挡住就一闪而过。
     private var notchHoldUntil: CFAbsoluteTime = 0
+    /// 试做：纠正同时念出来。念的期间长录音不切段，念完把这段录音扔掉（否则 AI 的声音会被转写粘出去）。
+    private let interjectVoice = InterjectionVoice()
 
     /// 切换录音的自动分段：停顿 1.3 秒就切一段送去转写，不等再按一下。
     private var segmenter = SilenceSegmenter()
@@ -1229,6 +1231,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchHoldUntil = 0
         flash(.error, "纠正：\(correction)", seconds: seconds)
         notchHoldUntil = CFAbsoluteTimeGetCurrent() + seconds
+        interjectVoice.speak(correction, onStart: { [weak self] in
+            // 念之前把已经说的话先切出去（照常转写粘贴），念的这段之后整段扔掉。
+            guard let self, self.toggleOwnsRecorder, self.recorder.isRecording else { return }
+            self.cutToggleSegment(reason: "插话前")
+        }, onFinish: { [weak self] in
+            guard let self, self.toggleOwnsRecorder, self.recorder.isRecording else { return }
+            let dropped = (try? self.recorder.flushSegment(retainingTailMs: 0))?.durationMs ?? 0
+            self.segmenter.resetSegment()
+            Log.write("interject: 念完，扔掉念的期间录到的 \(dropped)ms")
+        })
     }
 
     private var notchHeld: Bool { CFAbsoluteTimeGetCurrent() < notchHoldUntil }
@@ -1634,6 +1646,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lastSegmentTick = now
             if recorder.takeDurationSeconds >= Self.hardCutSeconds {
                 cutToggleSegment(reason: "到达 \(Int(Self.hardCutSeconds))s 硬上限")
+            } else if interjectVoice.isSpeaking {
+                // 念纠正的时候不切段：那是 AI 的声音，念完整段扔掉。
             } else if segmenter.feed(level: recorder.level, delta: delta) {
                 cutToggleSegment(reason: "停顿切段")
             }

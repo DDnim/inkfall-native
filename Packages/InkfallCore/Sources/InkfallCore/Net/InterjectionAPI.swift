@@ -116,6 +116,15 @@ public enum InterjectionAPI {
         }
     }
 
+    /// 念更正用哪种语音：有假名 → 日语，有汉字 → 中文，否则英语。
+    /// 不交给系统猜：AVSpeechUtterance 默认跟系统语言走，「富士山は本州にある」会被念成中文。
+    public static func speechLanguage(for text: String) -> String {
+        let scalars = text.unicodeScalars
+        if scalars.contains(where: { (0x3040...0x30FF).contains($0.value) }) { return "ja-JP" }
+        if scalars.contains(where: { (0x4E00...0x9FFF).contains($0.value) }) { return "zh-CN" }
+        return "en-US"
+    }
+
     /// 模型的回答 → `Check`。小模型爱包 ```json 围栏、爱在前后多说一句，
     /// 所以取第一个 `{` 到最后一个 `}`。认不出的 kind 当 not_claim（宁可不插）。
     public static func parseCheck(_ text: String) throws -> Check {

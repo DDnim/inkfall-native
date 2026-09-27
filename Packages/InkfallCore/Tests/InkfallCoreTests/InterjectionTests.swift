@@ -42,6 +42,13 @@ final class InterjectionAPITests: XCTestCase {
                        .init(wrong: true, kind: .clearError, confidence: 0.95, correction: "苹果是水果", detail: "苹果是蔷薇科植物的果实"))
     }
 
+    func testSpeechLanguage() {
+        XCTAssertEqual(InterjectionAPI.speechLanguage(for: "苹果是水果"), "zh-CN")
+        XCTAssertEqual(InterjectionAPI.speechLanguage(for: "富士山は本州にある"), "ja-JP")
+        XCTAssertEqual(InterjectionAPI.speechLanguage(for: "Python 由 Guido 创建"), "zh-CN")
+        XCTAssertEqual(InterjectionAPI.speechLanguage(for: "Light is faster than sound"), "en-US")
+    }
+
     func testParseCheckUnknownKindIsNotClaim() throws {
         let check = try InterjectionAPI.parseCheck(#"{"wrong": true, "kind": "maybe", "confidence": 1.4}"#)
         XCTAssertEqual(check.kind, .notClaim)
