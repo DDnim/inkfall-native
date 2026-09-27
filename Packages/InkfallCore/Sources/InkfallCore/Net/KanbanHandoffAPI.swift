@@ -35,7 +35,8 @@ public enum KanbanHandoffAPI {
     }
 
     public static func createBody(text: String) -> Data? {
-        try? JSONSerialization.data(withJSONObject: ["input": text, "project": "", "mode": "work-only"],
+        // voiceReply：声音头的活，agent 做完就在 Obsidian 里念返答（卡上带 voice_reply: true）。
+        try? JSONSerialization.data(withJSONObject: ["input": text, "project": "", "mode": "work-only", "voiceReply": true],
                                     options: [.sortedKeys])
     }
 
