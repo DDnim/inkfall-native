@@ -19,7 +19,7 @@ public struct PostProcessingPresetModelConfig: Codable, Sendable, Equatable {
         return .init(
             provider: .openai,
             openaiModel: fast ? "gpt-4o-mini" : "gpt-4.1",
-            groqModel: fast ? "openai/gpt-oss-20b" : "qwen/qwen3-32b",
+            groqModel: "qwen/qwen3.8-27b",
             geminiModel: fast ? "gemini-3.1-flash-lite-preview" : "gemini-3-flash-preview"
         )
     }
@@ -69,14 +69,14 @@ public struct AppSettings: Codable, Sendable, Equatable {
     /// （见 `PostProcessingPolicy`），所以开着不会让任何人踩坑；
     /// 而默认关会让「填了 key 却什么都没变」成为第一个必踩的坑。
     public var postProcessingEnabled = true
-    /// 默认 Groq：加工是高频小请求，它的 gpt-oss-20b 又快又便宜。
+    /// 默认 Groq：加工是高频小请求，Groq 快。模型默认 qwen3.8-27b（2026-09-27 境；原 qwen3-32b 已下线）。
     /// 走云端转写时这个值会被 `sanitize()` 对齐到转写供应商，
     /// 本地转写时保留独立选择（这也是目前唯一跑得通的组合）。
     public var postProcessingProvider: CloudProvider = .groq
     public var postProcessingPreset: PostProcessingPreset = .light
     public var postProcessingPresetModels: [String: PostProcessingPresetModelConfig] = [:]
     public var selectedOpenAiPostProcessModel = "gpt-4.1-mini"
-    public var selectedGroqPostProcessModel = "openai/gpt-oss-20b"
+    public var selectedGroqPostProcessModel = "qwen/qwen3.8-27b"
     public var selectedGeminiPostProcessModel = "gemini-3.1-flash-lite-preview"
     public var customPostProcessingPrompt = ""
     public var processingMemoryContext = ""
@@ -177,7 +177,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
             selectedGroqModel = "whisper-large-v3-turbo"
         }
         if !ProviderModels.groqPostProcess.contains(selectedGroqPostProcessModel) {
-            selectedGroqPostProcessModel = "openai/gpt-oss-20b"
+            selectedGroqPostProcessModel = "qwen/qwen3.8-27b"
         }
         if !ProviderModels.gemini.contains(selectedGeminiModel) {
             selectedGeminiModel = "gemini-3.1-flash-lite-preview"

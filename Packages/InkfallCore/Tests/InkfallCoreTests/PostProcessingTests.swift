@@ -115,7 +115,7 @@ final class PostProcessingPolicyTests: XCTestCase {
             settings: settings(), durationMs: 5_000,
             transcript: sentence)
         XCTAssertEqual(decision, .cloud(preset: .light, provider: .groq,
-                                        model: "openai/gpt-oss-20b"))
+                                        model: "qwen/qwen3.8-27b"))
     }
 
     /// 开关关着就是原样输出 —— 这个开关以前是空的（点了没有任何行为差别），
@@ -158,8 +158,8 @@ final class PostProcessingPolicyTests: XCTestCase {
     /// 每个预设可以单独配模型；快档用小模型，重活儿用大模型。
     func testPerPresetModelSelection() {
         var s = settings(preset: .meeting)
-        XCTAssertEqual(s.postProcessingModel(for: .meeting), "qwen/qwen3-32b")
-        XCTAssertEqual(s.postProcessingModel(for: .light), "openai/gpt-oss-20b")
+        XCTAssertEqual(s.postProcessingModel(for: .meeting), "qwen/qwen3.8-27b")
+        XCTAssertEqual(s.postProcessingModel(for: .light), "qwen/qwen3.8-27b")
         s.postProcessingProvider = .openai
         XCTAssertEqual(s.postProcessingModel(for: .light), "gpt-4o-mini")
         XCTAssertEqual(s.postProcessingModel(for: .meeting), "gpt-4.1")
@@ -285,7 +285,7 @@ final class TextGenerationAPITests: XCTestCase {
                                               instructions: "a", input: "b"))
         XCTAssertEqual((oss["reasoning"] as? [String: Any])?["effort"] as? String, "low")
 
-        let qwen = json(TextGenerationAPI.body(provider: .groq, model: "qwen/qwen3-32b",
+        let qwen = json(TextGenerationAPI.body(provider: .groq, model: "qwen/qwen3.8-27b",
                                                instructions: "a", input: "b"))
         XCTAssertNil(qwen["reasoning"])
     }

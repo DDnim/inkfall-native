@@ -232,7 +232,7 @@ public enum ProviderModels {
     public static let openAITranscription = ["gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"]
     public static let openAIPostProcess = ["gpt-4.1-mini", "gpt-4.1", "gpt-5.5", "gpt-4o-mini"]
     public static let groqTranscription = ["whisper-large-v3-turbo", "whisper-large-v3"]
-    public static let groqPostProcess = ["openai/gpt-oss-20b", "qwen/qwen3-32b"]
+    public static let groqPostProcess = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
     public static let gemini = [
         "gemini-3.1-flash-lite-preview",
         "gemini-3-flash-preview",
