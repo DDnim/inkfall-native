@@ -2,9 +2,12 @@ import Foundation
 
 /// 助手模式（试做，分支 `exp/interject`）不碰网络的那一半：Jev 的门、核对与回答的提示词、JSON 解析。
 ///
-/// 助手模式的三件事：布置任务（→ 看板起票）、回答提问（语音）、纠正说错的事实（语音）。
-/// Jev 一次请求问四件事（说完了吗 / 布置任务吗 / 提问吗 / 有没有可核对的事实）分流，
-/// 回答和核对再用**加工模型**另发一次请求。核对不能并进加工提示词：那样加工会把「苹果是蔬菜」悄悄改成
+/// 助手模式：Jev 一次请求问六件事（说完了吗 / 布置任务吗 / 提问吗 / 简单问题吗 /
+/// 大而不清的活吗 / 有没有可核对的事实）分流成
+/// - 简单问题 → 加工模型当场回答（语音）
+/// - 要查东西的问题、清楚的任务 → 看板后台建卡，agent 去做（做完可语音回报，看卡片的 `voice_reply`）
+/// - 大而不清的任务 → 打开看板起票面板，境自己写
+/// - 说错的事实 → 加工模型核对，纠正（语音）核对不能并进加工提示词：那样加工会把「苹果是蔬菜」悄悄改成
 /// 「苹果是水果」粘出去。提示词是 verbatim，改了要重跑 `experiments/interject`。
 /// 设计：vault `Wiki/inkfall-AI插话纠错设计.md`。
 public enum InterjectionAPI {
@@ -39,8 +42,23 @@ public enum InterjectionAPI {
         + "answered right now with information or an explanation — rather than a request to do some work, a rhetorical question, "
         + "or a statement?"
 
+    // verbatim：2026-09-27 手试 18 句，简单问题 0.89–0.98 / 要查的问题 ≤ 0.22 / 任务 ≤ 0.55
+    public static let simpleQuestion =
+        "The user asked a voice assistant `segment`. Can it be answered well right now from general knowledge in one to three "
+        + "sentences — without looking anything up, checking recent information, reading the user's own files, projects or "
+        + "accounts, or running tools?"
+
+    // verbatim：同上，大而不清的活 0.85–0.93 / 清楚的任务 ≤ 0.25 / 问题 ≤ 0.21
+    public static let complexQuestion =
+        "The user asked a voice assistant to do `segment`. Is it a large or unclear piece of work — a multi-step project, a vague "
+        + "idea, or something that needs decisions about scope or approach — that the user should write up and plan themselves "
+        + "before anyone starts, rather than a clear, contained task an AI coding agent could simply go and do now?"
+
     /// 低于它就不去核对。
     public static let claimThreshold = 0.5
+    /// 简单问题 / 大而不清的活的门槛。
+    public static let simpleThreshold = 0.5
+    public static let complexThreshold = 0.5
     /// 布置任务 / 提问的门槛。
     public static let taskThreshold = 0.6
     public static let questionThreshold = 0.6
@@ -50,11 +68,16 @@ public enum InterjectionAPI {
         public let claim: Double
         public let task: Double
         public let question: Double
-        public init(complete: Double, claim: Double, task: Double = 0, question: Double = 0) {
+        public let simple: Double
+        public let complex: Double
+        public init(complete: Double, claim: Double, task: Double = 0, question: Double = 0,
+                    simple: Double = 0, complex: Double = 0) {
             self.complete = complete
             self.claim = claim
             self.task = task
             self.question = question
+            self.simple = simple
+            self.complex = complex
         }
         public var isComplete: Bool { complete >= completeThreshold }
         public var passes: Bool { isComplete && claim >= claimThreshold }
@@ -64,8 +87,8 @@ public enum InterjectionAPI {
         public func route(checkComplete: Bool) -> Route {
             if checkComplete && !isComplete { return .incomplete }
             let isTask = task >= taskThreshold, isQuestion = question >= questionThreshold
-            if isTask && (!isQuestion || task >= question) { return .task }
-            if isQuestion { return .question }
+            if isTask && (!isQuestion || task >= question) { return complex >= complexThreshold ? .ticket : .agent }
+            if isQuestion { return simple >= simpleThreshold ? .answer : .agent }
             if claim >= claimThreshold { return .check }
             return .none
         }
@@ -74,10 +97,12 @@ public enum InterjectionAPI {
     public enum Route: String, Sendable, Equatable {
         /// 没说完：拼到下一段再问
         case incomplete
-        /// 布置任务 → 看板起票
-        case task
-        /// 提问 → 回答并念出来
-        case question
+        /// 简单问题 → 加工模型当场回答并念出来
+        case answer
+        /// 要查东西的问题、清楚的任务 → 看板后台建卡，agent 去做
+        case agent
+        /// 大而不清的任务 → 打开看板起票面板
+        case ticket
         /// 有事实断言 → 核对，说错了就纠正
         case check
         /// 什么都不做（只记历史）
@@ -93,6 +118,8 @@ public enum InterjectionAPI {
                 "claim": ["type": "noul", "instructions": claimQuestion],
                 "task": ["type": "noul", "instructions": taskQuestion],
                 "question": ["type": "noul", "instructions": questionQuestion],
+                "simple": ["type": "noul", "instructions": simpleQuestion],
+                "complex": ["type": "noul", "instructions": complexQuestion],
             ],
         ]
         return try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
@@ -107,7 +134,8 @@ public enum InterjectionAPI {
                   (0...1).contains(value) else { throw TextGenerationAPI.Failure.malformedResponse }
             return value
         }
-        return Gate(complete: try p("complete"), claim: try p("claim"), task: try p("task"), question: try p("question"))
+        return Gate(complete: try p("complete"), claim: try p("claim"), task: try p("task"), question: try p("question"),
+                    simple: try p("simple"), complex: try p("complex"))
     }
 
     // MARK: - 核对（加工模型）

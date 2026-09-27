@@ -52,6 +52,16 @@ final class KanbanHandoffTests: XCTestCase {
         XCTAssertNil(KanbanHandoffAPI.config(fromPluginData: Data(#"{}"#.utf8)))
     }
 
+    func testCreateRequest() throws {
+        let config = KanbanHandoffAPI.Config(port: 8765, token: "abc")
+        XCTAssertEqual(KanbanHandoffAPI.createEndpoint(config).absoluteString, "http://127.0.0.1:8765/api/create")
+        let body = try XCTUnwrap(KanbanHandoffAPI.createBody(text: "inkfall 现在有几个分支"))
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: body) as? [String: String],
+                       ["input": "inkfall 现在有几个分支", "project": "", "mode": "work-only"])
+        XCTAssertEqual(KanbanHandoffAPI.parseCreated(Data(#"{"path":"Task/x.md"}"#.utf8)), "Task/x.md")
+        XCTAssertNil(KanbanHandoffAPI.parseCreated(Data(#"{"error":"作成先が不正です"}"#.utf8)))
+    }
+
     func testRequest() throws {
         let config = KanbanHandoffAPI.Config(port: 8765, token: "abc")
         XCTAssertEqual(KanbanHandoffAPI.endpoint(config).absoluteString, "http://127.0.0.1:8765/api/open-issue")

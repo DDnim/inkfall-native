@@ -1255,7 +1255,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 助手模式的三件事：布置任务 → 看板起票；提问 → 语音回答；说错 → 语音纠正。
+    /// 助手模式：简单问题 → 语音回答；要查的问题 / 清楚的任务 → 看板后台建卡给 agent；
+    /// 大而不清的任务 → 打开起票面板；说错 → 语音纠正。
     private func startAssistant(_ text: String, pauseCut: Bool) {
         guard interject.hasGateKey else {
             Log.write("assistant: 没有 TypeSafe key，只记历史")
@@ -1267,22 +1268,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [interject, kanban] in
             let outcome = await interject.run(segment: text, settings: settings, checkComplete: pauseCut)
             let gate = outcome.gate.map {
-                String(format: "complete=%.2f task=%.2f question=%.2f claim=%.2f", $0.complete, $0.task, $0.question, $0.claim)
+                String(format: "complete=%.2f task=%.2f question=%.2f simple=%.2f complex=%.2f claim=%.2f",
+                       $0.complete, $0.task, $0.question, $0.simple, $0.complex, $0.claim)
             } ?? "无"
             let head = "assistant: \(gate) \(outcome.gateMs)ms → \(outcome.route.rawValue)"
             switch outcome.route {
-            case .task:
-                // 原话（不用加工后的），只打开起票面板，作成先和模型由境选。
+            case .ticket:
+                // 大而不清的活：原话放进起票面板，作成先和模型由境选。
                 self.notch.show(state: .processing, message: "打开看板起票")
                 if await kanban.send(outcome.segment) {
                     Log.write("\(head) · 已打开看板起票")
-                    self.flash(.success, "已放进看板起票", seconds: 2.0)
+                    self.flash(.success, "这个比较大，已打开起票面板", seconds: 2.4)
                 } else {
                     Log.write("\(head) · 看板没连上")
                     self.flash(.error, "看板没连上，已记进历史", seconds: 2.4)
                 }
 
-            case .question:
+            case .agent:
+                // 要查东西的问题 / 清楚的任务：后台建卡，agent 直接去做。做完要不要念，看卡的 voice_reply。
+                if let path = await kanban.createCard(outcome.segment) {
+                    Log.write("\(head) · 已在看板后台建卡 \(path)")
+                    self.present("交给 agent 了", prefix: "")
+                } else {
+                    Log.write("\(head) · 建卡失败")
+                    self.flash(.error, "看板没连上，已记进历史", seconds: 2.4)
+                }
+
+            case .answer:
                 guard let answer = outcome.answer else {
                     Log.write("\(head) · \(outcome.stoppedAt ?? "?")")
                     return
@@ -1593,13 +1605,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let outcome = await interject.run(segment: sample, settings: store.settings, checkComplete: false)
             emit("segment=\(sample)")
             if let gate = outcome.gate {
-                emit(String(format: "Jev complete=%.2f task=%.2f question=%.2f claim=%.2f %dms → %@",
-                            gate.complete, gate.task, gate.question, gate.claim, outcome.gateMs, outcome.route.rawValue))
+                emit(String(format: "Jev complete=%.2f task=%.2f question=%.2f simple=%.2f complex=%.2f claim=%.2f %dms → %@",
+                            gate.complete, gate.task, gate.question, gate.simple, gate.complex, gate.claim,
+                            outcome.gateMs, outcome.route.rawValue))
             }
             if let answer = outcome.answer {
                 emit("\(outcome.model) \(outcome.checkMs)ms 答：\(answer)")
-            } else if outcome.route == .task {
-                emit("→ 看板起票（自测不发）")
+            } else if outcome.route == .agent || outcome.route == .ticket {
+                emit("→ \(outcome.route == .agent ? "看板后台建卡给 agent" : "打开起票面板")（自测不发）")
             } else if let check = outcome.check {
                 emit(String(format: "%@ %dms kind=%@ wrong=%@ p=%.2f", outcome.model, outcome.checkMs,
                             check.kind.rawValue, check.wrong ? "y" : "n", check.confidence))

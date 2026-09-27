@@ -25,6 +25,35 @@ final class KanbanHandoff: @unchecked Sendable {
         return vault.appendingPathComponent(".obsidian/plugins/md-kanban/data.json")
     }
 
+    /// 助手模式：后台建卡让 agent 去做（`/api/create`，不开面板、不叫 Obsidian 到前台）。
+    /// 建好了回卡的路径，失败回 nil。
+    func createCard(_ text: String) async -> String? {
+        guard let data = try? Data(contentsOf: Self.pluginData),
+              let config = KanbanHandoffAPI.config(fromPluginData: data),
+              let body = KanbanHandoffAPI.createBody(text: text) else {
+            Log.write("kanban: 没读到 mobileControl（\(Self.pluginData.path)）")
+            return nil
+        }
+        var request = URLRequest(url: KanbanHandoffAPI.createEndpoint(config))
+        request.httpMethod = "POST"
+        request.httpBody = body
+        for (field, value) in KanbanHandoffAPI.headers(config) {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        do {
+            let (data, response) = try await Self.session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 200, let path = KanbanHandoffAPI.parseCreated(data) else {
+                Log.write("kanban: 建卡 HTTP \(status) \(String(decoding: data.prefix(200), as: UTF8.self))")
+                return nil
+            }
+            return path
+        } catch {
+            Log.write("kanban: 建卡失败 \(error.localizedDescription)")
+            return nil
+        }
+    }
+
     /// 面板开了才回 true。
     func send(_ text: String) async -> Bool {
         guard let data = try? Data(contentsOf: Self.pluginData),

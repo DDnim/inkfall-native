@@ -28,6 +28,24 @@ public enum KanbanHandoffAPI {
         URL(string: "http://127.0.0.1:\(config.port)/api/open-issue")!
     }
 
+    /// 后台建卡（不开面板）：`/api/create`，作成先「全体」（project 空），`work-only` = 建了就让 agent 直接去做。
+    /// 助手模式里「要查东西的问题」「清楚的任务」走这里。
+    public static func createEndpoint(_ config: Config) -> URL {
+        URL(string: "http://127.0.0.1:\(config.port)/api/create")!
+    }
+
+    public static func createBody(text: String) -> Data? {
+        try? JSONSerialization.data(withJSONObject: ["input": text, "project": "", "mode": "work-only"],
+                                    options: [.sortedKeys])
+    }
+
+    /// `{"path": "Task/….md"}` → 建好的卡的路径。
+    public static func parseCreated(_ data: Data) -> String? {
+        guard let path = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["path"] as? String,
+              !path.isEmpty else { return nil }
+        return path
+    }
+
     public static func headers(_ config: Config) -> [String: String] {
         ["Authorization": "Bearer \(config.token)", "Content-Type": "application/json"]
     }

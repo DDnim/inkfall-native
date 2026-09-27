@@ -1,9 +1,9 @@
 import Foundation
 import InkfallCore
 
-/// 试做：助手模式的分流与执行。每段转写完问 Jev 一次（说完了吗 / 布置任务吗 / 提问吗 /
-/// 有没有可核对的事实），再按分流：任务交给调用方放进看板，提问用加工模型回答，
-/// 事实用加工模型核对。输入模式不走这里。
+/// 试做：助手模式的分流与执行。每段转写完问 Jev 一次（见 `InterjectionAPI`），再按分流：
+/// 简单问题用加工模型回答、事实用加工模型核对；交给 agent / 起票面板的由调用方发给看板。
+/// 输入模式不走这里。
 /// 没有 TypeSafe key 就不分流（只记历史）；没配加工那家的 key 就不回答、不核对。
 @MainActor
 final class InterjectionProbe {
@@ -106,7 +106,7 @@ final class InterjectionProbe {
         if recent.count > Self.contextSegments { recent.removeFirst(recent.count - Self.contextSegments) }
 
         switch outcome.route {
-        case .question:
+        case .answer:
             guard let route = await checkRoute(settings: settings) else { outcome.stoppedAt = "no-check-route"; break }
             outcome.model = Self.label(route)
             let t0 = CFAbsoluteTimeGetCurrent()
@@ -127,7 +127,7 @@ final class InterjectionProbe {
             }
         case .check:
             await check(&outcome, previous: previous, route: await checkRoute(settings: settings))
-        case .task, .none, .incomplete:
+        case .agent, .ticket, .none, .incomplete:
             break
         }
         return outcome
