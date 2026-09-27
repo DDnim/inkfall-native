@@ -1466,12 +1466,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func interjectRouteForSelfTest() async -> PostProcessor.Route? {
         store.readOnly = true
         let arguments = ProcessInfo.processInfo.arguments
-        store.settings.postProcessingEnabled = true
+        // ⚠️ 不要在这里把预设改成云端的：用户实际的设置（basic）才是要验的那条路。
         if let raw = arguments.firstIndex(of: "--provider").flatMap({ arguments[safe: $0 + 1] }),
            let provider = CloudProvider(rawValue: raw) {
             store.settings.postProcessingProvider = provider
         }
-        if store.settings.postProcessingPreset.isLocal { store.settings.postProcessingPreset = .light }
         guard let route = await interject.checkRoute(settings: store.settings) else { return nil }
         if let model = arguments.firstIndex(of: "--model").flatMap({ arguments[safe: $0 + 1] }),
            case .cloud(let provider, _, let key) = route {

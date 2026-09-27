@@ -4,7 +4,7 @@
 不改粘贴、不等它。设计见 vault `Wiki/inkfall-AI插话纠错设计.md`。
 
 - 门：Jev 一次请求问两件事 —— 说完了吗（断句实验的提问，< 0.3 就拼到下一段）/ 有没有可核对的事实断言（< 0.5 不核对）
-- 核对：**加工模型**（设置里的 provider / model / key），另一段提示词（`InterjectionAPI.checkInstructions`），不并进加工
+- 核对：**加工模型**（设置里的 provider / 当前预设那一档的 model / key），另一段提示词（`InterjectionAPI.checkInstructions`），不并进加工。**预设是本地 basic 也照样核对**（第一版要求云端预设，真机上每段停在 `no-check-route`）
 - 插不插：`InterjectionPolicy` —— clear_error 且 ≥ 0.8、转写后 5 秒内、同段或后面的话里没改口、同一句不重复、2 分钟冷却
 - 日志 `/tmp/inkfall-native.log` 的 `interject:` 行
 - 自测：`Inkfall --interject-test "苹果是一种蔬菜" [--previous …] [--provider groq] [--model …]`

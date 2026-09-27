@@ -5,7 +5,7 @@ import InkfallCore
 ///
 /// 两步：Jev 的门（说完了吗 / 有没有可核对的事实，一次请求）→ 过门才用加工模型另发
 /// 一次核对。**绝不改变粘贴行为**，也不等它：粘贴照常走，纠正晚一两秒出来。
-/// 没有 TypeSafe key、加工关着 / 本地预设 / 没配加工的 key，整条关掉。
+/// 没有 TypeSafe key、没配加工那家的 key，整条关掉（加工本身开没开、是不是本地预设都不管）。
 @MainActor
 final class InterjectionProbe {
 
@@ -71,9 +71,12 @@ final class InterjectionProbe {
         transcribed.filter { $0.index > index }.map(\.text)
     }
 
-    /// 核对要用的路：加工的 provider / model（按当前预设）/ key。拿不到就是 nil（整条关）。
+    /// 核对要用的路：加工的 provider / model（按当前预设）/ key。没有 key 就是 nil（整条关）。
+    ///
+    /// ⚠️ 不看加工开没开、预设是不是本地的 basic：境平常就用 basic（本地润色，不上云），
+    /// 早先这里要求云端预设，结果真机上每段都停在 no-check-route，一次也没核对过。
+    /// basic 也有自己那一档的模型配置（`postProcessingPresetModels.basic`），照用。
     func checkRoute(settings: AppSettings) async -> PostProcessor.Route? {
-        guard settings.postProcessingEnabled, !settings.postProcessingPreset.isLocal else { return nil }
         let provider = settings.postProcessingProvider
         guard let key = await keys.resolve(provider) else { return nil }
         return .cloud(provider: provider, model: settings.postProcessingModel(for: settings.postProcessingPreset), key: key)
