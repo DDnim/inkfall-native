@@ -39,6 +39,16 @@ public enum AssistantIntentAPI {
         }
     }
 
+    /// 黑名单：目标是这些应用时不问 Jev、不交给看板，照常粘贴。
+    /// Obsidian 本身就是看板和它的聊天框 —— 在那里说话多半是在给 AI 打字，
+    /// 被判成「叫助手」再弹一次起票面板就是绕圈子。
+    public static let excludedBundleIDs: Set<String> = ["md.obsidian"]
+
+    public static func isExcluded(bundleID: String?) -> Bool {
+        guard let id = bundleID?.lowercased() else { return false }
+        return excludedBundleIDs.contains(id)
+    }
+
     /// 前台应用的用途。Jev 几乎不看 App 名，要把用途说出来才分得清
     /// 「Slack 里对同事说的帮我看一下」和「对助手说的」。查不到就是 unknown。
     public static func appKind(bundleID: String?) -> String {

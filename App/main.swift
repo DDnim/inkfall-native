@@ -1136,8 +1136,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 不加工的分支不会真的挂起，行为和以前一样立刻粘出去。
         Task { [processing, store, intent, kanban] in
             // Jev 与加工并行跑；没 key 就不问。最多等 `AssistantIntentProbe.timeout`。
+            let excluded = AssistantIntentAPI.isExcluded(bundleID: target?.bundleID)
+            if excluded { Log.write("intent: 跳过（黑名单 \(target?.appName ?? "?")）") }
             let judged = Task { [text = result.text] in
-                intent.isEnabled
+                intent.isEnabled && !excluded
                     ? await intent.judge(text: text, appName: target?.appName ?? "unknown",
                                          bundleID: target?.bundleID)
                     : nil
