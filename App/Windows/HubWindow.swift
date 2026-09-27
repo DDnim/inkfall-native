@@ -356,7 +356,8 @@ struct HubView: View {
 
     private var shortcutRows: [(String, String)] {
         [("按住说话", model.store.shortcuts.overlayHold.displayLabel),
-         ("切换录音", model.store.shortcuts.toggleRecording.displayLabel)]
+         ("切换录音", model.store.shortcuts.toggleRecording.displayLabel),
+         ("输入 / 助手模式", model.store.shortcuts.modeToggle.displayLabel)]
     }
 
     // MARK: - 加工的几行

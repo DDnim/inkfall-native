@@ -53,19 +53,23 @@ public struct ShortcutsConfig: Codable, Sendable, Hashable {
     public var overlayHold: Shortcut
     /// 切换录音：按一下开始长录音，再按一下停止并转写。默认 ⌥Space。
     public var toggleRecording: Shortcut
+    /// 切换输入模式 / 助手模式（试做，exp/interject）。默认 ⌥,。
+    public var modeToggle: Shortcut
 
     public init(
         overlayHold: Shortcut = Shortcut([(61, "Right Option")]),
-        toggleRecording: Shortcut = Shortcut([(61, "Right Option"), (49, "Space")])
+        toggleRecording: Shortcut = Shortcut([(61, "Right Option"), (49, "Space")]),
+        modeToggle: Shortcut = Shortcut([(61, "Right Option"), (43, ",")])
     ) {
         self.overlayHold = overlayHold
         self.toggleRecording = toggleRecording
+        self.modeToggle = modeToggle
     }
 
-    public var allShortcuts: [Shortcut] { [overlayHold, toggleRecording] }
+    public var allShortcuts: [Shortcut] { [overlayHold, toggleRecording, modeToggle] }
 
     public var namedShortcuts: [(id: String, shortcut: Shortcut)] {
-        [("overlayHold", overlayHold), ("toggleRecording", toggleRecording)]
+        [("overlayHold", overlayHold), ("toggleRecording", toggleRecording), ("modeToggle", modeToggle)]
     }
 
     /// 有没有任何快捷键绑了这个 keycode。
@@ -107,7 +111,7 @@ public struct ShortcutsConfig: Codable, Sendable, Hashable {
     // MARK: - 容错解码 + 迁移
 
     private enum CodingKeys: String, CodingKey {
-        case overlayHold, toggleRecording
+        case overlayHold, toggleRecording, modeToggle
         /// 减法之前「落笔」的槽。用户自定义过的绑定迁到 toggleRecording。
         case noteMode
     }
@@ -130,11 +134,13 @@ public struct ShortcutsConfig: Codable, Sendable, Hashable {
         } else {
             toggleRecording = d.toggleRecording
         }
+        modeToggle = f(.modeToggle) ?? d.modeToggle
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(overlayHold, forKey: .overlayHold)
         try c.encode(toggleRecording, forKey: .toggleRecording)
+        try c.encode(modeToggle, forKey: .modeToggle)
     }
 }

@@ -37,12 +37,14 @@ public enum HotkeyTiming {
 
 // MARK: - 事件
 
-/// 减法版只剩两个手势：按住说话（按下 / 松开）与切换录音（按一下）。
+/// 减法版的两个手势：按住说话（按下 / 松开）与切换录音（按一下），外加试做的模式切换。
 public enum HotkeyEvent: Equatable, Sendable {
     case overlayHoldPressed
     case overlayHoldReleased
     /// 切换录音：按一下开始长录音，再按一下停止并转写。
     case toggleRecordingPressed
+    /// 输入模式（粘贴）⇄ 助手模式（不粘贴、记进历史）。
+    case modeTogglePressed
 }
 
 // MARK: - 和弦状态机
@@ -202,6 +204,9 @@ public struct HotkeyMatcher: Sendable {
         edge("toggle", matches(shortcuts.toggleRecording)) {
             events.append(.toggleRecordingPressed)
         }
+        edge("mode", matches(shortcuts.modeToggle)) {
+            events.append(.modeTogglePressed)
+        }
     }
 
     func matches(_ shortcut: Shortcut) -> Bool {
@@ -218,7 +223,7 @@ public struct HotkeyMatcher: Sendable {
     private func shouldConsumeKeyDown(_ keycode: UInt16) -> Bool {
         // 修饰键永不吞 —— 吞了会打断正常输入。
         if Keycode.modifiers.contains(keycode) { return false }
-        return consumes(shortcuts.toggleRecording, keycode)
+        return consumes(shortcuts.toggleRecording, keycode) || consumes(shortcuts.modeToggle, keycode)
     }
 
     private func consumes(_ shortcut: Shortcut, _ keycode: UInt16) -> Bool {

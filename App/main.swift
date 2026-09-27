@@ -49,6 +49,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notchHoldUntil: CFAbsoluteTime = 0
     /// 试做：纠正同时念出来。念的期间长录音不切段，念完把这段录音扔掉（否则 AI 的声音会被转写粘出去）。
     private let interjectVoice = InterjectionVoice()
+    /// 试做：⌥, 切换。助手模式下录的话**不粘贴**，加工后记进历史（`history.json`）。跨重启保留。
+    private var assistantMode = UserDefaults.standard.bool(forKey: "inkfall.assistantMode") {
+        didSet {
+            UserDefaults.standard.set(assistantMode, forKey: "inkfall.assistantMode")
+            modeMenuItem?.state = assistantMode ? .on : .off
+        }
+    }
+    private let history = HistoryStore()
+    private var modeMenuItem: NSMenuItem?
+    private let historyMenu = NSMenu()
 
     /// 切换录音的自动分段：停顿 1.3 秒就切一段送去转写，不等再按一下。
     private var segmenter = SilenceSegmenter()
@@ -262,6 +272,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "设置…", action: #selector(showSettings), keyEquivalent: ",")
         menu.addItem(.separator())
+        let mode = NSMenuItem(title: "助手模式（⌥, 切换）", action: #selector(toggleModeFromMenu), keyEquivalent: "")
+        mode.state = assistantMode ? .on : .off
+        menu.addItem(mode)
+        modeMenuItem = mode
+        let historyItem = NSMenuItem(title: "历史记录", action: nil, keyEquivalent: "")
+        historyItem.submenu = historyMenu
+        menu.addItem(historyItem)
+        rebuildHistoryMenu()
+        menu.addItem(.separator())
         menu.addItem(withTitle: "刘海自测", action: #selector(testOverlay), keyEquivalent: "")
         menu.addItem(withTitle: "重新打开引导", action: #selector(reopenOnboarding), keyEquivalent: "")
         menu.addItem(.separator())
@@ -273,6 +292,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func reopenOnboarding() { showOnboarding() }
+    @objc private func toggleModeFromMenu() { toggleMode() }
+
+    /// ⌥, / 菜单：输入模式（粘贴）⇄ 助手模式（不粘贴，记进历史）。
+    private func toggleMode() {
+        assistantMode.toggle()
+        Log.write("mode: \(assistantMode ? "助手模式" : "输入模式")")
+        flash(.success, assistantMode ? "助手模式 · 不粘贴，记进历史" : "输入模式 · 照常粘贴", seconds: 1.6)
+    }
+
+    /// 历史记录的子菜单：最近 20 条，点一下复制。
+    private func rebuildHistoryMenu() {
+        historyMenu.removeAllItems()
+        let recent = history.entries.prefix(20)
+        if recent.isEmpty {
+            historyMenu.addItem(withTitle: "（还没有记录）", action: nil, keyEquivalent: "")
+        }
+        let time = DateFormatter()
+        time.dateFormat = "MM-dd HH:mm"
+        for entry in recent {
+            let text = entry.displayText.replacingOccurrences(of: "\n", with: " ")
+            let label = "\(time.string(from: Date(timeIntervalSince1970: Double(entry.createdAtMs) / 1000)))  "
+                + (text.count > 36 ? String(text.prefix(36)) + "…" : text)
+            let item = NSMenuItem(title: label, action: #selector(copyHistoryEntry(_:)), keyEquivalent: "")
+            item.representedObject = entry.displayText
+            item.toolTip = entry.displayText
+            item.target = self
+            historyMenu.addItem(item)
+        }
+        historyMenu.addItem(.separator())
+        let open = NSMenuItem(title: "在 Finder 中显示 history.json", action: #selector(revealHistoryFile), keyEquivalent: "")
+        open.target = self
+        historyMenu.addItem(open)
+    }
+
+    @objc private func copyHistoryEntry(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        flash(.success, "已复制", seconds: 1.2)
+    }
+
+    @objc private func revealHistoryFile() {
+        NSWorkspace.shared.activateFileViewerSelecting([HistoryStore.url])
+    }
+
+    /// 助手模式：这一段不粘贴，记进历史。
+    private func recordAssistantTake(source: String, outcome: PostProcessingCoordinator.Outcome) {
+        let settings = store.settings
+        history.append(HistoryEntry(sourceText: source, finalText: outcome.text,
+                                    transcriptionMode: settings.transcriptionMode,
+                                    postProcessingEnabled: settings.postProcessingEnabled,
+                                    postProcessingPreset: settings.postProcessingPreset))
+        rebuildHistoryMenu()
+        Log.write("history: 助手模式记下 \(outcome.text.count) 字（共 \(history.entries.count) 条）")
+    }
     @objc private func showSettings() { hub.show() }
     /// 刘海自测：把几个状态依次画一遍。录音管线接上之前，
     /// 这是唯一能看到墨锭真实渲染的方式（截图受 TCC 限制）。
@@ -918,6 +992,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 beginToggle()
             }
+
+        // ⌥,：输入模式 ⇄ 助手模式。同样先丢掉 ⌥ 按下时起的那截录音。
+        case .modeTogglePressed:
+            abortSpuriousHold()
+            toggleMode()
         }
     }
 
@@ -1011,7 +1090,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.write("toggle: 粘贴目标=\(pasteTarget?.appName ?? "无")")
         hideTimer?.invalidate()
         lastHoldNotchSecond = -1
-        notch.show(state: .recording, message: "录音 00:00", compact: true)
+        notch.show(state: .recording, message: "\(assistantMode ? "助手" : "录音") 00:00", compact: true)
         startLevelTicker()
         Log.write("toggle: 开始长录音")
     }
@@ -1170,6 +1249,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard self?.notchHeld == false else { return }
                     self?.notch.show(state: .processing, message: "\(preset.label) · 加工中")
                 })
+            // 助手模式：先记进历史（交给看板也记，这样历史里是完整的）。
+            let assistant = self.assistantMode
+            if assistant { self.recordAssistantTake(source: result.text, outcome: outcome) }
             if let judgement = await judged.value {
                 Log.write(String(format: "intent: p=%.2f → %@ %dms app=%@ kind=%@",
                                  judgement.p, judgement.verdict.rawValue, judgement.elapsedMs,
@@ -1193,6 +1275,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     self.pendingIntentNotice = String(format: "Jev %.2f，看板没连上，已照常粘贴", judgement.p)
                 }
+            }
+            if assistant {
+                // 不粘贴。提示攒着的话一起说。
+                var message = "已记进历史"
+                if let notice = self.pendingIntentNotice { message += " · \(notice)" }
+                self.pendingIntentNotice = nil
+                self.pendingProcessingNotice = nil
+                self.pendingTranscriptionNotice = nil
+                self.flash(.success, message, seconds: 1.6)
+                self.takeFinished()
+                return
             }
             self.insert(outcome, into: target)
         }
@@ -1662,7 +1755,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `beginToggle()` 写的那行会在第一拍就被它盖掉。
         let time = String(format: "%02d:%02d", whole / 60, whole % 60)
         notch.show(state: .recording,
-                   message: toggleOwnsRecorder ? "录音 \(time)" : time,
+                   message: toggleOwnsRecorder ? "\(assistantMode ? "助手" : "录音") \(time)"
+                       : assistantMode ? "助手 \(time)" : time,
                    compact: true)
     }
 

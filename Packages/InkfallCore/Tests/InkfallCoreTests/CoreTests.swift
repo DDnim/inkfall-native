@@ -355,7 +355,7 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertEqual(cfg.toggleRecording.normalizedKeycodes, optionSpace)
     }
 
-    /// 写盘只有两个槽；读回来必须一致。
+    /// 写盘只有三个槽（试做加了 modeToggle）；读回来必须一致。
     func testRoundTrip() throws {
         var cfg = ShortcutsConfig()
         cfg.overlayHold = Shortcut([(63, "Fn")])
@@ -364,7 +364,7 @@ final class ShortcutsTests: XCTestCase {
         let back = try JSONDecoder().decode(ShortcutsConfig.self, from: data)
         XCTAssertEqual(back, cfg)
         let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(Set(obj.keys), ["overlayHold", "toggleRecording"])
+        XCTAssertEqual(Set(obj.keys), ["overlayHold", "toggleRecording", "modeToggle"])
     }
 
     func testNormalizationFoldsLeftRightButNotRightOption() {

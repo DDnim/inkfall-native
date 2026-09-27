@@ -166,6 +166,22 @@ final class HotkeyMatcherTests: XCTestCase {
                        [.overlayHoldPressed, .toggleRecordingPressed, .overlayHoldReleased])
     }
 
+    func testModeToggleChord() {
+        var kb = Keyboard()
+        kb.rightOption(down: true)
+        kb.keyDown(43)
+        XCTAssertTrue(kb.lastSuppressed, "⌥, 的逗号不能漏给前台 App")
+        kb.keyUp(43)
+        kb.rightOption(down: false)
+        XCTAssertEqual(kb.drain(), [.overlayHoldPressed, .modeTogglePressed, .overlayHoldReleased])
+    }
+
+    func testModeToggleSurvivesDecodingOldConfig() throws {
+        let old = Data(#"{"overlayHold":{"keys":[{"keycode":61,"label":"Right Option"}]}}"#.utf8)
+        let config = try JSONDecoder().decode(ShortcutsConfig.self, from: old)
+        XCTAssertEqual(config.modeToggle, ShortcutsConfig().modeToggle)
+    }
+
     func testBareKeysAreUntouched() {
         var kb = Keyboard()
         kb.keyDown(49)
