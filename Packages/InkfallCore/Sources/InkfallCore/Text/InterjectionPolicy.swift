@@ -7,8 +7,10 @@ public struct InterjectionPolicy: Sendable {
 
     /// 置信度门槛（评测前的起点，见 experiments/interject）。
     public static let minConfidence = 0.8
-    /// 两次插话之间至少隔这么久。
-    public static let cooldown: TimeInterval = 120
+    /// 两次插话之间至少隔这么久。只防同一口气里连着插两句（同一句纠正另有 `duplicate` 挡）；
+    /// 原来的 2 分钟、后来试的 10 秒都会让聊天里接连说错的第二句不纠正
+    /// （2026-09-30 边听边插话的模拟：地球 / 月亮两句都被冷却吃掉）。
+    public static let cooldown: TimeInterval = 4
     /// 从这一段转写好到核对回来，超过这么久话题已经过去了，只进日志。
     public static let maxDelay: TimeInterval = 5
     /// 后面的话里出现这些就当本人已经改口。

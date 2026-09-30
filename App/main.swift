@@ -60,6 +60,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var modeMenuItem: NSMenuItem?
     private let historyMenu = NSMenu()
 
+    /// 助手模式的长录音：边听边插话（停顿 0.2 秒先转写，Jev 判说完了就纠正；1.5 秒硬收）。
+    /// 输入模式的长录音不走这里，照旧按 1.3 秒停顿分段粘贴。
+    private lazy var live: LiveInterjector = makeLive()
+    /// `--live-sim` 进行中：假录音器、JSONL 输出、念纠正的模拟。
+    private var liveSim: (source: FileLiveSource, out: FileHandle?, mute: Bool)?
+    /// `--live-sim --mute`：不出声，按字数估念多久；这期间和真的一样不切段，念完扔掉录到的。
+    private var simVoiceUntil: CFAbsoluteTime = 0
+    /// 收下的句子还在核对 / 回答的个数（模拟等它们归零再退出）。
+    private var liveActsPending = 0
+
     /// 切换录音的自动分段：停顿 1.3 秒就切一段送去转写，不等再按一下。
     private var segmenter = SilenceSegmenter()
     private var lastSegmentTick: CFAbsoluteTime = 0
@@ -150,6 +160,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let index = arguments.firstIndex(of: "--interject-eval") {
             runInterjectEval(cases: arguments[safe: index + 1] ?? "", out: arguments[safe: index + 2] ?? "")
+            return
+        }
+
+        // 边听边插话的模拟：wav 按真实时间「录」进来，转写 / Jev / 核对全是真的，不出声加 `--mute`。
+        // `--live-sim <wav> [--out <jsonl>] [--mute] [--tail 秒]`
+        if let index = arguments.firstIndex(of: "--live-sim") {
+            runLiveSim(wav: arguments[safe: index + 1] ?? "")
             return
         }
 
@@ -1084,6 +1101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggleStartedAt = lastSegmentTick
         toggleSegmentsSent = 0
         interject.reset()
+        if assistantMode { startLive(source: RecorderLiveSource(recorder)) }
         // 必须在起录时抓，不能等转写回来 —— 那时用户多半已经切走了。
         pasteTarget = PasteTarget.current()
         Log.write("toggle: 粘贴目标=\(pasteTarget?.appName ?? "无")")
@@ -1102,6 +1120,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopLevelTicker()
         guard let audio = try? recorder.stop() else {
             flash(.error, "录音结束失败", seconds: 2.0)
+            return
+        }
+        if live.isActive {
+            live.stop(finalAudio: audio)
+            flash(.success, "助手 · 结束", seconds: 1.2)
             return
         }
         enqueue(audio, tag: "toggle", quiet: toggleSegmentsSent > 0)
@@ -1332,20 +1355,202 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 刘海显示并念出来（纠正 / 回答）。刘海停到念完为止，按字数估。
     private func present(_ text: String, prefix: String) {
+        if let sim = liveSim {
+            live.trace("present", ["text": prefix + text])
+            guard sim.mute else { speakInterjection(text); return }
+            // 不出声的模拟：和真的一样，念之前收下已经说的，念的期间不切段，念完扔掉录到的
+            live.cut(reason: "before-voice")
+            simVoiceUntil = CFAbsoluteTimeGetCurrent() + Self.estimatedSpeech(text)
+            return
+        }
         let seconds = min(15, max(4, Double(text.count) / 5))
         notchHoldUntil = 0
         flash(.error, prefix + text, seconds: seconds)
         notchHoldUntil = CFAbsoluteTimeGetCurrent() + seconds
+        speakInterjection(text)
+    }
+
+    private func speakInterjection(_ text: String) {
         interjectVoice.speak(text, onStart: { [weak self] in
             // 念之前把已经说的话先切出去（照常转写），念的这段之后整段扔掉。
-            guard let self, self.toggleOwnsRecorder, self.recorder.isRecording else { return }
+            guard let self else { return }
+            if self.live.isActive { self.live.cut(reason: "before-voice"); return }
+            guard self.toggleOwnsRecorder, self.recorder.isRecording else { return }
             self.cutToggleSegment(reason: "插话前")
         }, onFinish: { [weak self] in
-            guard let self, self.toggleOwnsRecorder, self.recorder.isRecording else { return }
+            guard let self else { return }
+            if self.live.isActive { self.live.discardVoice(); return }
+            guard self.toggleOwnsRecorder, self.recorder.isRecording else { return }
             let dropped = (try? self.recorder.flushSegment(retainingTailMs: 0))?.durationMs ?? 0
             self.segmenter.resetSegment()
             Log.write("assistant: 念完，扔掉念的期间录到的 \(dropped)ms")
         })
+    }
+
+    /// 念一句中文大约多久（模拟用）：每字 0.2 秒，另加起头的 0.3 秒。
+    private static func estimatedSpeech(_ text: String) -> Double { 0.3 + Double(text.count) * 0.2 }
+
+    // MARK: - 边听边插话
+
+    private func makeLive() -> LiveInterjector {
+        let live = LiveInterjector(probe: interject) { [weak self] audio in
+            guard let self else { throw CancellationError() }
+            return try await self.transcribeLive(audio)
+        }
+        live.trace = { [weak self] event, fields in self?.traceLive(event, fields) }
+        live.onFinished = { [weak self] finished in self?.handleLive(finished) }
+        return live
+    }
+
+    private func startLive(source: LiveAudioSource) {
+        let settings = store.settings
+        if let provider = settings.transcriptionMode.cloudProviderForSelfTest { CloudTranscriber.prewarm(provider) }
+        PostProcessor.prewarm(InterjectionAPI.checkProvider)
+        live.start(source: source)
+    }
+
+    private func traceLive(_ event: String, _ fields: [String: Any]) {
+        let rendered = fields.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+        Log.write("live: \(event) \(rendered)")
+        guard let sim = liveSim else { return }
+        var row = fields
+        row["t"] = (sim.source.elapsed * 1000).rounded() / 1000
+        row["ev"] = event
+        if let data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]) {
+            sim.out?.write(data + Data("\n".utf8))
+        }
+        emit(String(format: "%7.2f %@ %@", sim.source.elapsed, event, rendered))
+    }
+
+    /// 边听边插话的一次转写：和两个手势同一个 `Transcriber`（云端 / 降级 / 会话语言锁都一样）。
+    private func transcribeLive(_ audio: RecordedAudio) async throws -> String {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("inkfall-live-\(UUID().uuidString).wav")
+        try audio.data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let settings = store.settings
+        let policy = TranscriptionLanguagePolicy(settings: settings)
+        let request = LocalTranscriber.Request(
+            wavURL: url, modelID: settings.selectedLocalModelId,
+            language: policy.requested(locked: sessionLanguage),
+            replacements: settings.transcriptionReplacements)
+        let outcome = try await router.transcribe(audio: audio, local: request, settings: settings, policy: policy)
+        lockSessionLanguage(outcome.result.language, policy: policy)
+        return outcome.result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 收下的一句：记进历史，说错了就纠正。**只纠正**：两个人聊天时的提问、「你帮我看看」是说给对方的，
+    /// 模拟对话里 AI 去答「真的假的」「是吗」「明朝以前吃什么辣的」全是多嘴（2026-09-30）。
+    /// 按住说话（明确是对助手说的）照旧回答 / 建卡。
+    private func handleLive(_ finished: LiveInterjector.Finished) {
+        let settings = store.settings
+        if liveSim == nil {
+            history.append(HistoryEntry(sourceText: finished.text, finalText: finished.text,
+                                        transcriptionMode: settings.transcriptionMode,
+                                        postProcessingEnabled: false, postProcessingPreset: nil))
+            rebuildHistoryMenu()
+        }
+        liveActsPending += 1
+        Task { [interject] in
+            defer { self.liveActsPending -= 1 }
+            let outcome = await interject.act(segment: finished.text, gate: finished.gate, settings: settings,
+                                              answering: false)
+            let since = Int((CFAbsoluteTimeGetCurrent() - finished.spokeUntil) * 1000)
+            var fields: [String: Any] = ["text": finished.text, "route": outcome.route.rawValue,
+                                         "model": outcome.model, "ms": outcome.checkMs, "since_speech_ms": since,
+                                         "claim": finished.gate.claim, "question": finished.gate.question,
+                                         "task": finished.gate.task]
+            if let stopped = outcome.stoppedAt { fields["stopped"] = stopped }
+            switch outcome.route {
+            case .check:
+                guard let check = outcome.check else { self.live.trace("act", fields); return }
+                let delay = CFAbsoluteTimeGetCurrent() - finished.spokeUntil
+                let decision = interject.decide(check, segment: finished.text, delay: delay, laterSegments: [])
+                fields["kind"] = check.kind.rawValue
+                fields["wrong"] = check.wrong
+                fields["confidence"] = check.confidence
+                fields["correction"] = check.correction
+                switch decision {
+                case .show: fields["decision"] = "show"
+                case .drop(let reason): fields["decision"] = reason.rawValue
+                }
+                self.live.trace("act", fields)
+                if case .show(let correction) = decision { self.present(correction, prefix: "纠正：") }
+            case .answer, .agent, .ticket, .none, .incomplete:
+                self.live.trace("act", fields)
+            }
+        }
+    }
+
+    /// `--live-sim <wav> [--out <jsonl>] [--mute] [--tail 秒] [--no-smart-turn] [--turn-give-up 秒]`：
+    /// 把 wav 当成麦克风按真实时间放进边听边插话，事件打到 stderr 和 JSONL（`t` 是从放音开始的秒数）。
+    private func runLiveSim(wav: String) {
+        selfTest = true
+        store.readOnly = true
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let data = FileManager.default.contents(atPath: wav), FileLiveSource(wav: data) != nil else {
+            emit("用法：--live-sim <16bit 单声道 wav> [--out <jsonl>] [--mute] [--tail 秒] [--no-smart-turn]")
+            exit(2)
+        }
+        guard interject.hasGateKey else { emit("没有 TypeSafe key"); exit(1) }
+        let out = arguments.firstIndex(of: "--out").flatMap { arguments[safe: $0 + 1] }.flatMap { path -> FileHandle? in
+            FileManager.default.createFile(atPath: path, contents: nil)
+            return FileHandle(forWritingAtPath: path)
+        }
+        simTail = arguments.firstIndex(of: "--tail").flatMap { arguments[safe: $0 + 1] }.flatMap(Double.init) ?? 4
+        live.smartTurnEnabled = !arguments.contains("--no-smart-turn")
+        if let giveUp = arguments.firstIndex(of: "--turn-give-up").flatMap({ arguments[safe: $0 + 1] }).flatMap(Double.init) {
+            live.turnGiveUp = giveUp
+        }
+        Task { @MainActor in
+            // 模型先载好再开始放（真机上录音一开始就载，头一次停顿前早好了）
+            if self.live.smartTurnEnabled {
+                await SmartTurnModel.shared.prepare().value
+                if let failure = SmartTurnModel.shared.failure { emit("smart-turn 载不进来：\(failure)") }
+            }
+            guard let source = FileLiveSource(wav: data) else { exit(2) }
+            self.liveSim = (source, out, arguments.contains("--mute"))
+            self.startLive(source: source)
+            emit(String(format: "live-sim: %.1fs 音频，放完再等 %.0fs", source.durationSeconds, self.simTail))
+            self.simLast = CFAbsoluteTimeGetCurrent()
+            Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
+                Task { @MainActor in AppDelegate.shared?.simTick() }
+            }
+        }
+    }
+
+    private var simLast: CFAbsoluteTime = 0
+    private var simTail: Double = 4
+    private var simVoiceActive = false
+    private var simStoppedAt: CFAbsoluteTime?
+
+    private func simTick() {
+        guard let sim = liveSim else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        let delta = now - simLast
+        simLast = now
+        sim.source.advance()
+        if let stopped = simStoppedAt {
+            // 放完了：等在路上的转写 / 核对回来（最多 20 秒），再退出
+            let idle = live.inFlight == 0 && liveActsPending == 0
+            guard (idle && now - stopped > 0.5) || now - stopped > 20 else { return }
+            try? sim.out?.close()
+            Log.flush()
+            exit(0)
+        }
+        let speaking = sim.mute ? now < simVoiceUntil : interjectVoice.isSpeaking
+        if speaking {
+            simVoiceActive = true
+        } else if simVoiceActive {
+            simVoiceActive = false
+            live.discardVoice()
+        } else {
+            live.tick(level: sim.source.level, delta: delta)
+        }
+        if sim.source.elapsed > sim.source.durationSeconds + simTail, !speaking {
+            live.stop(finalAudio: sim.source.takeAll())
+            simStoppedAt = now
+        }
     }
 
     private var notchHeld: Bool { CFAbsoluteTimeGetCurrent() < notchHoldUntil }
@@ -1584,11 +1789,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.readOnly = true
         let arguments = ProcessInfo.processInfo.arguments
         // ⚠️ 不要在这里把预设改成云端的：用户实际的设置（basic）才是要验的那条路。
+        var preferQwen = true
         if let raw = arguments.firstIndex(of: "--provider").flatMap({ arguments[safe: $0 + 1] }),
            let provider = CloudProvider(rawValue: raw) {
             store.settings.postProcessingProvider = provider
+            preferQwen = false
         }
-        guard let route = await interject.checkRoute(settings: store.settings) else { return nil }
+        guard let route = await interject.checkRoute(settings: store.settings, preferQwen: preferQwen) else { return nil }
         if let model = arguments.firstIndex(of: "--model").flatMap({ arguments[safe: $0 + 1] }),
            case .cloud(let provider, _, let key) = route {
             return .cloud(provider: provider, model: model, key: key)
@@ -1756,7 +1963,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let now = CFAbsoluteTimeGetCurrent()
             let delta = now - lastSegmentTick
             lastSegmentTick = now
-            if recorder.takeDurationSeconds >= Self.hardCutSeconds {
+            if live.isActive {
+                if recorder.takeDurationSeconds >= Self.hardCutSeconds {
+                    live.cut(reason: "hard-limit")
+                } else if !interjectVoice.isSpeaking {
+                    live.tick(level: recorder.level, delta: delta)
+                }
+            } else if recorder.takeDurationSeconds >= Self.hardCutSeconds {
                 cutToggleSegment(reason: "到达 \(Int(Self.hardCutSeconds))s 硬上限")
             } else if interjectVoice.isSpeaking {
                 // 念纠正的时候不切段：那是 AI 的声音，念完整段扔掉。

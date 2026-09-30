@@ -29,6 +29,20 @@ enum CloudTranscriber {
         return URLSession(configuration: configuration)
     }()
 
+    /// 先把到服务端的连接握好（边听边插话开录时调），第一段转写不用再付 TLS。
+    static func prewarm(_ provider: CloudProvider) {
+        let host: String
+        switch provider {
+        case .openai: host = "https://api.openai.com/v1/models"
+        case .groq: host = "https://api.groq.com/openai/v1/models"
+        case .gemini: host = "https://generativelanguage.googleapis.com/"
+        }
+        guard let url = URL(string: host) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        session.dataTask(with: request).resume()
+    }
+
     static func run(route: TranscriptionAPI.Route,
                     audio: RecordedAudio,
                     language: String?,

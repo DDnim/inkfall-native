@@ -1,0 +1,322 @@
+[
+ {
+  "segment": "苹果其实是一种蔬菜",
+  "gold": true,
+  "p": 0.9
+ },
+ {
+  "segment": "你知道吗苹果其实是一种蔬菜",
+  "gold": true,
+  "p": 0.87
+ },
+ {
+  "segment": "水到五十度就会沸腾",
+  "gold": true,
+  "p": 0.9
+ },
+ {
+  "segment": "日本的首都是大阪吧",
+  "gold": true,
+  "p": 0.91
+ },
+ {
+  "segment": "对了，日本的首都是大阪吧",
+  "gold": true,
+  "p": 0.92
+ },
+ {
+  "segment": "一年有十三个月",
+  "gold": true,
+  "p": 0.9
+ },
+ {
+  "segment": "地球是太阳系里最大的行星",
+  "gold": true,
+  "p": 0.92
+ },
+ {
+  "segment": "我觉得大阪比东京好玩",
+  "gold": true,
+  "p": 0.94
+ },
+ {
+  "segment": "我们下周末一起去爬山吧",
+  "gold": true,
+  "p": 0.96
+ },
+ {
+  "segment": "我昨天在超市买了好多，准备做沙拉",
+  "gold": true,
+  "p": 0.9
+ },
+ {
+  "segment": "买了，香蕉里钾挺多的，对身体好",
+  "gold": true,
+  "p": 0.95
+ },
+ {
+  "segment": "我同事说长城在太空上用肉眼能看到",
+  "gold": true,
+  "p": 0.92
+ },
+ {
+  "segment": "今天好热啊",
+  "gold": true,
+  "p": 0.92
+ },
+ {
+  "segment": "你周末有什么安排",
+  "gold": true,
+  "p": 0.93
+ },
+ {
+  "segment": "那你买香蕉了吗",
+  "gold": true,
+  "p": 0.95
+ },
+ {
+  "segment": "真的假的，我一直以为是水果",
+  "gold": true,
+  "p": 0.91
+ },
+ {
+  "segment": "月亮是自己发光的",
+  "gold": true,
+  "p": 0.92
+ },
+ {
+  "segment": "人一共有三百颗牙齿",
+  "gold": true,
+  "p": 0.91
+ },
+ {
+  "segment": "我打算去看电影然后吃个火锅",
+  "gold": true,
+  "p": 0.93
+ },
+ {
+  "segment": "你开玩笑吧",
+  "gold": true,
+  "p": 0.88
+ },
+ {
+  "segment": "我觉得你说的不太对",
+  "gold": true,
+  "p": 0.9
+ },
+ {
+  "segment": "蘋果其實是一種蔬菜",
+  "gold": true,
+  "p": 0.9
+ },
+ {
+  "segment": "是啊，夏天就是这样",
+  "gold": true,
+  "p": 0.92
+ },
+ {
+  "segment": "东京塔有三百三十三米高",
+  "gold": true,
+  "p": 0.95
+ },
+ {
+  "segment": "鲸鱼是鱼",
+  "gold": true,
+  "p": 0.93
+ },
+ {
+  "segment": "你知道吗",
+  "gold": false,
+  "p": 0.23
+ },
+ {
+  "segment": "我跟你说",
+  "gold": false,
+  "p": 0.19
+ },
+ {
+  "segment": "对了，日本的首都",
+  "gold": false,
+  "p": 0.09
+ },
+ {
+  "segment": "对了",
+  "gold": false,
+  "p": 0.6
+ },
+ {
+  "segment": "日本的首都",
+  "gold": false,
+  "p": 0.48
+ },
+ {
+  "segment": "我昨天在超市买了好多",
+  "gold": false,
+  "p": 0.4
+ },
+ {
+  "segment": "人一共有",
+  "gold": false,
+  "p": 0.07
+ },
+ {
+  "segment": "我跟你说人一共有",
+  "gold": false,
+  "p": 0.07
+ },
+ {
+  "segment": "苹果其实是",
+  "gold": false,
+  "p": 0.06
+ },
+ {
+  "segment": "水到",
+  "gold": false,
+  "p": 0.13
+ },
+ {
+  "segment": "我觉得这个方案的问题在于",
+  "gold": false,
+  "p": 0.08
+ },
+ {
+  "segment": "因为上周的数据显示",
+  "gold": false,
+  "p": 0.08
+ },
+ {
+  "segment": "我打算去看电影",
+  "gold": false,
+  "p": 0.94
+ },
+ {
+  "segment": "所以",
+  "gold": false,
+  "p": 0.11
+ },
+ {
+  "segment": "然后我们",
+  "gold": false,
+  "p": 0.09
+ },
+ {
+  "segment": "如果明天下雨的话",
+  "gold": false,
+  "p": 0.06
+ },
+ {
+  "segment": "那个，就是说",
+  "gold": false,
+  "p": 0.11
+ },
+ {
+  "segment": "我同事说",
+  "gold": false,
+  "p": 0.1
+ },
+ {
+  "segment": "月亮是",
+  "gold": false,
+  "p": 0.05
+ },
+ {
+  "segment": "今天好热啊估计有",
+  "gold": false,
+  "p": 0.07
+ },
+ {
+  "segment": "地球是太阳系里",
+  "gold": false,
+  "p": 0.06
+ },
+ {
+  "segment": "對了,這關在首都",
+  "gold": false,
+  "p": 0.53
+ },
+ {
+  "segment": "你知道嗎?",
+  "gold": false,
+  "p": 0.58
+ },
+ {
+  "segment": "诶，我跟你说个事儿什么事？你知道吗，苹果其实是一种蔬菜",
+  "gold": true,
+  "p": 0.82
+ },
+ {
+  "segment": "诶，我跟你说个事儿什么事？你知道吗",
+  "gold": false,
+  "p": 0.34
+ },
+ {
+  "segment": "诶，我跟你说个事儿什么事",
+  "gold": true,
+  "p": 0.26
+ },
+ {
+  "segment": "你知道吗，苹果其实是一种蔬菜真的假的，我一直以为是水果",
+  "gold": true,
+  "p": 0.81
+ },
+ {
+  "segment": "你知道吗，苹果其实是一种蔬菜真的假的，我一直以为是水果我昨天在超市买了好多",
+  "gold": false,
+  "p": 0.67
+ },
+ {
+  "segment": "我昨天在超市买了好多，准备做沙拉那你买香蕉了吗",
+  "gold": true,
+  "p": 0.88
+ },
+ {
+  "segment": "买了，香蕉里钾挺多的，对身体好对了，日本的首都",
+  "gold": false,
+  "p": 0.23
+ },
+ {
+  "segment": "买了，香蕉里钾挺多的，对身体好对了，日本的首都，是大阪吧",
+  "gold": true,
+  "p": 0.87
+ },
+ {
+  "segment": "我觉得大阪比东京好玩嗯我同事说",
+  "gold": false,
+  "p": 0.72
+ },
+ {
+  "segment": "我觉得大阪比东京好玩嗯我同事说长城在太空上用肉眼能看到",
+  "gold": true,
+  "p": 0.91
+ },
+ {
+  "segment": "然后吃个火锅一年有13个月",
+  "gold": true,
+  "p": 0.84
+ },
+ {
+  "segment": "然后吃个火锅一年有13个月好的好的月亮是自己发光的",
+  "gold": true,
+  "p": 0.85
+ },
+ {
+  "segment": "今天好热啊估计有35度是啊，夏天就是这样我跟你说，人一共有",
+  "gold": false,
+  "p": 0.09
+ },
+ {
+  "segment": "今天好热啊估计有35度是啊，夏天就是这样我跟你说，人一共有300颗牙齿",
+  "gold": true,
+  "p": 0.88
+ },
+ {
+  "segment": "中国的首都是北京你周末有什么安排？我打算去看电影",
+  "gold": true,
+  "p": 0.95
+ },
+ {
+  "segment": "中国的首都是北京你周末有什么安排？我打算去看电影然后",
+  "gold": false,
+  "p": 0.07
+ }
+]

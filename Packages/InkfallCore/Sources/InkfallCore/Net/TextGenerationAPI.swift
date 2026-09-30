@@ -50,8 +50,11 @@ public enum TextGenerationAPI {
         }
     }
 
+    /// - `maxOutputTokens`: 输出上限。Groq 免费档按「预计输出」卡每分钟 token，短回答要写上。
+    /// - `temperature`: 不给就用各家默认（Gemini 是下面的 `temperature`）。
     public static func body(provider: CloudProvider, model: String,
-                            instructions: String, input: String) -> Data? {
+                            instructions: String, input: String, maxOutputTokens: Int? = nil,
+                            temperature: Double? = nil) -> Data? {
         let payload: [String: Any]
         switch provider {
         case .openai, .groq:
@@ -65,11 +68,15 @@ public enum TextGenerationAPI {
             if provider == .groq, model.contains("gpt-oss") {
                 request["reasoning"] = ["effort": "low"]
             }
+            if let maxOutputTokens { request["max_output_tokens"] = maxOutputTokens }
+            if let temperature { request["temperature"] = temperature }
             payload = request
         case .gemini:
+            var config: [String: Any] = ["temperature": temperature ?? Self.temperature]
+            if let maxOutputTokens { config["maxOutputTokens"] = maxOutputTokens }
             payload = [
                 "contents": [["parts": [["text": "\(instructions)\n\n\(input)"]]]],
-                "generationConfig": ["temperature": temperature],
+                "generationConfig": config,
             ]
         }
         return try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])

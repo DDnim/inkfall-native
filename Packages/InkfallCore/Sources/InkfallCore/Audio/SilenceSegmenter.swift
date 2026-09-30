@@ -48,6 +48,12 @@ public struct SilenceSegmenterConfig: Sendable, Equatable {
     public var floorPeakCapRatio: Float
     /// 语音峰值记忆的衰减时间常数。
     public var speechPeakTimeConstant: Double
+    /// 边听边转写（助手模式的长录音）：停顿到这么久先报一次 `.pause`，不切段。
+    /// `nil` = 不报（输入模式、移动端），行为与原来完全相同。
+    public var pauseSeconds: Double?
+    /// 上一次 `.pause` 之后至少又说了这么久，才再报 `.pause`。
+    /// 一声「嗯」、一下杂音不值得把整句再转写一遍（Groq 免费档每分钟只有 20 次）。
+    public var pauseMinSpeechSeconds: Double
 
     public init(
         silenceCutSeconds: Double = 1.3,
@@ -62,7 +68,9 @@ public struct SilenceSegmenterConfig: Sendable, Equatable {
         floorWindowSeconds: Double = 1.0,
         speechAttackSeconds: Double = 0.12,
         floorPeakCapRatio: Float = 0.15,
-        speechPeakTimeConstant: Double = 4.0
+        speechPeakTimeConstant: Double = 4.0,
+        pauseSeconds: Double? = nil,
+        pauseMinSpeechSeconds: Double = 0.25
     ) {
         self.silenceCutSeconds = silenceCutSeconds
         self.minSpeechSeconds = minSpeechSeconds
@@ -77,6 +85,8 @@ public struct SilenceSegmenterConfig: Sendable, Equatable {
         self.speechAttackSeconds = speechAttackSeconds
         self.floorPeakCapRatio = floorPeakCapRatio
         self.speechPeakTimeConstant = speechPeakTimeConstant
+        self.pauseSeconds = pauseSeconds
+        self.pauseMinSpeechSeconds = pauseMinSpeechSeconds
     }
 
     public static let `default` = SilenceSegmenterConfig()
@@ -103,6 +113,19 @@ public struct SilenceSegmenter: Sendable {
     private var aboveEnter: Double = 0
     /// 近期语音峰值的衰减记忆，给噪声底封顶用。
     private var speechPeak: Float = 0
+    /// 这一段静音里已经报过 `.pause` 了（再开口时报 `.resume` 并清掉）。
+    private var pauseFired = false
+    /// 上一次 `.pause` 之后累计的语音。
+    private var speechSincePause: Double = 0
+
+    public enum Event: Sendable, Equatable {
+        /// 停顿到 `pauseSeconds`（每段静音至多一次）：先把到这里的话转写一遍
+        case pause
+        /// 报过 `.pause` 之后又开口了
+        case resume
+        /// 停顿到 `silenceCutSeconds`：这段说完了，状态已重置
+        case cut
+    }
 
     public init(config: SilenceSegmenterConfig = .default) {
         self.config = config
@@ -111,13 +134,18 @@ public struct SilenceSegmenter: Sendable {
     /// 喂一帧。`level` 是归一化电平，`delta` 是距上一帧的秒数。
     /// 返回 `true` 的那一帧，本段状态**已经**重置好，可以直接开下一段。
     public mutating func feed(level: Float, delta: Double) -> Bool {
-        guard delta > 0 else { return false }
+        step(level: level, delta: delta) == .cut
+    }
+
+    /// 同 `feed`，但把停顿 / 再开口也报出来（配了 `pauseSeconds` 才有 `.pause` / `.resume`）。
+    public mutating func step(level: Float, delta: Double) -> Event? {
+        guard delta > 0 else { return nil }
 
         // 冷启动：用第一帧播种噪声底（带上限），并当作静音 —— 还没有东西可上膛。
         if !floorInitialized {
             noiseFloor = max(config.floorEpsilon, min(level, config.initialFloorSeed))
             floorInitialized = true
-            return false
+            return nil
         }
 
         // ⚠️ 顺序要紧，而且和旧版**相反**：先更新噪声底，再用新阈值判定语音。
@@ -131,20 +159,31 @@ public struct SilenceSegmenter: Sendable {
 
         if isInSpeech {
             speechAccumulated += delta
+            speechSincePause += delta
             currentSilence = 0
-            return false
+            if pauseFired {
+                pauseFired = false
+                return .resume
+            }
+            return nil
         }
 
         // 前导静音，或本段真实语音还不够：计时器未上膛，切不了。
-        guard speechAccumulated >= config.minSpeechSeconds else { return false }
+        guard speechAccumulated >= config.minSpeechSeconds else { return nil }
 
         currentSilence += delta
         if currentSilence >= config.silenceCutSeconds {
             // 每次停顿只切一次：重置，这样持续静音在新语音出现前不会再触发。
             resetSegment()
-            return true
+            return .cut
         }
-        return false
+        if let pause = config.pauseSeconds, !pauseFired, currentSilence >= pause,
+           speechSincePause >= config.pauseMinSpeechSeconds {
+            pauseFired = true
+            speechSincePause = 0
+            return .pause
+        }
+        return nil
     }
 
     /// 迟滞式相对语音判定。
@@ -220,6 +259,9 @@ public struct SilenceSegmenter: Sendable {
         return Float(1 - exp(-delta / tau))
     }
 
+    /// 当前这段连续静音多久了（说话时为 0）。边听边插话在停顿里按它反复问 Smart Turn。
+    public var silenceSeconds: Double { currentSilence }
+
     // 诊断用（仅测试读取）。
     public var debugNoiseFloor: Float { noiseFloor }
     public var debugIsInSpeech: Bool { isInSpeech }
@@ -241,5 +283,7 @@ public struct SilenceSegmenter: Sendable {
     public mutating func resetSegment() {
         speechAccumulated = 0
         currentSilence = 0
+        pauseFired = false
+        speechSincePause = 0
     }
 }

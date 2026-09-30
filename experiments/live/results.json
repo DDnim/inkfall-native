@@ -1,0 +1,164 @@
+[
+ {
+  "dialogue": "d1",
+  "hits": 2,
+  "weak": 1,
+  "expected": 3,
+  "false": [],
+  "latency": [
+   1.23,
+   1.11
+  ],
+  "rows": [
+   {
+    "text": "你知道吗苹果其实是一种蔬菜",
+    "hit": true,
+    "weak": false,
+    "latency": 1.23,
+    "correction": "纠正：苹果是水果"
+   },
+   {
+    "text": "对了，日本的首都是大阪吧",
+    "hit": false,
+    "weak": true,
+    "latency": 1.24,
+    "correction": "纠正：日本的首都是東京"
+   },
+   {
+    "text": "水到五十度就会沸腾",
+    "hit": true,
+    "weak": false,
+    "latency": 1.11,
+    "correction": "纠正：水在标准大气压下100度沸騰"
+   }
+  ],
+  "whisper_calls": 15,
+  "whisper_ms_p50": 445,
+  "jev_ms_p50": 165.0,
+  "check_ms_p50": 342,
+  "budget_skips": 0,
+  "turn_not_done": 5,
+  "partial_commits": [],
+  "commits": [
+   "诶,我跟你说个事儿",
+   "什么事",
+   "你知道吗?苹果其实是一种蔬菜",
+   "真的假的?",
+   "我昨天在超市買了好多",
+   "準備做沙拉",
+   "那你买香蕉了吗?",
+   "买了香蕉里甲挺多的,对身体好",
+   "對了,日本的首都是大阪吧?",
+   "是吗?",
+   "我覺得大阪比東京好玩",
+   "我同事说,长城在太空上用肉眼能看到",
+   "水到50度就會沸騰",
+   "我们下周末一起去爬山吧"
+  ]
+ },
+ {
+  "dialogue": "d2",
+  "hits": 4,
+  "weak": 0,
+  "expected": 4,
+  "false": [],
+  "latency": [
+   1.45,
+   1.41,
+   1.0,
+   -0.85
+  ],
+  "rows": [
+   {
+    "text": "我跟你说人一共有三百颗牙齿",
+    "hit": true,
+    "weak": false,
+    "latency": 1.45,
+    "correction": "纠正：人一生最多有32颗牙齿"
+   },
+   {
+    "text": "地球是太阳系里最大的行星",
+    "hit": true,
+    "weak": false,
+    "latency": 1.41,
+    "correction": "纠正：木星是太阳系里最大的行星"
+   },
+   {
+    "text": "一年有十三个月",
+    "hit": true,
+    "weak": false,
+    "latency": 1.0,
+    "correction": "纠正：一年有12个月"
+   },
+   {
+    "text": "月亮是自己发光的所以晚上才那么亮",
+    "hit": true,
+    "weak": false,
+    "latency": -0.85,
+    "correction": "纠正：月亮反射太阳光"
+   }
+  ],
+  "whisper_calls": 15,
+  "whisper_ms_p50": 445,
+  "jev_ms_p50": 166.0,
+  "check_ms_p50": 286,
+  "budget_skips": 0,
+  "turn_not_done": 5,
+  "partial_commits": [],
+  "commits": [
+   "今天好热啊,估计有35度",
+   "是啊,夏天就是这样",
+   "我跟你说,人一共有300颗牙齿",
+   "你开玩笑吧",
+   "地球是太阳系里最大的行星",
+   "不是木星吗?",
+   "中國的首都是北京",
+   "你周末有什么安排?",
+   "我打算去看电影,然后吃个火锅",
+   "一年有13个月",
+   "月亮是自己發光的",
+   "所以晚上",
+   "音乐"
+  ]
+ },
+ {
+  "dialogue": "d3",
+  "hits": 0,
+  "weak": 0,
+  "expected": 1,
+  "false": [],
+  "latency": [],
+  "rows": [
+   {
+    "text": "对了，你知道吗北京是在长江边上的",
+    "hit": false,
+    "weak": false,
+    "latency": null,
+    "correction": null
+   }
+  ],
+  "whisper_calls": 17,
+  "whisper_ms_p50": 368,
+  "jev_ms_p50": 177.0,
+  "check_ms_p50": 245.5,
+  "budget_skips": 2,
+  "turn_not_done": 6,
+  "partial_commits": [],
+  "commits": [
+   "最近我在學做飯",
+   "学得怎么样了?",
+   "还行吧,我觉得川菜比粤菜好吃多了",
+   "我媽說吃辣對胃不好",
+   "其实吧,辣椒是从美洲传过来的",
+   "那明朝以前中国人吃什么辣的",
+   "好像是花椒和豬魚吧",
+   "对了,你知道吗?北京是在长江边上的。",
+   "水50度就開了",
+   "哦,不对,是一百度",
+   "你今天晚上想吃什么?",
+   "隨便吧,你定",
+   "那就吃火锅",
+   "反正火锅是世界上最好吃的东西哈哈,好"
+  ]
+ }
+]

@@ -19,6 +19,15 @@ final class InterjectionProbe {
         var gateMs = 0
         var checkMs = 0
         var model = ""
+
+        init(segment: String, gate: InterjectionAPI.Gate? = nil, route: InterjectionAPI.Route = .none,
+             stoppedAt: String? = nil, gateMs: Int = 0) {
+            self.segment = segment
+            self.gate = gate
+            self.route = route
+            self.stoppedAt = stoppedAt
+            self.gateMs = gateMs
+        }
     }
 
     /// Jev 最多等这么久（p90 226ms）。
@@ -74,12 +83,17 @@ final class InterjectionProbe {
         transcribed.filter { $0.index > index }.map(\.text)
     }
 
-    /// 核对要用的路：加工的 provider / model（按当前预设）/ key。没有 key 就是 nil（整条关）。
+    /// 核对 / 回答要用的路：有 Groq key 就用 Groq 的 Qwen（2026-09-30 境），
+    /// 否则加工的 provider / model（按当前预设）/ key。都没有 key 就是 nil（整条关）。
     ///
     /// ⚠️ 不看加工开没开、预设是不是本地的 basic：境平常就用 basic（本地润色，不上云），
     /// 早先这里要求云端预设，结果真机上每段都停在 no-check-route，一次也没核对过。
     /// basic 也有自己那一档的模型配置（`postProcessingPresetModels.basic`），照用。
-    func checkRoute(settings: AppSettings) async -> PostProcessor.Route? {
+    /// - `preferQwen`: 评测按 `--provider` 比别家时关掉
+    func checkRoute(settings: AppSettings, preferQwen: Bool = true) async -> PostProcessor.Route? {
+        if preferQwen, let key = await keys.resolve(InterjectionAPI.checkProvider) {
+            return .cloud(provider: InterjectionAPI.checkProvider, model: InterjectionAPI.checkModel, key: key)
+        }
         let provider = settings.postProcessingProvider
         guard let key = await keys.resolve(provider) else { return nil }
         return .cloud(provider: provider, model: settings.postProcessingModel(for: settings.postProcessingPreset), key: key)
@@ -89,19 +103,34 @@ final class InterjectionProbe {
     /// - `checkComplete`: 切换录音按停顿切出的段才看「说完了吗」。
     func run(segment raw: String, settings: AppSettings, checkComplete: Bool) async -> Outcome {
         let segment = fragment.isEmpty ? raw : fragment + raw
-        let previous = Array(recent.suffix(Self.contextSegments))
-        var outcome = Outcome(segment: segment)
-        guard let key = typesafeKey else { outcome.stoppedAt = "no-typesafe-key"; return outcome }
+        guard typesafeKey != nil else { return Outcome(segment: segment, stoppedAt: "no-typesafe-key") }
         let started = CFAbsoluteTimeGetCurrent()
-        outcome.gate = await gate(key: key, previous: previous, segment: segment)
-        outcome.gateMs = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
-        guard let gate = outcome.gate else { outcome.stoppedAt = "gate-failed"; return outcome }
-        outcome.route = gate.route(checkComplete: checkComplete)
-        if outcome.route == .incomplete {
+        let gate = await askGate(segment: segment)
+        let gateMs = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
+        guard let gate else { return Outcome(segment: segment, stoppedAt: "gate-failed", gateMs: gateMs) }
+        if gate.route(checkComplete: checkComplete) == .incomplete {
             fragment = segment
-            return outcome
+            return Outcome(segment: segment, gate: gate, route: .incomplete, gateMs: gateMs)
         }
         fragment = ""
+        var outcome = await act(segment: segment, gate: gate, settings: settings)
+        outcome.gateMs = gateMs
+        return outcome
+    }
+
+    /// 问 Jev 一次（六个问题）。前文用最近几句。
+    /// - `live`: 边听边插话的 0.2 秒停顿（问法不同，见 `InterjectionAPI.liveCompleteQuestion`）
+    func askGate(segment: String, live: Bool = false) async -> InterjectionAPI.Gate? {
+        guard let key = typesafeKey else { return nil }
+        return await gate(key: key, previous: Array(recent.suffix(Self.contextSegments)), segment: segment, live: live)
+    }
+
+    /// 已经问过 Jev、这句也收了（说完了或者硬收）：记进前文，按分流回答 / 核对。
+    /// - `answering`: 回答 / 建卡要不要做（边听边插话只纠错：两个人聊天时的问题是问对方的，见 `Gate.liveRoute`）
+    func act(segment: String, gate: InterjectionAPI.Gate, settings: AppSettings, answering: Bool = true) async -> Outcome {
+        let previous = Array(recent.suffix(Self.contextSegments))
+        var outcome = Outcome(segment: segment, gate: gate)
+        outcome.route = answering ? gate.route(checkComplete: false) : gate.liveRoute
         recent.append(segment)
         if recent.count > Self.contextSegments { recent.removeFirst(recent.count - Self.contextSegments) }
 
@@ -113,7 +142,7 @@ final class InterjectionProbe {
             let result = await withTimeout(Self.answerTimeout) {
                 await PostProcessor.run(.init(instructions: InterjectionAPI.answerInstructions,
                                               input: InterjectionAPI.answerInput(previous: previous, question: segment),
-                                              route: route))
+                                              route: route, maxOutputTokens: InterjectionAPI.answerMaxOutputTokens))
             }
             outcome.checkMs = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
             switch result {
@@ -140,7 +169,7 @@ final class InterjectionProbe {
         if !skipGate {
             guard let key = typesafeKey else { outcome.stoppedAt = "no-typesafe-key"; return outcome }
             let started = CFAbsoluteTimeGetCurrent()
-            outcome.gate = await gate(key: key, previous: previous, segment: segment)
+            outcome.gate = await gate(key: key, previous: previous, segment: segment, live: false)
             outcome.gateMs = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
             guard let gate = outcome.gate else { outcome.stoppedAt = "gate-failed"; return outcome }
             outcome.route = gate.route(checkComplete: true)
@@ -159,7 +188,8 @@ final class InterjectionProbe {
         let result = await withTimeout(Self.checkTimeout) {
             await PostProcessor.run(.init(instructions: InterjectionAPI.checkInstructions,
                                           input: InterjectionAPI.checkInput(previous: previous, segment: segment),
-                                          route: route))
+                                          route: route, maxOutputTokens: InterjectionAPI.checkMaxOutputTokens,
+                                          temperature: InterjectionAPI.checkTemperature(for: route.provider)))
         }
         outcome.checkMs = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
         switch result {
@@ -189,8 +219,16 @@ final class InterjectionProbe {
         policy.decide(check, segment: segment, delay: delay, laterSegments: laterSegments, now: Date())
     }
 
-    private func gate(key: String, previous: [String], segment: String) async -> InterjectionAPI.Gate? {
-        guard let body = InterjectionAPI.gateBody(previous: previous, segment: segment) else { return nil }
+    /// 先把到 Jev 的连接握好（边听边插话开录时调）。
+    func prewarm() {
+        guard typesafeKey != nil else { return }
+        var request = URLRequest(url: AssistantIntentAPI.endpoint)
+        request.httpMethod = "HEAD"
+        Self.gateSession.dataTask(with: request).resume()
+    }
+
+    private func gate(key: String, previous: [String], segment: String, live: Bool) async -> InterjectionAPI.Gate? {
+        guard let body = InterjectionAPI.gateBody(previous: previous, segment: segment, live: live) else { return nil }
         var request = URLRequest(url: AssistantIntentAPI.endpoint)
         request.httpMethod = "POST"
         request.httpBody = body

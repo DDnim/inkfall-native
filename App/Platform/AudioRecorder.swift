@@ -27,6 +27,14 @@ final class AudioRecorder: @unchecked Sendable {
     private var channelCount: Int = 1
     /// 当前 take 的起点。flush 会把它按保留的尾巴往回拨。
     private var startedAt: CFAbsoluteTime?
+    /// 每取走一次（flush / stop / start）加一。`Mark` 带着它，取走过之后旧的位置就不作数了。
+    private var bufferGeneration = 0
+
+    /// 边听边插话：这一段里的一个位置（`peekSegment` 给出，`flushSegment(upTo:)` 在这里切）。
+    struct Mark: Sendable, Equatable {
+        let generation: Int
+        let bytes: Int
+    }
 
     /// 峰值电平（0...1），UI 每 50ms 读一次。
     private var peakLevel: Float = 0
@@ -36,8 +44,6 @@ final class AudioRecorder: @unchecked Sendable {
     /// ⚠️ 和 `peakLevel` 不是一回事：那个是最近一个缓冲的**瞬时**振幅峰值
     /// （给波形画图用），这个是整段的能量峰值（给「有没有人说话」判据用）。
     private var takePeakLevel: Float = 0
-
-    private let trimmer = SilenceTrimmer.default
 
     // MARK: - 权限
 
@@ -130,6 +136,7 @@ final class AudioRecorder: @unchecked Sendable {
 
         lock.lock()
         pcm.removeAll(keepingCapacity: true)
+        bufferGeneration += 1
         peakLevel = 0
         takePeakLevel = 0
         startedAt = CFAbsoluteTimeGetCurrent()
@@ -173,6 +180,7 @@ final class AudioRecorder: @unchecked Sendable {
 
         lock.lock()
         pcm.removeAll(keepingCapacity: true)
+        bufferGeneration += 1
         startedAt = CFAbsoluteTimeGetCurrent()
         let u = unit
         lock.unlock()
@@ -198,6 +206,7 @@ final class AudioRecorder: @unchecked Sendable {
         let durationMs = startedAt.map { UInt64((CFAbsoluteTimeGetCurrent() - $0) * 1000) } ?? 0
         let raw = pcm
         pcm = Data()
+        bufferGeneration += 1
         let rate = sampleRate
         let channels = channelCount
         startedAt = nil
@@ -212,7 +221,7 @@ final class AudioRecorder: @unchecked Sendable {
                       + "（bytes=\(raw.count) durationMs=\(durationMs)）")
         }
 
-        return package(pcm: raw, fallbackDurationMs: durationMs,
+        return Self.package(pcm: raw, fallbackDurationMs: durationMs,
                        rate: rate, channels: channels, filenamePrefix: "inkfall-recording")
     }
 
@@ -239,6 +248,7 @@ final class AudioRecorder: @unchecked Sendable {
         let prefixLength = pcm.count - tailBytes
         let prefix = pcm.prefix(prefixLength)
         pcm = Data(pcm.suffix(tailBytes))
+        bufferGeneration += 1
 
         let retainedMs = bytesPerMs > 0 ? UInt64((Double(tailBytes) / bytesPerMs).rounded()) : 0
         let totalMs = startedAt.map { UInt64((now - $0) * 1000) } ?? 0
@@ -249,8 +259,54 @@ final class AudioRecorder: @unchecked Sendable {
         takePeakLevel = 0
         lock.unlock()
 
-        return package(pcm: Data(prefix), fallbackDurationMs: prefixMs,
+        return Self.package(pcm: Data(prefix), fallbackDurationMs: prefixMs,
                        rate: rate, channels: channels, filenamePrefix: "inkfall-segment")
+    }
+
+    /// 边听边插话：不停、不取走，把这一段到现在的音频复制一份（静音压缩 + WAV），外加当前位置。
+    func peekSegment() -> (audio: RecordedAudio, mark: Mark)? {
+        lock.lock()
+        guard running else {
+            lock.unlock()
+            return nil
+        }
+        let raw = pcm
+        let rate = sampleRate
+        let channels = max(channelCount, 1)
+        let mark = Mark(generation: bufferGeneration, bytes: raw.count)
+        lock.unlock()
+        let bytesPerMs = rate * Double(channels) / 1000 * 2
+        let durationMs = bytesPerMs > 0 ? UInt64(Double(raw.count) / bytesPerMs) : 0
+        return (Self.package(pcm: raw, fallbackDurationMs: durationMs, rate: rate, channels: channels,
+                        filenamePrefix: "inkfall-live"), mark)
+    }
+
+    /// 边听边插话：这一段最近 `seconds` 秒的原始 PCM。**不压静音** —— Smart Turn 要听的就是停顿和语调。
+    func recentPCM(seconds: Double) -> (pcm: Data, rate: Double, channels: Int)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard running else { return nil }
+        let channels = max(channelCount, 1)
+        let frameBytes = 2 * channels
+        let available = pcm.count - pcm.count % frameBytes
+        let wanted = Int(seconds * sampleRate) * frameBytes
+        return (Data(pcm.prefix(available).suffix(min(available, wanted))), sampleRate, channels)
+    }
+
+    /// 在 `mark` 的位置切：之前的扔掉（已经转写过了），之后的留作下一段的开头。
+    /// 中间被别的 flush 取走过（位置不作数了）返回 false。
+    @discardableResult
+    func flushSegment(upTo mark: Mark) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard running, mark.generation == bufferGeneration, mark.bytes <= pcm.count else { return false }
+        pcm = Data(pcm[(pcm.startIndex + mark.bytes)...])
+        let bytesPerSecond = sampleRate * Double(max(channelCount, 1)) * 2
+        if let started = startedAt, bytesPerSecond > 0 {
+            startedAt = started + Double(mark.bytes) / bytesPerSecond
+        }
+        bufferGeneration += 1
+        return true
     }
 
     /// 丢掉当前录音，不产出任何东西。
@@ -267,10 +323,10 @@ final class AudioRecorder: @unchecked Sendable {
         if wasRunning, let u { AudioOutputUnitStop(u) }
     }
 
-    /// 压缩静音 + 封 WAV。
-    private func package(pcm raw: Data, fallbackDurationMs: UInt64,
-                         rate: Double, channels: Int, filenamePrefix: String) -> RecordedAudio {
-        let trimmed = trimmer.trim(pcm: raw, sampleRate: rate, channelCount: channels)
+    /// 压缩静音 + 封 WAV。`--live-sim` 的假录音器也用它，和真麦克风走同一套。
+    static func package(pcm raw: Data, fallbackDurationMs: UInt64,
+                        rate: Double, channels: Int, filenamePrefix: String) -> RecordedAudio {
+        let trimmed = SilenceTrimmer.default.trim(pcm: raw, sampleRate: rate, channelCount: channels)
         let (data, durationMs): (Data, UInt64) = trimmed.removedMs > 0
             ? (trimmed.pcm, UInt64(max(trimmed.keptMs, 0)))
             : (raw, fallbackDurationMs)

@@ -1,4 +1,4 @@
-cases.json
+cases*.json
 out-*.json
 last-run.log
 __pycache__/

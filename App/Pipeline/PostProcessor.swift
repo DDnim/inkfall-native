@@ -24,12 +24,19 @@ enum PostProcessor {
 
     enum Route: Sendable {
         case cloud(provider: CloudProvider, model: String, key: String)
+
+        var provider: CloudProvider {
+            switch self { case .cloud(let provider, _, _): return provider }
+        }
     }
 
     struct Request: Sendable {
         var instructions: String
         var input: String
         var route: Route
+        /// 输出上限（Groq 免费档按预计输出卡每分钟 token，短回答要写上）。
+        var maxOutputTokens: Int? = nil
+        var temperature: Double? = nil
     }
 
     /// 跑一次加工。
@@ -37,11 +44,26 @@ enum PostProcessor {
         switch request.route {
         case .cloud(let provider, let model, let key):
             return await runCloud(provider: provider, model: model, key: key,
-                                  instructions: request.instructions, input: request.input)
+                                  instructions: request.instructions, input: request.input,
+                                  maxOutputTokens: request.maxOutputTokens, temperature: request.temperature)
         }
     }
 
     // MARK: - 云端
+
+    /// 先把到服务端的连接握好（边听边插话开录时调），第一次核对不用再付 TLS。
+    static func prewarm(_ provider: CloudProvider) {
+        let host: String
+        switch provider {
+        case .openai: host = "https://api.openai.com/v1/models"
+        case .groq: host = "https://api.groq.com/openai/v1/models"
+        case .gemini: return
+        }
+        guard let url = URL(string: host) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        session.dataTask(with: request).resume()
+    }
 
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -51,11 +73,12 @@ enum PostProcessor {
     }()
 
     private static func runCloud(provider: CloudProvider, model: String, key: String,
-                                 instructions: String,
-                                 input: String) async -> Result<Success, Failure> {
+                                 instructions: String, input: String,
+                                 maxOutputTokens: Int?, temperature: Double?) async -> Result<Success, Failure> {
         guard let url = TextGenerationAPI.endpoint(provider: provider, model: model),
               let body = TextGenerationAPI.body(provider: provider, model: model,
-                                                instructions: instructions, input: input) else {
+                                                instructions: instructions, input: input,
+                                                maxOutputTokens: maxOutputTokens, temperature: temperature) else {
             return .failure(.init(kind: .other, message: "请求构造失败"))
         }
 
@@ -80,8 +103,10 @@ enum PostProcessor {
         guard (200...299).contains(status) else {
             let kind = CloudFailureKind.classify(status: status)
             let code = TextGenerationAPI.errorCode(in: data)
-            return .failure(.init(kind: kind, message: message(status: status, code: code,
-                                                               kind: kind, provider: provider)))
+            var text = message(status: status, code: code, kind: kind, provider: provider)
+            // 限流要带上服务端那句（「Please try again in 3s」），日志里才看得出是哪一种额度。
+            if status == 429 { text += " " + TextGenerationAPI.errorMessage(in: data).prefix(240) }
+            return .failure(.init(kind: kind, message: text))
         }
 
         do {

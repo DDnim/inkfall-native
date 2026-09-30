@@ -10,13 +10,14 @@ from cases import GROUPS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-APP = os.path.join(ROOT, "build/DerivedData/Build/Products/Debug/Inkfall.app/Contents/MacOS/Inkfall")
+APP = os.environ.get("INKFALL_APP") or os.path.join(ROOT, "build/DerivedData/Build/Products/Debug/Inkfall.app/Contents/MacOS/Inkfall")
 KEY = os.environ.get("TYPESAFE_API_KEY") or open(os.path.expanduser("~/.config/typesafe/api_key")).read().strip()
 
 # verbatim：与 InterjectionAPI.claimQuestion 相同（门的第二问）
 CLAIM_Q = ("`segment` is what a person just said aloud (`previous` is what they said just before). Does `segment` state, as the "
            "speaker's own claim, a fact about the world that could be checked against common knowledge — rather than an opinion, "
-           "a plan, a question, an instruction, a joke, or words the speaker attributes to someone else?")
+           "a plan, a question, an instruction, a joke, or words the speaker attributes to someone else? A statement the speaker "
+           "only softens with a tag asking for agreement (「日本的首都是大阪吧？」, 「…だよね？」, \"…, right?\") still states the fact.")
 # 对照：Jev 单独判真假（不经过加工模型）
 FALSE_Q = ("`segment` is what a person just said aloud (`previous` is context). Does `segment` contain the speaker's own factual "
            "claim that is clearly false by common knowledge, so a friend listening should politely correct them? Answer no for "
@@ -43,10 +44,12 @@ def jev(c):
 
 
 def app_eval(provider, gate=True):
-    src, out = os.path.join(HERE, "cases.json"), os.path.join(HERE, f"out-{provider}{'' if gate else '-nogate'}.json")
+    tag = os.environ.get("EVAL_TAG", "")
+    src, out = os.path.join(HERE, f"cases{tag}.json"), os.path.join(HERE, f"out-{provider}{'' if gate else '-nogate'}{tag}.json")
     json.dump([{k: c[k] for k in ("id", "previous", "text")} for c in cases], open(src, "w"), ensure_ascii=False)
     model = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--model=")), None)
-    args = [APP, "--interject-eval", src, out, "--provider", provider, "--pace", "15"] + ([] if gate else ["--no-gate"]) \
+    pace = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--pace=")), "15")
+    args = [APP, "--interject-eval", src, out, "--provider", provider, "--pace", pace] + ([] if gate else ["--no-gate"]) \
         + (["--model", model] if model else [])
     p = subprocess.run(args, capture_output=True, text=True, timeout=900)
     if p.returncode != 0 or not os.path.exists(out):
@@ -88,4 +91,4 @@ for provider in providers:
 results["summary"] = summary
 by_group = {}
 for c in cases: by_group.setdefault(c["group"], []).append(c["id"])
-json.dump(results, open(os.path.join(HERE, "results.json"), "w"), ensure_ascii=False, indent=1)
+json.dump(results, open(os.path.join(HERE, f"results{os.environ.get('EVAL_TAG', '')}.json"), "w"), ensure_ascii=False, indent=1)

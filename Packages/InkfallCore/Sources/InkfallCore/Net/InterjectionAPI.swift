@@ -22,14 +22,30 @@ public enum InterjectionAPI {
         + "since the last cut (`previous` is earlier context). Is `segment` a complete thought, so it is right to cut and send it "
         + "now — rather than the speaker pausing mid-sentence to think and about to continue the same sentence?"
 
-    // verbatim：与 experiments/interject/run.py 的 CLAIM_Q 相同
+    // verbatim：与 experiments/interject/run.py 的 CLAIM_Q 相同。
+    // 最后一句（2026-09-30）：「日本的首都是大阪吧？」这种只是讨个附和的断言，原来的问法 claim 0.18，大阪漏了。
     public static let claimQuestion =
         "`segment` is what a person just said aloud (`previous` is what they said just before). Does `segment` state, as the "
         + "speaker's own claim, a fact about the world that could be checked against common knowledge — rather than an opinion, "
-        + "a plan, a question, an instruction, a joke, or words the speaker attributes to someone else?"
+        + "a plan, a question, an instruction, a joke, or words the speaker attributes to someone else? A statement the speaker "
+        + "only softens with a tag asking for agreement (「日本的首都是大阪吧？」, 「…だよね？」, \"…, right?\") still states the fact."
+
+    // verbatim：与 experiments/live/jev_complete.py 的 VARIANTS["v2"] 相同。
+    // 边听边插话（2026-09-30）：长录音停顿 0.2 秒就把攒下的整段转写一遍问这个。问的是「结尾」——
+    // 两个人你一句我一句、停顿都不到 1.5 秒时，攒下来的是好几句（可能两个人的），问「整段是不是一个完整的意思」
+    // 永远是否（模拟对话里攒了 40 秒一句没收，9/27 真机日志也是这样）。
+    public static let liveCompleteQuestion =
+        "A listening assistant transcribes a live conversation between people and the speaker just paused briefly "
+        + "(about 0.2 seconds). `segment` is everything said since the last cut — it may hold several sentences, possibly "
+        + "from different people (`previous` is earlier context). Does `segment` end with a finished sentence or thought — "
+        + "rather than breaking off mid-sentence, with the speaker about to continue that sentence?"
 
     /// 低于它就是「没说完」，把这段留着拼到下一段前面再问（断句实验：句中停顿 ≤ 0.26）。
     public static let completeThreshold = 0.3
+    /// 0.2 秒停顿的门槛（experiments/live/jev_complete.py v2，64 条）：说完的 0.69–0.94（只有「诶，我跟你说个事儿
+    /// 什么事」0.27），半句的「日本的首都」0.59、「对了」0.56、「你知道吗」0.38。低了会把导语、半个主语当一句收下，
+    /// 后面的正事被拆开单独转写，短片段 Whisper 听错得厉害（「日本的首都」→「这关在首都」）。
+    public static let liveCompleteThreshold = 0.6
     // verbatim：2026-09-27 手试 16 句，任务 0.94–0.97 / 提问 ≤ 0.10 / 陈述 ≤ 0.09
     public static let taskQuestion =
         "The user talks to a voice assistant. `segment` is what they just said. Is `segment` asking the assistant to take on a task "
@@ -80,6 +96,7 @@ public enum InterjectionAPI {
             self.complex = complex
         }
         public var isComplete: Bool { complete >= completeThreshold }
+        public var isCompleteLive: Bool { complete >= liveCompleteThreshold }
         public var passes: Bool { isComplete && claim >= claimThreshold }
 
         /// 分流。优先级：任务 > 提问 > 纠错。任务和提问两项都高时取高的那个。
@@ -92,6 +109,10 @@ public enum InterjectionAPI {
             if claim >= claimThreshold { return .check }
             return .none
         }
+
+        /// 边听边插话（两个人聊天）的分流：**只纠错**，提问和任务是说给对方的。
+        /// 所以有断言就核对 —— 两个人的话并成一段时里面常带着对方的问句，按 `route` 会被当成「提问」漏掉。
+        public var liveRoute: Route { claim >= claimThreshold ? .check : .none }
     }
 
     public enum Route: String, Sendable, Equatable {
@@ -109,12 +130,13 @@ public enum InterjectionAPI {
         case none
     }
 
-    public static func gateBody(previous: [String], segment: String) -> Data? {
+    /// - `live`: 边听边插话的 0.2 秒停顿（问 `liveCompleteQuestion`）
+    public static func gateBody(previous: [String], segment: String, live: Bool = false) -> Data? {
         let payload: [String: Any] = [
             "model": gateModel,
             "state": ["previous": previous.joined(separator: "\n"), "segment": segment],
             "questions": [
-                "complete": ["type": "noul", "instructions": completeQuestion],
+                "complete": ["type": "noul", "instructions": live ? liveCompleteQuestion : completeQuestion],
                 "claim": ["type": "noul", "instructions": claimQuestion],
                 "task": ["type": "noul", "instructions": taskQuestion],
                 "question": ["type": "noul", "instructions": questionQuestion],
@@ -138,7 +160,51 @@ public enum InterjectionAPI {
                     simple: try p("simple"), complex: try p("complex"))
     }
 
+    /// Whisper 爱在句尾补个逗号（「一年有13个月,」），Jev 看到就当没说完。问之前去掉（句号问号留着）。
+    public static func dropTrailingComma(_ text: String) -> String {
+        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        while let last = result.last, "，,、；;：:".contains(last) {
+            result = String(result.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return result
+    }
+
+    // MARK: - 无意义的话
+
+    /// 语气词、应答（「嗯」「对对对」「好的」「えーと」「OK」）。边听边转写时不拿它们问 Jev，
+    /// 一句话收下来只有这些就整句扔掉 —— 纠错、回答都用不上，还白占 Groq 的每分钟额度。
+    /// 标点和空白不算；只要剩下一个别的字（「好的，明天见」「水」）就是有内容的。
+    public static func isMeaningless(_ text: String) -> Bool {
+        var rest = String(text.lowercased().unicodeScalars.filter {
+            !CharacterSet.punctuationCharacters.contains($0) && !CharacterSet.whitespacesAndNewlines.contains($0)
+                && !CharacterSet.symbols.contains($0)
+        })
+        for token in fillers where !rest.isEmpty { rest = rest.replacingOccurrences(of: token, with: "") }
+        return rest.isEmpty
+    }
+
+    /// 长的在前：先整个去掉「好的」「えーと」，免得被「好」「え」拆散。
+    private static let fillers: [String] = [
+        "嗯哼", "好的", "是的", "那个", "就是", "然后", "哈哈", "呵呵", "对的", "行吧", "好吧",
+        "嗯", "啊", "呃", "哦", "噢", "喔", "额", "唔", "哈", "呵", "嘿", "诶", "欸", "对", "是", "好", "行",
+        "そうですね", "なるほど", "えーと", "えっと", "あのー", "えー", "あの", "うん", "はい", "ええ", "そう",
+        "okay", "yeah", "hmm", "um", "uh", "mm", "ah", "oh", "ok",
+    ].sorted { $0.count > $1.count }
+
     // MARK: - 核对（加工模型）
+
+    /// 核对和回答用 Groq 的 Qwen（2026-09-30 境「让 groq 的 qwen 迅速作出指正」）。没配 Groq key 才回落加工那家。
+    public static let checkProvider = CloudProvider.groq
+    public static let checkModel = "qwen/qwen3.8-27b"
+    /// 核对的回答是一行 JSON（~70 token）。**必须写上限**：Groq 免费档按预计输出 token 卡每分钟 1000，
+    /// 不写就按模型上限估，一次请求就超，直接 429（2026-09-30 实测）。
+    public static let checkMaxOutputTokens = 160
+    /// 核对用温度 0：Groq Qwen 默认温度下同一句「地球是太阳系里最大的行星」三次里有一次判成「正确」（2026-10-01）。
+    /// OpenAI 不设 —— 推理模型（o 系列、gpt-5）不收 temperature，直接 400。
+    public static func checkTemperature(for provider: CloudProvider) -> Double? {
+        provider == .openai ? nil : 0
+    }
+    public static let answerMaxOutputTokens = 240
 
     // verbatim：与 experiments/interject/run.py 的 CHECK_INSTRUCTIONS 相同
     public static let checkInstructions = """
@@ -147,7 +213,8 @@ public enum InterjectionAPI {
     unambiguously false by common knowledge.
 
     Do NOT flag (use kind "not_claim" or "disputed"):
-    - opinions, plans, questions, instructions, hypotheticals, jokes or sarcasm
+    - opinions, plans, real questions, instructions, hypotheticals, jokes or sarcasm (a statement only softened with a \
+    tag asking for agreement, like 「日本的首都是大阪吧？」, is not a real question — check it)
     - words the speaker attributes to someone else ("他说…", "some people think…")
     - a claim the speaker corrects themselves within the segment
     - claims whose truth depends on definition or context (e.g. whether a tomato is a vegetable, whether Pluto is a planet)
@@ -157,7 +224,8 @@ public enum InterjectionAPI {
     Reply with only one JSON object, no code fence, no other text:
     {"wrong": true or false, "kind": "clear_error" | "disputed" | "outdated" | "not_claim" | "correct", "confidence": 0.0 to 1.0, "correction": "...", "detail": "..."}
 
-    - correction: only when wrong — one short sentence stating the correct fact, written in the same language as \
+    - correction: only when wrong — one short sentence stating the correct fact (what is actually true, not just that the \
+    claim is wrong: 木星才是最大的行星, not 地球不是最大的行星), written in the same language as \
     `segment` (Chinese segment → Chinese), with no preamble. At most 20 characters for Chinese or Japanese, at most 12 \
     words otherwise. Example: 苹果是水果
     - detail: only when wrong — one short sentence of evidence in the speaker's language
@@ -226,8 +294,11 @@ public enum InterjectionAPI {
     /// 模型的回答 → `Check`。小模型爱包 ```json 围栏、爱在前后多说一句，
     /// 所以取第一个 `{` 到最后一个 `}`。认不出的 kind 当 not_claim（宁可不插）。
     public static func parseCheck(_ text: String) throws -> Check {
-        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end,
-              let object = try? JSONSerialization.jsonObject(with: Data(text[start...end].utf8)) as? [String: Any]
+        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end
+        else { throw TextGenerationAPI.Failure.malformedResponse }
+        let json = text[start...end]
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+                ?? looseCheckFields(String(json))
         else { throw TextGenerationAPI.Failure.malformedResponse }
         let confidence = (object["confidence"] as? NSNumber)?.doubleValue ?? 0
         return Check(wrong: (object["wrong"] as? Bool) ?? false,
@@ -235,5 +306,27 @@ public enum InterjectionAPI {
                      confidence: min(max(confidence, 0), 1),
                      correction: ((object["correction"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
                      detail: ((object["detail"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// 不合法的 JSON 按字段捞：Qwen 偶尔漏掉字符串的引号（`"correction": 人一生共有32颗牙齿"`，
+    /// 2026-09-30 实测，该纠正的没纠正）。字符串的值到下一个 `, "键":` 或结尾的 `}` 为止，引号可有可无。
+    /// 连 `wrong` 都捞不到的照旧算解析失败。
+    static func looseCheckFields(_ json: String) -> [String: Any]? {
+        func capture(_ pattern: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
+                  let match = regex.firstMatch(in: json, range: NSRange(json.startIndex..., in: json)),
+                  let range = Range(match.range(at: 1), in: json) else { return nil }
+            return String(json[range])
+        }
+        guard let wrong = capture(#""wrong"\s*:\s*(true|false)"#) else { return nil }
+        var object: [String: Any] = ["wrong": wrong == "true"]
+        object["kind"] = capture(#""kind"\s*:\s*"([a-z_]+)""#)
+        if let confidence = capture(#""confidence"\s*:\s*([0-9.]+)"#).flatMap(Double.init) {
+            object["confidence"] = NSNumber(value: confidence)
+        }
+        for key in ["correction", "detail"] {
+            object[key] = capture(#""\#(key)"\s*:\s*"?(.*?)"?\s*(?:,\s*"[a-z_]+"\s*:|\}\s*$)"#)
+        }
+        return object
     }
 }

@@ -124,7 +124,7 @@ final class InterjectionPolicyTests: XCTestCase {
     func testCooldownAndDuplicate() {
         var policy = InterjectionPolicy()
         XCTAssertEqual(policy.decide(wrong(), delay: 1, laterSegments: [], now: t0), .show(correction: "苹果是水果"))
-        XCTAssertEqual(policy.decide(wrong("水100度沸腾"), delay: 1, laterSegments: [], now: t0.addingTimeInterval(60)), .drop(.cooldown))
+        XCTAssertEqual(policy.decide(wrong("水100度沸腾"), delay: 1, laterSegments: [], now: t0.addingTimeInterval(3)), .drop(.cooldown))
         XCTAssertEqual(policy.decide(wrong(), delay: 1, laterSegments: [], now: t0.addingTimeInterval(600)), .drop(.duplicate))
         XCTAssertEqual(policy.decide(wrong("水100度沸腾"), delay: 1, laterSegments: [], now: t0.addingTimeInterval(600)),
                        .show(correction: "水100度沸腾"))

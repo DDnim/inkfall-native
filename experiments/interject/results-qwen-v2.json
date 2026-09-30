@@ -1,0 +1,1728 @@
+{
+ "cases": [
+  {
+   "id": "wrong-00",
+   "group": "wrong",
+   "previous": [],
+   "text": "苹果是一种蔬菜，我每天都吃",
+   "gold": true
+  },
+  {
+   "id": "wrong-01",
+   "group": "wrong",
+   "previous": [
+    "我们下周去日本玩"
+   ],
+   "text": "日本的首都是大阪，所以先去大阪",
+   "gold": true
+  },
+  {
+   "id": "wrong-02",
+   "group": "wrong",
+   "previous": [
+    "煮面的时候"
+   ],
+   "text": "水烧到50度就开了",
+   "gold": true
+  },
+  {
+   "id": "wrong-03",
+   "group": "wrong",
+   "previous": [],
+   "text": "地球是太阳系最大的行星",
+   "gold": true
+  },
+  {
+   "id": "wrong-04",
+   "group": "wrong",
+   "previous": [
+    "聊到长城"
+   ],
+   "text": "长城是秦始皇在唐朝修的",
+   "gold": true
+  },
+  {
+   "id": "wrong-05",
+   "group": "wrong",
+   "previous": [],
+   "text": "一年有十三个月",
+   "gold": true
+  },
+  {
+   "id": "wrong-06",
+   "group": "wrong",
+   "previous": [
+    "小孩问我"
+   ],
+   "text": "鲸鱼是鱼类，用腮呼吸",
+   "gold": true
+  },
+  {
+   "id": "wrong-07",
+   "group": "wrong",
+   "previous": [],
+   "text": "光速比声速慢",
+   "gold": true
+  },
+  {
+   "id": "wrong-08",
+   "group": "wrong",
+   "previous": [
+    "说到编程"
+   ],
+   "text": "Python 是微软在 2010 年发明的",
+   "gold": true
+  },
+  {
+   "id": "wrong-09",
+   "group": "wrong",
+   "previous": [],
+   "text": "人体有三个肾",
+   "gold": true
+  },
+  {
+   "id": "wrong-10",
+   "group": "wrong",
+   "previous": [
+    "今天做饭"
+   ],
+   "text": "盐的化学式是 H2O",
+   "gold": true
+  },
+  {
+   "id": "wrong-11",
+   "group": "wrong",
+   "previous": [],
+   "text": "月亮自己会发光",
+   "gold": true
+  },
+  {
+   "id": "wrong-12",
+   "group": "wrong",
+   "previous": [
+    "来日本前查了一下"
+   ],
+   "text": "富士山は北海道にある",
+   "gold": true
+  },
+  {
+   "id": "wrong-13",
+   "group": "wrong",
+   "previous": [],
+   "text": "水は100度で凍る",
+   "gold": true
+  },
+  {
+   "id": "wrong-14",
+   "group": "wrong",
+   "previous": [
+    "歴史の話"
+   ],
+   "text": "徳川家康は明治時代の人です",
+   "gold": true
+  },
+  {
+   "id": "wrong-15",
+   "group": "wrong",
+   "previous": [],
+   "text": "对了，日本的首都是大阪吧？",
+   "gold": true
+  },
+  {
+   "id": "wrong-16",
+   "group": "wrong",
+   "previous": [
+    "你知道吗"
+   ],
+   "text": "北京是在长江边上的",
+   "gold": true
+  },
+  {
+   "id": "right-00",
+   "group": "right",
+   "previous": [],
+   "text": "苹果是水果，香蕉也是",
+   "gold": false
+  },
+  {
+   "id": "right-01",
+   "group": "right",
+   "previous": [
+    "我们下周去日本玩"
+   ],
+   "text": "日本的首都是东京",
+   "gold": false
+  },
+  {
+   "id": "right-02",
+   "group": "right",
+   "previous": [],
+   "text": "水在一个大气压下100度沸腾",
+   "gold": false
+  },
+  {
+   "id": "right-03",
+   "group": "right",
+   "previous": [],
+   "text": "木星是太阳系最大的行星",
+   "gold": false
+  },
+  {
+   "id": "right-04",
+   "group": "right",
+   "previous": [],
+   "text": "一年有十二个月",
+   "gold": false
+  },
+  {
+   "id": "right-05",
+   "group": "right",
+   "previous": [],
+   "text": "鲸鱼是哺乳动物",
+   "gold": false
+  },
+  {
+   "id": "right-06",
+   "group": "right",
+   "previous": [],
+   "text": "光速比声速快得多",
+   "gold": false
+  },
+  {
+   "id": "right-07",
+   "group": "right",
+   "previous": [
+    "说到编程"
+   ],
+   "text": "Python 是 Guido 发明的",
+   "gold": false
+  },
+  {
+   "id": "right-08",
+   "group": "right",
+   "previous": [],
+   "text": "人一般有两个肾",
+   "gold": false
+  },
+  {
+   "id": "right-09",
+   "group": "right",
+   "previous": [],
+   "text": "月亮是反射太阳光才亮的",
+   "gold": false
+  },
+  {
+   "id": "right-10",
+   "group": "right",
+   "previous": [],
+   "text": "富士山は日本で一番高い山です",
+   "gold": false
+  },
+  {
+   "id": "right-11",
+   "group": "right",
+   "previous": [],
+   "text": "东京塔是红白色的",
+   "gold": false
+  },
+  {
+   "id": "right-12",
+   "group": "right",
+   "previous": [
+    "刚看完新闻"
+   ],
+   "text": "今天东京下雨了",
+   "gold": false
+  },
+  {
+   "id": "right-13",
+   "group": "right",
+   "previous": [],
+   "text": "猫是哺乳动物",
+   "gold": false
+  },
+  {
+   "id": "right-14",
+   "group": "right",
+   "previous": [],
+   "text": "三角形内角和是180度",
+   "gold": false
+  },
+  {
+   "id": "disputed-00",
+   "group": "disputed",
+   "previous": [],
+   "text": "番茄是蔬菜",
+   "gold": false
+  },
+  {
+   "id": "disputed-01",
+   "group": "disputed",
+   "previous": [],
+   "text": "冥王星是太阳系第九大行星",
+   "gold": false
+  },
+  {
+   "id": "disputed-02",
+   "group": "disputed",
+   "previous": [],
+   "text": "草莓是水果",
+   "gold": false
+  },
+  {
+   "id": "disputed-03",
+   "group": "disputed",
+   "previous": [],
+   "text": "香蕉是浆果",
+   "gold": false
+  },
+  {
+   "id": "disputed-04",
+   "group": "disputed",
+   "previous": [],
+   "text": "咖啡对身体不好",
+   "gold": false
+  },
+  {
+   "id": "disputed-05",
+   "group": "disputed",
+   "previous": [],
+   "text": "鸡蛋胆固醇高不能多吃",
+   "gold": false
+  },
+  {
+   "id": "disputed-06",
+   "group": "disputed",
+   "previous": [],
+   "text": "最新的 iPhone 是 iPhone 15",
+   "gold": false
+  },
+  {
+   "id": "disputed-07",
+   "group": "disputed",
+   "previous": [],
+   "text": "花生是坚果",
+   "gold": false
+  },
+  {
+   "id": "opinion-00",
+   "group": "opinion",
+   "previous": [],
+   "text": "我觉得苹果比香蕉好吃",
+   "gold": false
+  },
+  {
+   "id": "opinion-01",
+   "group": "opinion",
+   "previous": [],
+   "text": "明天我们去买点蔬菜吧",
+   "gold": false
+  },
+  {
+   "id": "opinion-02",
+   "group": "opinion",
+   "previous": [],
+   "text": "苹果到底算水果还是蔬菜啊",
+   "gold": false
+  },
+  {
+   "id": "opinion-03",
+   "group": "opinion",
+   "previous": [],
+   "text": "帮我把这段改得正式一点",
+   "gold": false
+  },
+  {
+   "id": "opinion-04",
+   "group": "opinion",
+   "previous": [],
+   "text": "这个方案我觉得不太行",
+   "gold": false
+  },
+  {
+   "id": "opinion-05",
+   "group": "opinion",
+   "previous": [],
+   "text": "下周一之前把 PR 合进去",
+   "gold": false
+  },
+  {
+   "id": "opinion-06",
+   "group": "opinion",
+   "previous": [],
+   "text": "東京は住みやすいと思う",
+   "gold": false
+  },
+  {
+   "id": "opinion-07",
+   "group": "opinion",
+   "previous": [],
+   "text": "你猜日本的首都是哪里",
+   "gold": false
+  },
+  {
+   "id": "opinion-08",
+   "group": "opinion",
+   "previous": [],
+   "text": "日本的首都是哪里来着？",
+   "gold": false
+  },
+  {
+   "id": "opinion-09",
+   "group": "opinion",
+   "previous": [],
+   "text": "是大阪还是东京来着？",
+   "gold": false
+  },
+  {
+   "id": "quote-00",
+   "group": "quote",
+   "previous": [],
+   "text": "我儿子说苹果是蔬菜，笑死我了",
+   "gold": false
+  },
+  {
+   "id": "quote-01",
+   "group": "quote",
+   "previous": [],
+   "text": "他以为日本的首都是大阪",
+   "gold": false
+  },
+  {
+   "id": "quote-02",
+   "group": "quote",
+   "previous": [
+    "昨天开会"
+   ],
+   "text": "部长说地球是平的，大家都没敢说话",
+   "gold": false
+  },
+  {
+   "id": "quote-03",
+   "group": "quote",
+   "previous": [],
+   "text": "有人觉得鲸鱼是鱼",
+   "gold": false
+  },
+  {
+   "id": "quote-04",
+   "group": "quote",
+   "previous": [],
+   "text": "网上有人说水50度就开",
+   "gold": false
+  },
+  {
+   "id": "self_correct-00",
+   "group": "self_correct",
+   "previous": [],
+   "text": "苹果是蔬菜，哦不对，是水果",
+   "gold": false
+  },
+  {
+   "id": "self_correct-01",
+   "group": "self_correct",
+   "previous": [],
+   "text": "日本首都是大阪，啊不是，东京",
+   "gold": false
+  },
+  {
+   "id": "self_correct-02",
+   "group": "self_correct",
+   "previous": [],
+   "text": "水50度就开，说错了，100度",
+   "gold": false
+  },
+  {
+   "id": "self_correct-03",
+   "group": "self_correct",
+   "previous": [],
+   "text": "一年有十三个月，不对，十二个月",
+   "gold": false
+  },
+  {
+   "id": "self_correct-04",
+   "group": "self_correct",
+   "previous": [],
+   "text": "富士山は北海道、じゃなくて静岡と山梨の間",
+   "gold": false
+  },
+  {
+   "id": "joke-00",
+   "group": "joke",
+   "previous": [
+    "减肥第三天"
+   ],
+   "text": "薯条是蔬菜，所以我吃的很健康",
+   "gold": false
+  },
+  {
+   "id": "joke-01",
+   "group": "joke",
+   "previous": [],
+   "text": "要是月亮是奶酪做的就好了",
+   "gold": false
+  },
+  {
+   "id": "joke-02",
+   "group": "joke",
+   "previous": [
+    "又加班到十二点"
+   ],
+   "text": "一天有四十八小时，我全在上班",
+   "gold": false
+  },
+  {
+   "id": "joke-03",
+   "group": "joke",
+   "previous": [],
+   "text": "假设光速比声速慢，那打雷会先听到声音",
+   "gold": false
+  }
+ ],
+ "jev": {
+  "wrong-00": {
+   "id": "wrong-00",
+   "p_false": 0.93,
+   "ms": 366
+  },
+  "wrong-01": {
+   "id": "wrong-01",
+   "p_false": 0.96,
+   "ms": 403
+  },
+  "wrong-02": {
+   "id": "wrong-02",
+   "p_false": 0.92,
+   "ms": 408
+  },
+  "wrong-03": {
+   "id": "wrong-03",
+   "p_false": 0.97,
+   "ms": 419
+  },
+  "wrong-04": {
+   "id": "wrong-04",
+   "p_false": 0.97,
+   "ms": 381
+  },
+  "wrong-05": {
+   "id": "wrong-05",
+   "p_false": 0.91,
+   "ms": 410
+  },
+  "wrong-06": {
+   "id": "wrong-06",
+   "p_false": 0.91,
+   "ms": 192
+  },
+  "wrong-07": {
+   "id": "wrong-07",
+   "p_false": 0.97,
+   "ms": 202
+  },
+  "wrong-08": {
+   "id": "wrong-08",
+   "p_false": 0.96,
+   "ms": 180
+  },
+  "wrong-09": {
+   "id": "wrong-09",
+   "p_false": 0.95,
+   "ms": 239
+  },
+  "wrong-10": {
+   "id": "wrong-10",
+   "p_false": 0.96,
+   "ms": 206
+  },
+  "wrong-11": {
+   "id": "wrong-11",
+   "p_false": 0.96,
+   "ms": 177
+  },
+  "wrong-12": {
+   "id": "wrong-12",
+   "p_false": 0.94,
+   "ms": 200
+  },
+  "wrong-13": {
+   "id": "wrong-13",
+   "p_false": 0.95,
+   "ms": 182
+  },
+  "wrong-14": {
+   "id": "wrong-14",
+   "p_false": 0.96,
+   "ms": 183
+  },
+  "wrong-15": {
+   "id": "wrong-15",
+   "p_false": 0.72,
+   "ms": 200
+  },
+  "wrong-16": {
+   "id": "wrong-16",
+   "p_false": 0.96,
+   "ms": 191
+  },
+  "right-00": {
+   "id": "right-00",
+   "p_false": 0.02,
+   "ms": 194
+  },
+  "right-01": {
+   "id": "right-01",
+   "p_false": 0.02,
+   "ms": 205
+  },
+  "right-02": {
+   "id": "right-02",
+   "p_false": 0.04,
+   "ms": 216
+  },
+  "right-03": {
+   "id": "right-03",
+   "p_false": 0.03,
+   "ms": 202
+  },
+  "right-04": {
+   "id": "right-04",
+   "p_false": 0.01,
+   "ms": 222
+  },
+  "right-05": {
+   "id": "right-05",
+   "p_false": 0.02,
+   "ms": 201
+  },
+  "right-06": {
+   "id": "right-06",
+   "p_false": 0.02,
+   "ms": 192
+  },
+  "right-07": {
+   "id": "right-07",
+   "p_false": 0.12,
+   "ms": 181
+  },
+  "right-08": {
+   "id": "right-08",
+   "p_false": 0.03,
+   "ms": 176
+  },
+  "right-09": {
+   "id": "right-09",
+   "p_false": 0.02,
+   "ms": 218
+  },
+  "right-10": {
+   "id": "right-10",
+   "p_false": 0.03,
+   "ms": 216
+  },
+  "right-11": {
+   "id": "right-11",
+   "p_false": 0.09,
+   "ms": 193
+  },
+  "right-12": {
+   "id": "right-12",
+   "p_false": 0.09,
+   "ms": 188
+  },
+  "right-13": {
+   "id": "right-13",
+   "p_false": 0.02,
+   "ms": 199
+  },
+  "right-14": {
+   "id": "right-14",
+   "p_false": 0.02,
+   "ms": 198
+  },
+  "disputed-00": {
+   "id": "disputed-00",
+   "p_false": 0.33,
+   "ms": 193
+  },
+  "disputed-01": {
+   "id": "disputed-01",
+   "p_false": 0.87,
+   "ms": 180
+  },
+  "disputed-02": {
+   "id": "disputed-02",
+   "p_false": 0.03,
+   "ms": 188
+  },
+  "disputed-03": {
+   "id": "disputed-03",
+   "p_false": 0.1,
+   "ms": 192
+  },
+  "disputed-04": {
+   "id": "disputed-04",
+   "p_false": 0.21,
+   "ms": 179
+  },
+  "disputed-05": {
+   "id": "disputed-05",
+   "p_false": 0.34,
+   "ms": 177
+  },
+  "disputed-06": {
+   "id": "disputed-06",
+   "p_false": 0.36,
+   "ms": 172
+  },
+  "disputed-07": {
+   "id": "disputed-07",
+   "p_false": 0.42,
+   "ms": 191
+  },
+  "opinion-00": {
+   "id": "opinion-00",
+   "p_false": 0.03,
+   "ms": 207
+  },
+  "opinion-01": {
+   "id": "opinion-01",
+   "p_false": 0.02,
+   "ms": 205
+  },
+  "opinion-02": {
+   "id": "opinion-02",
+   "p_false": 0.03,
+   "ms": 204
+  },
+  "opinion-03": {
+   "id": "opinion-03",
+   "p_false": 0.02,
+   "ms": 225
+  },
+  "opinion-04": {
+   "id": "opinion-04",
+   "p_false": 0.02,
+   "ms": 181
+  },
+  "opinion-05": {
+   "id": "opinion-05",
+   "p_false": 0.03,
+   "ms": 189
+  },
+  "opinion-06": {
+   "id": "opinion-06",
+   "p_false": 0.03,
+   "ms": 184
+  },
+  "opinion-07": {
+   "id": "opinion-07",
+   "p_false": 0.03,
+   "ms": 174
+  },
+  "opinion-08": {
+   "id": "opinion-08",
+   "p_false": 0.02,
+   "ms": 233
+  },
+  "opinion-09": {
+   "id": "opinion-09",
+   "p_false": 0.03,
+   "ms": 212
+  },
+  "quote-00": {
+   "id": "quote-00",
+   "p_false": 0.1,
+   "ms": 181
+  },
+  "quote-01": {
+   "id": "quote-01",
+   "p_false": 0.76,
+   "ms": 199
+  },
+  "quote-02": {
+   "id": "quote-02",
+   "p_false": 0.1,
+   "ms": 196
+  },
+  "quote-03": {
+   "id": "quote-03",
+   "p_false": 0.25,
+   "ms": 193
+  },
+  "quote-04": {
+   "id": "quote-04",
+   "p_false": 0.23,
+   "ms": 191
+  },
+  "self_correct-00": {
+   "id": "self_correct-00",
+   "p_false": 0.22,
+   "ms": 174
+  },
+  "self_correct-01": {
+   "id": "self_correct-01",
+   "p_false": 0.25,
+   "ms": 174
+  },
+  "self_correct-02": {
+   "id": "self_correct-02",
+   "p_false": 0.36,
+   "ms": 193
+  },
+  "self_correct-03": {
+   "id": "self_correct-03",
+   "p_false": 0.2,
+   "ms": 188
+  },
+  "self_correct-04": {
+   "id": "self_correct-04",
+   "p_false": 0.11,
+   "ms": 186
+  },
+  "joke-00": {
+   "id": "joke-00",
+   "p_false": 0.85,
+   "ms": 196
+  },
+  "joke-01": {
+   "id": "joke-01",
+   "p_false": 0.07,
+   "ms": 194
+  },
+  "joke-02": {
+   "id": "joke-02",
+   "p_false": 0.5,
+   "ms": 184
+  },
+  "joke-03": {
+   "id": "joke-03",
+   "p_false": 0.65,
+   "ms": 176
+  }
+ },
+ "apps": {
+  "groq": {
+   "wrong-00": {
+    "check_ms": 313,
+    "claim": 0.92,
+    "complete": 0.74,
+    "confidence": 1,
+    "correction": "苹果是水果，不是蔬菜",
+    "detail": "苹果是蔷薇科植物的果实，属于水果，而非蔬菜。",
+    "gate_ms": 209,
+    "id": "wrong-00",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "苹果是一种蔬菜，我每天都吃",
+    "wrong": true
+   },
+   "wrong-01": {
+    "check_ms": 313,
+    "claim": 0.84,
+    "complete": 0.57,
+    "confidence": 1,
+    "correction": "日本的首都是东京",
+    "detail": "日本的首都是东京都，大阪是重要的商业都市但并非首都。",
+    "gate_ms": 183,
+    "id": "wrong-01",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "日本的首都是大阪，所以先去大阪",
+    "wrong": true
+   },
+   "wrong-02": {
+    "check_ms": 355,
+    "claim": 0.85,
+    "complete": 0.36,
+    "confidence": 1,
+    "correction": "水烧开需要100度",
+    "detail": "在标准大气压下，水的沸点是100摄氏度，50度远未达到沸点。",
+    "gate_ms": 187,
+    "id": "wrong-02",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "水烧到50度就开了",
+    "wrong": true
+   },
+   "wrong-03": {
+    "check_ms": 275,
+    "claim": 0.96,
+    "complete": 0.68,
+    "confidence": 1,
+    "correction": "木星是太阳系最大的行星",
+    "detail": "木星体积和质量远超地球和其余行星",
+    "gate_ms": 191,
+    "id": "wrong-03",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "地球是太阳系最大的行星",
+    "wrong": true
+   },
+   "wrong-04": {
+    "check_ms": 282,
+    "claim": 0.96,
+    "complete": 0.71,
+    "confidence": 0,
+    "correction": "Qin王朝修建长城，非唐朝",
+    "detail": "长城是在秦朝时期修建的，与唐朝无关。",
+    "gate_ms": 145,
+    "id": "wrong-04",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "长城是秦始皇在唐朝修的",
+    "wrong": true
+   },
+   "wrong-05": {
+    "check_ms": 274,
+    "claim": 0.94,
+    "complete": 0.72,
+    "confidence": 1,
+    "correction": "一年通常有十二个月",
+    "detail": "公历一年固定为12个月，不存在13个月的月份划分。",
+    "gate_ms": 169,
+    "id": "wrong-05",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "一年有十三个月",
+    "wrong": true
+   },
+   "wrong-06": {
+    "check_ms": 346,
+    "claim": 0.87,
+    "complete": 0.62,
+    "confidence": 1,
+    "correction": "鲸鱼是哺乳动物，用肺呼吸",
+    "detail": "鲸鱼属于哺乳纲，通过肺进行气体交换而非鳃",
+    "gate_ms": 169,
+    "id": "wrong-06",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "鲸鱼是鱼类，用腮呼吸",
+    "wrong": true
+   },
+   "wrong-07": {
+    "check_ms": 320,
+    "claim": 0.95,
+    "complete": 0.73,
+    "confidence": 1,
+    "correction": "光速比声速快",
+    "detail": "光速约为每秒30万公里，而声速在空气中仅约每秒340米。",
+    "gate_ms": 163,
+    "id": "wrong-07",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "光速比声速慢",
+    "wrong": true
+   },
+   "wrong-08": {
+    "check_ms": 327,
+    "claim": 0.96,
+    "complete": 0.68,
+    "confidence": 1,
+    "correction": "Python 由 Guido van Rossum 于 1991 年发明",
+    "detail": "Python 并非微软开发，而是由 Guido van Rossum 在 20 世纪 90 年代初发布",
+    "gate_ms": 170,
+    "id": "wrong-08",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "Python 是微软在 2010 年发明的",
+    "wrong": true
+   },
+   "wrong-09": {
+    "check_ms": 267,
+    "claim": 0.96,
+    "complete": 0.73,
+    "confidence": 0.99,
+    "correction": "人体通常有两个肾",
+    "detail": "健康成年人绝大多数只有左右两个肾脏",
+    "gate_ms": 169,
+    "id": "wrong-09",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "人体有三个肾",
+    "wrong": true
+   },
+   "wrong-10": {
+    "check_ms": 294,
+    "claim": 0.95,
+    "complete": 0.59,
+    "confidence": 1,
+    "correction": "盐的化学式是NaCl",
+    "detail": "H2O是水的化学式，食盐主要成分是氯化钠，化学式为NaCl。",
+    "gate_ms": 193,
+    "id": "wrong-10",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "盐的化学式是 H2O",
+    "wrong": true
+   },
+   "wrong-11": {
+    "check_ms": 300,
+    "claim": 0.96,
+    "complete": 0.75,
+    "confidence": 1,
+    "correction": "月亮反射太阳光",
+    "detail": "月亮自身不发光，我们看到的亮光是它反射的太阳辐射。",
+    "gate_ms": 179,
+    "id": "wrong-11",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "月亮自己会发光",
+    "wrong": true
+   },
+   "wrong-12": {
+    "check_ms": 300,
+    "claim": 0.95,
+    "complete": 0.7,
+    "confidence": 1,
+    "correction": "富士山は山梨・静岡にある",
+    "detail": "富士山は紀伊半島ではなく、山梨県と静岡県に跨がっている",
+    "gate_ms": 160,
+    "id": "wrong-12",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "富士山は北海道にある",
+    "wrong": true
+   },
+   "wrong-13": {
+    "check_ms": 268,
+    "claim": 0.95,
+    "complete": 0.68,
+    "confidence": 1,
+    "correction": "水は0度で凍る",
+    "detail": "標準大気圧下における水の凝固点は0℃です。",
+    "gate_ms": 191,
+    "id": "wrong-13",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "水は100度で凍る",
+    "wrong": true
+   },
+   "wrong-14": {
+    "check_ms": 336,
+    "claim": 0.96,
+    "complete": 0.78,
+    "confidence": 1,
+    "correction": "徳川家康は江戸時代の人です",
+    "detail": "徳川家康は17世紀前半（江戸時代初期）に活躍した人物であり、明治時代は1868年以降です。",
+    "gate_ms": 168,
+    "id": "wrong-14",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "徳川家康は明治時代の人です",
+    "wrong": true
+   },
+   "wrong-15": {
+    "check_ms": 287,
+    "claim": 0.67,
+    "complete": 0.74,
+    "confidence": 1,
+    "correction": "日本的首都是东京",
+    "detail": "大阪是日本最大的都市，但不是首都。",
+    "gate_ms": 173,
+    "id": "wrong-15",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "对了，日本的首都是大阪吧？",
+    "wrong": true
+   },
+   "wrong-16": {
+    "check_ms": 314,
+    "claim": 0.96,
+    "complete": 0.75,
+    "confidence": 0.99,
+    "correction": "北京位于海河流域，不靠长江",
+    "detail": "长江流经上海、武汉等城市，北京地区属于海河流域，远离长江。",
+    "gate_ms": 177,
+    "id": "wrong-16",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "北京是在长江边上的",
+    "wrong": true
+   },
+   "right-00": {
+    "check_ms": 237,
+    "claim": 0.97,
+    "complete": 0.7,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 172,
+    "id": "right-00",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "苹果是水果，香蕉也是",
+    "wrong": false
+   },
+   "right-01": {
+    "check_ms": 691,
+    "claim": 0.96,
+    "complete": 0.82,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 182,
+    "id": "right-01",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "日本的首都是东京",
+    "wrong": false
+   },
+   "right-02": {
+    "check_ms": 694,
+    "claim": 0.98,
+    "complete": 0.82,
+    "confidence": 0,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 203,
+    "id": "right-02",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "水在一个大气压下100度沸腾",
+    "wrong": false
+   },
+   "right-03": {
+    "check_ms": 234,
+    "claim": 0.98,
+    "complete": 0.85,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 166,
+    "id": "right-03",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "木星是太阳系最大的行星",
+    "wrong": false
+   },
+   "right-04": {
+    "check_ms": 265,
+    "claim": 0.98,
+    "complete": 0.85,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 204,
+    "id": "right-04",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "一年有十二个月",
+    "wrong": false
+   },
+   "right-05": {
+    "check_ms": 275,
+    "claim": 0.98,
+    "complete": 0.85,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 219,
+    "id": "right-05",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "鲸鱼是哺乳动物",
+    "wrong": false
+   },
+   "right-06": {
+    "check_ms": 239,
+    "claim": 0.98,
+    "complete": 0.81,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 192,
+    "id": "right-06",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "光速比声速快得多",
+    "wrong": false
+   },
+   "right-07": {
+    "check_ms": 273,
+    "claim": 0.95,
+    "complete": 0.74,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 190,
+    "id": "right-07",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "Python 是 Guido 发明的",
+    "wrong": false
+   },
+   "right-08": {
+    "check_ms": 368,
+    "claim": 0.96,
+    "complete": 0.82,
+    "confidence": 0.95,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 201,
+    "id": "right-08",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "人一般有两个肾",
+    "wrong": false
+   },
+   "right-09": {
+    "check_ms": 248,
+    "claim": 0.98,
+    "complete": 0.83,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 170,
+    "id": "right-09",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "月亮是反射太阳光才亮的",
+    "wrong": false
+   },
+   "right-10": {
+    "check_ms": 315,
+    "claim": 0.98,
+    "complete": 0.9,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 187,
+    "id": "right-10",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "富士山は日本で一番高い山です",
+    "wrong": false
+   },
+   "right-11": {
+    "check_ms": 336,
+    "claim": 0.97,
+    "complete": 0.81,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 181,
+    "id": "right-11",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "东京塔是红白色的",
+    "wrong": false
+   },
+   "right-12": {
+    "check_ms": 449,
+    "claim": 0.94,
+    "complete": 0.78,
+    "confidence": 0.1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 182,
+    "id": "right-12",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "今天东京下雨了",
+    "wrong": false
+   },
+   "right-13": {
+    "check_ms": 234,
+    "claim": 0.98,
+    "complete": 0.86,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 227,
+    "id": "right-13",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "猫是哺乳动物",
+    "wrong": false
+   },
+   "right-14": {
+    "check_ms": 231,
+    "claim": 0.98,
+    "complete": 0.87,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 171,
+    "id": "right-14",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "三角形内角和是180度",
+    "wrong": false
+   },
+   "disputed-00": {
+    "check_ms": 266,
+    "claim": 0.95,
+    "complete": 0.8,
+    "gate_ms": 227,
+    "id": "disputed-00",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "check-failed",
+    "text": "番茄是蔬菜"
+   },
+   "disputed-01": {
+    "check_ms": 360,
+    "claim": 0.96,
+    "complete": 0.78,
+    "confidence": 0.9,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 227,
+    "id": "disputed-01",
+    "kind": "disputed",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "冥王星是太阳系第九大行星",
+    "wrong": false
+   },
+   "disputed-02": {
+    "check_ms": 284,
+    "claim": 0.97,
+    "complete": 0.85,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 228,
+    "id": "disputed-02",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "草莓是水果",
+    "wrong": false
+   },
+   "disputed-03": {
+    "check_ms": 216,
+    "claim": 0.97,
+    "complete": 0.79,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 226,
+    "id": "disputed-03",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "香蕉是浆果",
+    "wrong": false
+   },
+   "disputed-04": {
+    "check_ms": 337,
+    "claim": 0.67,
+    "complete": 0.71,
+    "confidence": 0.95,
+    "correction": "适量饮用咖啡有益健康",
+    "detail": "研究表明 moderate coffee consumption may have health benefits such as reducing risk of certain diseases.",
+    "gate_ms": 168,
+    "id": "disputed-04",
+    "kind": "disputed",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "咖啡对身体不好",
+    "wrong": true
+   },
+   "disputed-05": {
+    "check_ms": 312,
+    "claim": 0.79,
+    "complete": 0.73,
+    "confidence": 0.9,
+    "correction": "鸡蛋含适量胆固醇，可正常食用。",
+    "detail": "目前膳食指南已不再严格限制膳食胆固醇摄入，鸡蛋可适量食用。",
+    "gate_ms": 170,
+    "id": "disputed-05",
+    "kind": "outdated",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "鸡蛋胆固醇高不能多吃",
+    "wrong": true
+   },
+   "disputed-06": {
+    "check_ms": 372,
+    "claim": 0.95,
+    "complete": 0.83,
+    "confidence": 0.95,
+    "correction": "最新款是 iPhone 16 系列",
+    "detail": "目前市面上已发布并销售 iPhone 16 系列，15 系列并非最新款。",
+    "gate_ms": 180,
+    "id": "disputed-06",
+    "kind": "outdated",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "最新的 iPhone 是 iPhone 15",
+    "wrong": true
+   },
+   "disputed-07": {
+    "check_ms": 293,
+    "claim": 0.95,
+    "complete": 0.81,
+    "confidence": 0.95,
+    "correction": "花生是豆科植物",
+    "detail": "花生属于豆科，不是坚果。",
+    "gate_ms": 158,
+    "id": "disputed-07",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "花生是坚果",
+    "wrong": true
+   },
+   "opinion-00": {
+    "check_ms": 0,
+    "claim": 0.04,
+    "complete": 0.84,
+    "gate_ms": 168,
+    "id": "opinion-00",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "我觉得苹果比香蕉好吃"
+   },
+   "opinion-01": {
+    "check_ms": 0,
+    "claim": 0.02,
+    "complete": 0.82,
+    "gate_ms": 185,
+    "id": "opinion-01",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "明天我们去买点蔬菜吧"
+   },
+   "opinion-02": {
+    "check_ms": 0,
+    "claim": 0.02,
+    "complete": 0.72,
+    "gate_ms": 150,
+    "id": "opinion-02",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "苹果到底算水果还是蔬菜啊"
+   },
+   "opinion-03": {
+    "check_ms": 0,
+    "claim": 0.01,
+    "complete": 0.71,
+    "gate_ms": 168,
+    "id": "opinion-03",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "帮我把这段改得正式一点"
+   },
+   "opinion-04": {
+    "check_ms": 0,
+    "claim": 0.03,
+    "complete": 0.67,
+    "gate_ms": 162,
+    "id": "opinion-04",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "这个方案我觉得不太行"
+   },
+   "opinion-05": {
+    "check_ms": 0,
+    "claim": 0.02,
+    "complete": 0.77,
+    "gate_ms": 148,
+    "id": "opinion-05",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "下周一之前把 PR 合进去"
+   },
+   "opinion-06": {
+    "check_ms": 0,
+    "claim": 0.05,
+    "complete": 0.78,
+    "gate_ms": 190,
+    "id": "opinion-06",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "東京は住みやすいと思う"
+   },
+   "opinion-07": {
+    "check_ms": 0,
+    "claim": 0.02,
+    "complete": 0.67,
+    "gate_ms": 166,
+    "id": "opinion-07",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "你猜日本的首都是哪里"
+   },
+   "opinion-08": {
+    "check_ms": 0,
+    "claim": 0.02,
+    "complete": 0.81,
+    "gate_ms": 199,
+    "id": "opinion-08",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "日本的首都是哪里来着？"
+   },
+   "opinion-09": {
+    "check_ms": 0,
+    "claim": 0.03,
+    "complete": 0.54,
+    "gate_ms": 211,
+    "id": "opinion-09",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "是大阪还是东京来着？"
+   },
+   "quote-00": {
+    "check_ms": 0,
+    "claim": 0.06,
+    "complete": 0.78,
+    "gate_ms": 198,
+    "id": "quote-00",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "我儿子说苹果是蔬菜，笑死我了"
+   },
+   "quote-01": {
+    "check_ms": 0,
+    "claim": 0.13,
+    "complete": 0.81,
+    "gate_ms": 198,
+    "id": "quote-01",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "他以为日本的首都是大阪"
+   },
+   "quote-02": {
+    "check_ms": 0,
+    "claim": 0.06,
+    "complete": 0.78,
+    "gate_ms": 152,
+    "id": "quote-02",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "部长说地球是平的，大家都没敢说话"
+   },
+   "quote-03": {
+    "check_ms": 0,
+    "claim": 0.05,
+    "complete": 0.6,
+    "gate_ms": 158,
+    "id": "quote-03",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "有人觉得鲸鱼是鱼"
+   },
+   "quote-04": {
+    "check_ms": 0,
+    "claim": 0.08,
+    "complete": 0.46,
+    "gate_ms": 191,
+    "id": "quote-04",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "网上有人说水50度就开"
+   },
+   "self_correct-00": {
+    "check_ms": 265,
+    "claim": 0.88,
+    "complete": 0.63,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 166,
+    "id": "self_correct-00",
+    "kind": "not_claim",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "苹果是蔬菜，哦不对，是水果",
+    "wrong": false
+   },
+   "self_correct-01": {
+    "check_ms": 508,
+    "claim": 0.9,
+    "complete": 0.62,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 195,
+    "id": "self_correct-01",
+    "kind": "not_claim",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "日本首都是大阪，啊不是，东京",
+    "wrong": false
+   },
+   "self_correct-02": {
+    "check_ms": 237,
+    "claim": 0.92,
+    "complete": 0.64,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 169,
+    "id": "self_correct-02",
+    "kind": "not_claim",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "水50度就开，说错了，100度",
+    "wrong": false
+   },
+   "self_correct-03": {
+    "check_ms": 306,
+    "claim": 0.95,
+    "complete": 0.67,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 187,
+    "id": "self_correct-03",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "一年有十三个月，不对，十二个月",
+    "wrong": false
+   },
+   "self_correct-04": {
+    "check_ms": 271,
+    "claim": 0.96,
+    "complete": 0.74,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 187,
+    "id": "self_correct-04",
+    "kind": "correct",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "富士山は北海道、じゃなくて静岡と山梨の間",
+    "wrong": false
+   },
+   "joke-00": {
+    "check_ms": 994,
+    "claim": 0.73,
+    "complete": 0.78,
+    "confidence": 0.95,
+    "correction": "薯条主要由土豆淀粉制成，属于高油高盐的加工食品，并非蔬菜。",
+    "detail": "虽然原料包含马铃薯，但经过油炸和调味处理后，薯条在营养分类上属于快餐或零食，而非膳食指南中的蔬菜类。",
+    "gate_ms": 178,
+    "id": "joke-00",
+    "kind": "clear_error",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "shown": true,
+    "stopped": "",
+    "text": "薯条是蔬菜，所以我吃的很健康",
+    "wrong": true
+   },
+   "joke-01": {
+    "check_ms": 0,
+    "claim": 0.03,
+    "complete": 0.75,
+    "gate_ms": 177,
+    "id": "joke-01",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "要是月亮是奶酪做的就好了"
+   },
+   "joke-02": {
+    "check_ms": 0,
+    "claim": 0.32,
+    "complete": 0.75,
+    "gate_ms": 177,
+    "id": "joke-02",
+    "route": "",
+    "stopped": "no-claim",
+    "text": "一天有四十八小时，我全在上班"
+   },
+   "joke-03": {
+    "check_ms": 480,
+    "claim": 0.6,
+    "complete": 0.71,
+    "confidence": 1,
+    "correction": "",
+    "detail": "",
+    "gate_ms": 219,
+    "id": "joke-03",
+    "kind": "not_claim",
+    "route": "Groq/qwen/qwen3.8-27b",
+    "stopped": "",
+    "text": "假设光速比声速慢，那打雷会先听到声音",
+    "wrong": false
+   }
+  }
+ },
+ "summary": [
+  {
+   "name": "Jev 单独 p_false ≥ 0.5",
+   "fp": [
+    "disputed-01",
+    "quote-01",
+    "joke-00",
+    "joke-02",
+    "joke-03"
+   ],
+   "fn": []
+  },
+  {
+   "name": "Jev 单独 p_false ≥ 0.7",
+   "fp": [
+    "disputed-01",
+    "quote-01",
+    "joke-00"
+   ],
+   "fn": []
+  },
+  {
+   "name": "Jev 门 + groq Groq/qwen/qwen3.8-27b",
+   "fp": [
+    "disputed-07",
+    "joke-00"
+   ],
+   "fn": [
+    "wrong-04"
+   ]
+  }
+ ]
+}
