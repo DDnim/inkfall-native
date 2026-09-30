@@ -214,7 +214,8 @@ public enum InterjectionAPI {
 
     Do NOT flag (use kind "not_claim" or "disputed"):
     - opinions, plans, real questions, instructions, hypotheticals, jokes or sarcasm (a statement only softened with a \
-    tag asking for agreement, like 「日本的首都是大阪吧？」, is not a real question — check it)
+    tag asking for agreement, like 「日本的首都是大阪吧？」, is not a real question — check it; neither is insisting on a \
+    claim, like 「我还是坚持苹果是蔬菜」 — that is still the speaker's own claim)
     - words the speaker attributes to someone else ("他说…", "some people think…")
     - a claim the speaker corrects themselves within the segment
     - claims whose truth depends on definition or context (e.g. whether a tomato is a vegetable, whether Pluto is a planet)

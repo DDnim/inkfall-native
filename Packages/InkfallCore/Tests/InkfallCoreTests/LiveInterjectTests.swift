@@ -426,3 +426,11 @@ final class ContinuationTests: XCTestCase {
         XCTAssertFalse(InterjectionPolicy.correctsItself("真的假的"))
     }
 }
+
+final class TagQuestionIsNotSelfCorrectionTests: XCTestCase {
+    func testShiBuShiIsAQuestionNotACorrection() {
+        XCTAssertFalse(InterjectionPolicy.correctsItself("太阳是不是"))
+        XCTAssertFalse(InterjectionPolicy.correctsItself("这样挺好的，不是吗"))
+        XCTAssertTrue(InterjectionPolicy.correctsItself("啊不是，是东京"))
+    }
+}

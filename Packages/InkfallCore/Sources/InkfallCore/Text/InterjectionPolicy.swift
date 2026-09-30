@@ -35,8 +35,14 @@ public struct InterjectionPolicy: Sendable {
 
     /// 接着说的话是在改口。
     public static func correctsItself(_ later: String) -> Bool {
-        let text = later.lowercased()
+        let text = withoutTagQuestions(later.lowercased())
         return selfCorrectionMarkers.contains(where: text.contains)
+    }
+
+    /// 「是不是」「不是吗」是在问、在讨附和，里面的「不是」不算改口
+    /// （2026-10-01 真机：对方接一句「太阳是不是……」，刚准备好的纠正被当成本人改口扔了）。
+    static func withoutTagQuestions(_ text: String) -> String {
+        ["是不是", "不是吗", "不是嗎"].reduce(text) { $0.replacingOccurrences(of: $1, with: "") }
     }
 
     /// 同一段里出现这些就当已经当场改口（「水50度就开，说错了，100度」—— 评测里 gpt-oss-20b 照样纠正了它）。
@@ -78,7 +84,7 @@ public struct InterjectionPolicy: Sendable {
         let correction = check.correction.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !correction.isEmpty else { return .drop(.emptyCorrection) }
         guard delay <= Self.maxDelay else { return .drop(.stale) }
-        let later = laterSegments.joined(separator: " ").lowercased()
+        let later = Self.withoutTagQuestions(laterSegments.joined(separator: " ").lowercased())
         guard !Self.selfCorrectionMarkers.contains(where: later.contains),
               !Self.inSegmentCorrectionMarkers.contains(where: segment.lowercased().contains)
         else { return .drop(.selfCorrected) }
