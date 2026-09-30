@@ -404,6 +404,11 @@ final class QuietArtifactTests: XCTestCase {
     /// ⚠️ 靠文本无法消歧：「Thank you.」是人真的会单独说的一句回应。
     /// 判据必须是**音频特征** —— 只有刚刚擦着提交门限过来的安静段落里，
     /// 这句话才是 Whisper 对着近似静音的产物。
+    func testLiveNoiseArtifactIsDropped() {
+        XCTAssertTrue(HallucinationFilter.isHallucination("音量"))
+        XCTAssertFalse(HallucinationFilter.isHallucination("音量调大一点"))
+    }
+
     func testShortBoilerplateIsOnlyAHallucinationOnQuietAudio() {
         // 安静（刚过 0.015 的提交门限）+ 短套话 = 幻觉
         XCTAssertTrue(HallucinationFilter.isHallucination("Thank you.", peakLevel: 0.018))

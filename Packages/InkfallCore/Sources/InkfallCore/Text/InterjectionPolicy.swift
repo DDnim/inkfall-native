@@ -11,6 +11,9 @@ public struct InterjectionPolicy: Sendable {
     /// 原来的 2 分钟、后来试的 10 秒都会让聊天里接连说错的第二句不纠正
     /// （2026-09-30 边听边插话的模拟：地球 / 月亮两句都被冷却吃掉）。
     public static let cooldown: TimeInterval = 4
+    /// 同一句纠正这么久之内不再出（挡的是同一句话被转写两次、并段里又带上）。
+    /// 过了就照样纠正：原来整个 App 生命期都挡，真机上同一句错话只有第一次有反应（2026-10-01）。
+    public static let duplicateWindow: TimeInterval = 20
     /// 从这一段转写好到核对回来，超过这么久话题已经过去了，只进日志。
     public static let maxDelay: TimeInterval = 5
     /// 后面的话里出现这些就当本人已经改口。Whisper 时不时吐繁体（「啊不對」，2026-10-01 模拟里因此照样插了），繁体也写上。
@@ -60,7 +63,7 @@ public struct InterjectionPolicy: Sendable {
     }
 
     private var lastShownAt: Date?
-    private var shown: Set<String> = []
+    private var shownAt: [String: Date] = [:]
 
     public init() {}
 
@@ -79,10 +82,10 @@ public struct InterjectionPolicy: Sendable {
         guard !Self.selfCorrectionMarkers.contains(where: later.contains),
               !Self.inSegmentCorrectionMarkers.contains(where: segment.lowercased().contains)
         else { return .drop(.selfCorrected) }
-        guard !shown.contains(correction) else { return .drop(.duplicate) }
+        if let last = shownAt[correction], now.timeIntervalSince(last) < Self.duplicateWindow { return .drop(.duplicate) }
         if let last = lastShownAt, now.timeIntervalSince(last) < Self.cooldown { return .drop(.cooldown) }
         lastShownAt = now
-        shown.insert(correction)
+        shownAt[correction] = now
         return .show(correction: correction)
     }
 }

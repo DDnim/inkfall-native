@@ -43,6 +43,8 @@ public enum HallucinationFilter {
         "本字幕由字幕组提供",
         "优优独播剧场",
         "优优独播剧场——YoYo Television Series Exclusive",
+        // 边听边插话：Groq whisper-large-v3 对停顿里的底噪整段只吐这两个字（2026-10-01 真机一场十几次）
+        "音量",
         // 英文
         "thanks for watching",
         "thank you for watching",

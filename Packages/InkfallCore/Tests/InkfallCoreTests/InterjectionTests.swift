@@ -125,8 +125,16 @@ final class InterjectionPolicyTests: XCTestCase {
         var policy = InterjectionPolicy()
         XCTAssertEqual(policy.decide(wrong(), delay: 1, laterSegments: [], now: t0), .show(correction: "苹果是水果"))
         XCTAssertEqual(policy.decide(wrong("水100度沸腾"), delay: 1, laterSegments: [], now: t0.addingTimeInterval(3)), .drop(.cooldown))
-        XCTAssertEqual(policy.decide(wrong(), delay: 1, laterSegments: [], now: t0.addingTimeInterval(600)), .drop(.duplicate))
-        XCTAssertEqual(policy.decide(wrong("水100度沸腾"), delay: 1, laterSegments: [], now: t0.addingTimeInterval(600)),
+        XCTAssertEqual(policy.decide(wrong(), delay: 1, laterSegments: [], now: t0.addingTimeInterval(10)), .drop(.duplicate))
+        XCTAssertEqual(policy.decide(wrong("水100度沸腾"), delay: 1, laterSegments: [], now: t0.addingTimeInterval(10)),
                        .show(correction: "水100度沸腾"))
+    }
+
+    /// 同一句错话过一会儿又说一遍（换个人说、试着玩），照样纠正 —— 原来一直挡着，真机上只有第一次有反应。
+    func testSameMistakeLaterIsCorrectedAgain() {
+        var policy = InterjectionPolicy()
+        XCTAssertEqual(policy.decide(wrong(), delay: 1, laterSegments: [], now: t0), .show(correction: "苹果是水果"))
+        XCTAssertEqual(policy.decide(wrong(), delay: 1, laterSegments: [], now: t0.addingTimeInterval(InterjectionPolicy.duplicateWindow + 1)),
+                       .show(correction: "苹果是水果"))
     }
 }
