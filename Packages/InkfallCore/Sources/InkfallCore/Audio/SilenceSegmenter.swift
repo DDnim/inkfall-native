@@ -261,6 +261,8 @@ public struct SilenceSegmenter: Sendable {
 
     /// 当前这段连续静音多久了（说话时为 0）。边听边插话在停顿里按它反复问 Smart Turn。
     public var silenceSeconds: Double { currentSilence }
+    /// 现在算不算在说话（迟滞之后的判定）。
+    public var isSpeaking: Bool { isInSpeech }
 
     // 诊断用（仅测试读取）。
     public var debugNoiseFloor: Float { noiseFloor }

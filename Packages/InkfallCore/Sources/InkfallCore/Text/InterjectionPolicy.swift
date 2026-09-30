@@ -13,17 +13,34 @@ public struct InterjectionPolicy: Sendable {
     public static let cooldown: TimeInterval = 4
     /// 从这一段转写好到核对回来，超过这么久话题已经过去了，只进日志。
     public static let maxDelay: TimeInterval = 5
-    /// 后面的话里出现这些就当本人已经改口。
+    /// 后面的话里出现这些就当本人已经改口。Whisper 时不时吐繁体（「啊不對」，2026-10-01 模拟里因此照样插了），繁体也写上。
     public static let selfCorrectionMarkers = [
         "不对", "不是", "说错", "我是说", "应该是", "更正",
+        "不對", "說錯", "我是說", "應該是",
         "違う", "ちがう", "じゃなくて", "間違", "訂正",
         "no wait", "i mean", "actually", "sorry,",
     ]
 
+    /// 边听边插话：纠正准备好时，停顿后这么快就有人接着说，多半是同一个人没说完（「水五十度就开了，哦不对……」），
+    /// 先把接着说的那截转写了再决定插不插。隔得久的是对方在接话（「真的假的」），不等 —— 等一次要多 0.4 秒。
+    public static let continuationGap: TimeInterval = 0.5
+
+    public static func continuesQuickly(pauseStartedAt: Double, speechStarts: [Double]) -> Bool {
+        guard let first = speechStarts.filter({ $0 > pauseStartedAt }).min() else { return false }
+        return first - pauseStartedAt < continuationGap
+    }
+
+    /// 接着说的话是在改口。
+    public static func correctsItself(_ later: String) -> Bool {
+        let text = later.lowercased()
+        return selfCorrectionMarkers.contains(where: text.contains)
+    }
+
     /// 同一段里出现这些就当已经当场改口（「水50度就开，说错了，100度」—— 评测里 gpt-oss-20b 照样纠正了它）。
     /// 比上面那张表窄：「不是」「actually」在一句话里太常见，放进来会把「鲸鱼不是哺乳动物」这种真错也放过。
     public static let inSegmentCorrectionMarkers = [
-        "不对", "说错", "我是说", "口误", "啊不是", "哦不是", "呃不是", "じゃなくて", "間違えた", "no wait", "i mean",
+        "不对", "说错", "我是说", "口误", "啊不是", "哦不是", "呃不是", "不對", "說錯", "我是說", "口誤",
+        "じゃなくて", "間違えた", "no wait", "i mean",
     ]
 
     public enum Decision: Sendable, Equatable {

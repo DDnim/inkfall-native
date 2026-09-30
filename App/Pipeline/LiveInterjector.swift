@@ -98,6 +98,11 @@ final class LiveInterjector {
     private var marks: [Int: AudioRecorder.Mark] = [:]
     private var spokeUntil: [Int: CFAbsoluteTime] = [:]
     private var durations: [Int: UInt64] = [:]
+    /// `cut(reason:heard:)` 等着的转写结果。
+    private var listeners: [Int: @MainActor (String?) -> Void] = [:]
+    /// 最近几次开口的时刻（看纠正准备好时是不是有人紧接着在说）。
+    private var speechStarts: [CFAbsoluteTime] = []
+    private var wasSpeaking = false
     /// 在路上的请求（自测等它们归零再退出）。
     private(set) var inFlight = 0
 
@@ -119,6 +124,9 @@ final class LiveInterjector {
         marks = [:]
         spokeUntil = [:]
         durations = [:]
+        listeners = [:]
+        speechStarts = []
+        wasSpeaking = false
         probe.prewarm()
         trace("start", ["rpm": Self.whisperRPM, "give_up": turnGiveUp,
                         "smart_turn": smartTurnEnabled ? (turnModel.isReady ? "ready" : "loading") : "off"])
@@ -127,7 +135,14 @@ final class LiveInterjector {
     /// 30 Hz 调一次（念纠正的期间调用方不调）。
     func tick(level: Float, delta: Double) {
         guard source != nil else { return }
-        switch segmenter.step(level: level, delta: delta) {
+        let event = segmenter.step(level: level, delta: delta)
+        if segmenter.isSpeaking, !wasSpeaking {
+            // 连续超过阈值 `speechAttackSeconds` 才算开口：真正开口的时刻要往回扣
+            speechStarts.append(CFAbsoluteTimeGetCurrent() - segmenter.config.speechAttackSeconds)
+            if speechStarts.count > 8 { speechStarts.removeFirst() }
+        }
+        wasSpeaking = segmenter.isSpeaking
+        switch event {
         case .pause?:
             watch.paused(silence: segmenter.silenceSeconds)
             considerTurnEnd()
@@ -162,11 +177,17 @@ final class LiveInterjector {
     }
 
     /// 这句不管说没说完都收（停顿 1.5 秒、180 秒硬上限、念纠正之前）。
-    func cut(reason: String) {
-        guard let source else { return }
+    /// - `heard`: 这句转写出来的字（没有要转写的 / 失败了是 nil）。先听接着说的再决定插不插时用。
+    func cut(reason: String, heard: (@MainActor (String?) -> Void)? = nil) {
+        guard let source else { heard?(nil); return }
         watch.stop()
         close(plan: tracker.cut(), audio: { source.takeAll() }, reason: reason,
-              spokeUntil: CFAbsoluteTimeGetCurrent() - (reason == "pause-1.5s" ? Self.cutSeconds : 0))
+              spokeUntil: CFAbsoluteTimeGetCurrent() - (reason == "pause-1.5s" ? Self.cutSeconds : 0), heard: heard)
+    }
+
+    /// 停顿开始（`after`）之后很快就有人接着说（见 `InterjectionPolicy.continuesQuickly`）。
+    func continuesQuickly(after pauseStartedAt: CFAbsoluteTime) -> Bool {
+        InterjectionPolicy.continuesQuickly(pauseStartedAt: pauseStartedAt, speechStarts: speechStarts)
     }
 
     /// 停止录音：最后那截由调用方从录音器取出来。
@@ -216,24 +237,29 @@ final class LiveInterjector {
     }
 
     private func close(plan: LiveUtteranceTracker.CutPlan, audio: () -> RecordedAudio?,
-                       reason: String, spokeUntil until: CFAbsoluteTime) {
+                       reason: String, spokeUntil until: CFAbsoluteTime, heard: (@MainActor (String?) -> Void)? = nil) {
         switch plan {
         case .nothing:
             let dropped = audio()?.durationMs ?? 0
             trace("cut", ["reason": reason, "plan": "nothing", "ms": dropped])
+            heard?(nil)
         case .reuse(let ticket, let text, let gate):
             _ = audio()
             trace("cut", ["reason": reason, "plan": "reuse", "ticket": ticket.id, "text": text])
+            heard?(text)
             finish(ticket, text: text, gate: gate)
         case .awaiting(let ticket):
             _ = audio()
             trace("cut", ["reason": reason, "plan": "await", "ticket": ticket.id])
+            if let heard { listeners[ticket.id] = heard }
         case .fresh(let ticket):
             guard let recorded = audio(), RecordingSubmissionPolicy.default.verdict(for: recorded) == .submit else {
                 _ = tracker.failed(ticket)
                 trace("cut", ["reason": reason, "plan": "fresh-dropped", "ticket": ticket.id])
+                heard?(nil)
                 return
             }
+            if let heard { listeners[ticket.id] = heard }
             spokeUntil[ticket.id] = until
             durations[ticket.id] = recorded.durationMs
             trace("cut", ["reason": reason, "plan": "fresh", "ticket": ticket.id, "ms": recorded.durationMs])
@@ -246,7 +272,9 @@ final class LiveInterjector {
         inFlight += 1
         Task { @MainActor in
             defer { inFlight -= 1 }
-            guard let heard = await transcribeWithinBudget(ticket, audio: audio) else {
+            let transcript = await transcribeWithinBudget(ticket, audio: audio)
+            listeners.removeValue(forKey: ticket.id)?(transcript)
+            guard let heard = transcript else {
                 if tracker.failed(ticket) == .discard { trace("discard", ["ticket": ticket.id, "why": "transcribe-failed"]) }
                 return
             }
@@ -264,7 +292,13 @@ final class LiveInterjector {
                 return
             }
             let started = CFAbsoluteTimeGetCurrent()
-            guard let gate = await probe.askGate(segment: text, live: true) else {
+            var gate = await probe.askGate(segment: text, live: true)
+            if gate == nil, tracker.isFinal(ticket) {
+                // 收尾这次 Jev 没回来（超时 0.8 秒）：不丢这句，不看门槛直接交给核对（Qwen 自己会判是不是断言）
+                trace("jev-failed", ["ticket": ticket.id, "fallback": "check"])
+                gate = InterjectionAPI.Gate(complete: 1, claim: 1)
+            }
+            guard let gate else {
                 if tracker.failed(ticket) == .discard { trace("discard", ["ticket": ticket.id, "why": "jev-failed"]) }
                 return
             }

@@ -68,18 +68,23 @@ def synth_all(lines):
             continue
         model = load(snapshot(*(BASE if clone else CUSTOM)))
         for n, (speaker, text) in enumerate(batch):
-            mx.random.seed(int(key(speaker, text), 16) % (2 ** 32))
-            if clone:
-                chunks = model.generate(text=text, ref_audio=REF_AUDIO, ref_text=REF_TEXT, language="Chinese",
-                                        temperature=0.7, max_tokens=600)
-            else:
-                chunks = model.generate_custom_voice(text=text, speaker=VOICES[speaker], language="Chinese",
-                                                     instruct=INSTRUCT, temperature=0.7, max_tokens=600)
-            parts, rate = [], 24000
-            for r in chunks:
-                parts.append(np.asarray(r.audio))
-                rate = r.sample_rate
-            audio = np.concatenate(parts)
+            # 偶尔会生成跑飞（「哈哈」出来 24 秒）：比字数该有的长太多就换个种子重来
+            for attempt in range(4):
+                mx.random.seed((int(key(speaker, text), 16) + attempt * 7919) % (2 ** 32))
+                if clone:
+                    chunks = model.generate(text=text, ref_audio=REF_AUDIO, ref_text=REF_TEXT, language="Chinese",
+                                            temperature=0.7, max_tokens=600)
+                else:
+                    chunks = model.generate_custom_voice(text=text, speaker=VOICES[speaker], language="Chinese",
+                                                         instruct=INSTRUCT, temperature=0.7, max_tokens=600)
+                parts, rate = [], 24000
+                for r in chunks:
+                    parts.append(np.asarray(r.audio))
+                    rate = r.sample_rate
+                audio = np.concatenate(parts)
+                if len(audio) / rate <= 1.5 + 0.4 * len(text):
+                    break
+                print(f"  跑飞了（{len(audio) / rate:.1f}s），重来：{text}", flush=True)
             sf.write(os.path.join(CACHE, key(speaker, text) + ".wav"), audio, rate)
             print(f"  合成 {n + 1}/{len(batch)} {speaker} {text} {len(audio) / rate:.1f}s", flush=True)
         del model

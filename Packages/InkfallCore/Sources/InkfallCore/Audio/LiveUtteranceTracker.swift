@@ -115,6 +115,11 @@ public struct LiveUtteranceTracker: Sendable {
         }
     }
 
+    /// 这张票已经收尾、一定要处理完（1.5 秒时在路上的、整段重新转写的）。
+    public func isFinal(_ ticket: Ticket) -> Bool {
+        finals.contains(ticket.id)
+    }
+
     public mutating func transcribed(_ ticket: Ticket, text: String) -> Next {
         if finals.contains(ticket.id) {
             guard !InterjectionAPI.isMeaningless(text) else {

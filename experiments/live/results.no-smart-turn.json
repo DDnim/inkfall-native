@@ -6,56 +6,54 @@
   "expected": 3,
   "false": [],
   "latency": [
-   1.13,
-   1.12,
-   1.09
+   1.34,
+   1.32,
+   1.08
   ],
   "rows": [
    {
     "text": "你知道吗苹果其实是一种蔬菜",
     "hit": true,
     "weak": false,
-    "latency": 1.13,
+    "latency": 1.34,
     "correction": "纠正：苹果是水果"
    },
    {
     "text": "对了，日本的首都是大阪吧",
     "hit": true,
     "weak": false,
-    "latency": 1.12,
+    "latency": 1.32,
     "correction": "纠正：日本的首都是东京"
    },
    {
     "text": "水到五十度就会沸腾",
     "hit": true,
     "weak": false,
-    "latency": 1.09,
+    "latency": 1.08,
     "correction": "纠正：水在标准大气压下100度沸腾"
    }
   ],
-  "whisper_calls": 16,
-  "whisper_ms_p50": 332.0,
-  "jev_ms_p50": 173,
-  "check_ms_p50": 327,
-  "budget_skips": 0,
-  "turn_not_done": 5,
+  "whisper_calls": 17,
+  "whisper_ms_p50": 461,
+  "jev_ms_p50": 162.0,
+  "check_ms_p50": 284.0,
+  "budget_skips": 1,
+  "turn_not_done": 0,
   "holds": 0,
   "hold_drops": [],
   "partial_commits": [],
   "commits": [
    "诶,我跟你说个事儿",
-   "什么事",
-   "你知道吗?苹果其实是一种蔬菜",
+   "什么事?你知道吗?苹果其实是一种蔬菜",
    "真的假的?",
    "我昨天在超市買了好多",
    "準備做沙拉",
    "那你买香蕉了吗?",
-   "买了香蕉里甲挺多的,对身体好",
-   "對了,日本的首都是大阪吧?",
+   "买了香蕉里,甲挺多的,对身体好对了,日本的首都是大阪吧",
    "是吗?",
    "我覺得大阪比東京好玩",
-   "我同事说,长城在太空上用肉眼能看到",
-   "水到50度就會沸騰",
+   "嗯我同事说长城在太空上用肉眼能看到",
+   "水到50度就会沸腾",
    "我们下周末一起去爬山吧"
   ]
  },
@@ -66,46 +64,46 @@
   "expected": 4,
   "false": [],
   "latency": [
-   0.98,
-   1.57,
-   1.21
+   0.83,
+   1.25,
+   0.94
   ],
   "rows": [
    {
     "text": "我跟你说人一共有三百颗牙齿",
     "hit": false,
     "weak": true,
-    "latency": 1.42,
+    "latency": 0.99,
     "correction": "纠正：人没有300克牙齿"
    },
    {
     "text": "地球是太阳系里最大的行星",
     "hit": true,
     "weak": false,
-    "latency": 0.98,
+    "latency": 0.83,
     "correction": "纠正：木星是太阳系最大的行星"
    },
    {
     "text": "一年有十三个月",
     "hit": true,
     "weak": false,
-    "latency": 1.57,
+    "latency": 1.25,
     "correction": "纠正：一年有12个月"
    },
    {
     "text": "月亮是自己发光的所以晚上才那么亮",
     "hit": true,
     "weak": false,
-    "latency": 1.21,
+    "latency": 0.94,
     "correction": "纠正：月亮反射太阳光"
    }
   ],
-  "whisper_calls": 15,
-  "whisper_ms_p50": 419,
-  "jev_ms_p50": 161.5,
-  "check_ms_p50": 288.0,
+  "whisper_calls": 16,
+  "whisper_ms_p50": 281.5,
+  "jev_ms_p50": 161,
+  "check_ms_p50": 309,
   "budget_skips": 0,
-  "turn_not_done": 4,
+  "turn_not_done": 0,
   "holds": 0,
   "hold_drops": [],
   "partial_commits": [],
@@ -113,16 +111,16 @@
    "今天好热啊,估计有35度",
    "是啊,夏天就是这样",
    "我跟你說,人一共有300克牙齒",
-   "你开玩笑吧?",
+   "你开完",
    "地球是太阳系里最大的行星",
-   "不是木",
+   "不是吗?",
    "中國的首都是北京",
    "你周末有什么安排?",
-   "我打算去看电影",
+   "我打算去看電影",
    "然后吃个火锅",
    "一年有13个月",
    "月亮是自己發光的,所以晚上才那麼亮",
-   "我觉得你是"
+   "我觉得"
   ]
  },
  {
@@ -132,23 +130,23 @@
   "expected": 1,
   "false": [],
   "latency": [
-   1.2
+   1.04
   ],
   "rows": [
    {
     "text": "对了，你知道吗北京是在长江边上的",
     "hit": true,
     "weak": false,
-    "latency": 1.2,
+    "latency": 1.04,
     "correction": "纠正：北京位于华北平原，不靠长江"
    }
   ],
   "whisper_calls": 17,
-  "whisper_ms_p50": 388,
-  "jev_ms_p50": 167,
-  "check_ms_p50": 238,
-  "budget_skips": 1,
-  "turn_not_done": 6,
+  "whisper_ms_p50": 369,
+  "jev_ms_p50": 169.0,
+  "check_ms_p50": 234,
+  "budget_skips": 2,
+  "turn_not_done": 0,
   "holds": 0,
   "hold_drops": [],
   "partial_commits": [],
@@ -165,7 +163,7 @@
    "你今天晚上想吃什么?",
    "隨便吧,你定",
    "那就吃火锅",
-   "反正火锅是世界上最好吃的东西"
+   "反正火锅是世界上最好吃的东西哈哈,好"
   ]
  },
  {
@@ -175,39 +173,39 @@
   "expected": 1,
   "false": [],
   "latency": [
-   0.89
+   0.98
   ],
   "rows": [
    {
     "text": "地球是太阳系里最大的行星",
     "hit": true,
     "weak": false,
-    "latency": 0.89,
+    "latency": 0.98,
     "correction": "纠正：木星是太阳系最大的行星"
    }
   ],
-  "whisper_calls": 10,
-  "whisper_ms_p50": 416.5,
-  "jev_ms_p50": 192,
-  "check_ms_p50": 286,
+  "whisper_calls": 9,
+  "whisper_ms_p50": 412,
+  "jev_ms_p50": 168,
+  "check_ms_p50": 254.5,
   "budget_skips": 0,
-  "turn_not_done": 4,
+  "turn_not_done": 0,
   "holds": 2,
   "hold_drops": [
-   "啊,不对",
+   "不對",
    "噢不是"
   ],
   "partial_commits": [],
   "commits": [
    "我跟你说个事",
-   "你說",
-   "日本的首都是大阪",
-   "啊,不对",
+   "你说日本的首都是大阪",
+   "不對",
    "是東京",
    "对啊一年有13个月",
    "噢不是",
    "说错了,是12个月",
-   "地球是太阳系里最大的行星"
+   "地球是太阳系里最大的行星",
+   "是吗?"
   ]
  }
 ]

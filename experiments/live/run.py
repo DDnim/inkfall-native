@@ -79,6 +79,8 @@ def score(name, events):
         # Smart Turn 判没说完、省下的试探（同一段静音里反复问只算一次）
         "turn_not_done": sum(1 for k, e in enumerate(events) if e["ev"] == "turn" and not e["done"]
                              and not (k and events[k - 1]["ev"] == "turn")),
+        "holds": sum(1 for e in events if e["ev"] == "hold"),
+        "hold_drops": [e["heard"] for e in events if e["ev"] == "hold-drop"],
         "partial_commits": partial,
         "commits": [c["text"] for c in commits],
     }
@@ -111,7 +113,7 @@ def main():
         print(f"{name}: 纠正 {r['hits']}/{r['expected']}（弱 {r['weak']}）  误插 {len(r['false'])} {r['false']}  "
               f"延迟 {r['latency']}  转写 {r['whisper_calls']} 次 p50 {r['whisper_ms_p50']}ms  "
               f"Jev p50 {r['jev_ms_p50']}ms  核对 p50 {r['check_ms_p50']}ms  预算跳过 {r['budget_skips']}  "
-              f"SmartTurn 判没说完 {r['turn_not_done']}")
+              f"SmartTurn 判没说完 {r['turn_not_done']}  先听接着说 {r['holds']} 次（改口不插 {r['hold_drops']}）")
         for row in r["rows"]:
             print(f"   {'✓' if row['hit'] else '△' if row['weak'] else '✗'} {row['text']} → {row['correction']} ({row['latency']}s)")
         for p in r["partial_commits"]:

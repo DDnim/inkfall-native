@@ -69,6 +69,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var simVoiceUntil: CFAbsoluteTime = 0
     /// 收下的句子还在核对 / 回答的个数（模拟等它们归零再退出）。
     private var liveActsPending = 0
+    /// 边听边插话收下的句子（最近 12 句）：判插不插时看这句之后本人有没有改口。
+    private var liveHeard: [(at: CFAbsoluteTime, text: String)] = []
 
     /// 切换录音的自动分段：停顿 1.3 秒就切一段送去转写，不等再按一下。
     private var segmenter = SilenceSegmenter()
@@ -1444,6 +1446,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 按住说话（明确是对助手说的）照旧回答 / 建卡。
     private func handleLive(_ finished: LiveInterjector.Finished) {
         let settings = store.settings
+        // 收下的每句都记着：核对回来之前本人可能已经改口了（「……是大阪。」「啊不对，是东京」先收下、核对 2 秒才回来）
+        let committedAt = CFAbsoluteTimeGetCurrent()
+        liveHeard.append((committedAt, finished.text))
+        if liveHeard.count > 12 { liveHeard.removeFirst() }
         if liveSim == nil {
             history.append(HistoryEntry(sourceText: finished.text, finalText: finished.text,
                                         transcriptionMode: settings.transcriptionMode,
@@ -1465,7 +1471,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .check:
                 guard let check = outcome.check else { self.live.trace("act", fields); return }
                 let delay = CFAbsoluteTimeGetCurrent() - finished.spokeUntil
-                let decision = interject.decide(check, segment: finished.text, delay: delay, laterSegments: [])
+                let later = self.liveHeard.filter { $0.at > committedAt }.map(\.text)
+                let decision = interject.decide(check, segment: finished.text, delay: delay, laterSegments: later)
                 fields["kind"] = check.kind.rawValue
                 fields["wrong"] = check.wrong
                 fields["confidence"] = check.confidence
@@ -1475,7 +1482,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case .drop(let reason): fields["decision"] = reason.rawValue
                 }
                 self.live.trace("act", fields)
-                if case .show(let correction) = decision { self.present(correction, prefix: "纠正：") }
+                guard case .show(let correction) = decision else { return }
+                // 停顿后紧接着有人在说（多半是本人没说完）：先把接着说的转写了，是在改口就不插
+                guard self.live.isActive, self.live.continuesQuickly(after: finished.spokeUntil) else {
+                    self.present(correction, prefix: "纠正：")
+                    return
+                }
+                self.live.trace("hold", ["correction": correction])
+                self.live.cut(reason: "hear-continuation") { heard in
+                    if let heard, InterjectionPolicy.correctsItself(heard) {
+                        self.live.trace("hold-drop", ["heard": heard, "correction": correction])
+                    } else {
+                        self.present(correction, prefix: "纠正：")
+                    }
+                }
             case .answer, .agent, .ticket, .none, .incomplete:
                 self.live.trace("act", fields)
             }

@@ -393,3 +393,36 @@ final class LiveRouteTests: XCTestCase {
         XCTAssertEqual(InterjectionAPI.dropTrailingComma("我跟你说、"), "我跟你说")
     }
 }
+
+final class FinalTicketTests: XCTestCase {
+
+    /// 收尾的票 Jev 失败了也不能丢（App 就不看门槛直接核对）；试探票失败了等下一次就行。
+    func testPromotedTicketIsFinal() {
+        var t = LiveUtteranceTracker()
+        let a = t.pause()
+        XCTAssertFalse(t.isFinal(a))
+        guard case .awaiting(let promoted) = t.cut() else { return XCTFail("应该等在路上的那张") }
+        XCTAssertTrue(t.isFinal(promoted))
+        _ = t.transcribed(promoted, text: "日本的首都是大阪吧")
+        XCTAssertEqual(t.judged(promoted, gate: .init(complete: 1, claim: 1)), .commit(final: true))
+        XCTAssertFalse(t.isFinal(promoted))
+    }
+}
+
+final class ContinuationTests: XCTestCase {
+
+    /// 纠正准备好时，停顿后 0.5 秒内就有人接着说 → 多半是本人没说完，先听一下（「水五十度就开了，哦不对……」
+    /// 停了 0.32 秒就接着说，2026-10-01 模拟里纠正念到了他改口的时候）。隔得久的是对方在接话，不等。
+    func testQuickContinuationIsHeardFirst() {
+        XCTAssertTrue(InterjectionPolicy.continuesQuickly(pauseStartedAt: 10, speechStarts: [8, 10.32]))
+        XCTAssertFalse(InterjectionPolicy.continuesQuickly(pauseStartedAt: 10, speechStarts: [8, 10.7]))
+        XCTAssertFalse(InterjectionPolicy.continuesQuickly(pauseStartedAt: 10, speechStarts: [8]))
+    }
+
+    func testContinuationThatCorrectsItself() {
+        XCTAssertTrue(InterjectionPolicy.correctsItself("哦,不对"))
+        XCTAssertTrue(InterjectionPolicy.correctsItself("啊不對"))          // Whisper 吐的繁体
+        XCTAssertTrue(InterjectionPolicy.correctsItself("No wait, it's 100"))
+        XCTAssertFalse(InterjectionPolicy.correctsItself("真的假的"))
+    }
+}
