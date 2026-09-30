@@ -13,6 +13,12 @@ final class AssistantIntentTests: XCTestCase {
         XCTAssertEqual(AssistantIntentAPI.Verdict.decide(0.39), .text)
     }
 
+    func testObsidianIsExcluded() {
+        XCTAssertTrue(AssistantIntentAPI.isExcluded(bundleID: "md.obsidian"))
+        XCTAssertFalse(AssistantIntentAPI.isExcluded(bundleID: "com.apple.TextEdit"))
+        XCTAssertFalse(AssistantIntentAPI.isExcluded(bundleID: nil))
+    }
+
     func testAppKind() {
         XCTAssertEqual(AssistantIntentAPI.appKind(bundleID: "com.tinyspeck.slackmacgap"), "chat with other people")
         XCTAssertEqual(AssistantIntentAPI.appKind(bundleID: "com.apple.Terminal"), "developer tool")

@@ -108,6 +108,7 @@ Jev 判错的代价只是多开一次面板。同一段原话也写进剪贴板�
 - 端口与 token 每次现读 `~/repos/Memo/.obsidian/plugins/md-kanban/data.json` 的 `mobileControl`（`INKFALL_KANBAN_VAULT` 可改 vault）
 - Obsidian 没开 / 旧版插件（没有这个端点）/ 1.5 秒不回 → 照常粘贴，刘海说「看板没连上」
 - 送的是**加工前**的原话（加工会改写请求本身）
+- 黑名单 `AssistantIntentAPI.excludedBundleIDs`（现在只有 Obsidian `md.obsidian`）：目标是它时不问 Jev、照常粘贴 —— 在看板的聊天框里说话本来就是给 AI 打字
 - 代码：`InkfallCore/Net/KanbanHandoffAPI.swift`（单测 `KanbanHandoffTests`）、`App/Pipeline/KanbanHandoff.swift`
 
 ### ⌥Space 自动分段（2026-09-27）
