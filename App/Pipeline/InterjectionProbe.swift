@@ -108,7 +108,9 @@ final class InterjectionProbe {
         let gate = await askGate(segment: segment)
         let gateMs = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
         guard let gate else { return Outcome(segment: segment, stoppedAt: "gate-failed", gateMs: gateMs) }
-        if gate.route(checkComplete: checkComplete) == .incomplete {
+        // 半句只接一次：接上之后还判没说完就照样往下走。原来一直接，一句「没说完」之后每段都接在它后面，
+        // 越接越长、永远判不成说完，后面说的全丢了（2026-10-01 真机：之后八句错话一句没纠正）
+        if fragment.isEmpty, gate.route(checkComplete: checkComplete) == .incomplete {
             fragment = segment
             return Outcome(segment: segment, gate: gate, route: .incomplete, gateMs: gateMs)
         }

@@ -317,6 +317,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         assistantMode.toggle()
         Log.write("mode: \(assistantMode ? "助手模式" : "输入模式")")
         flash(.success, assistantMode ? "助手模式 · 不粘贴，记进历史" : "输入模式 · 照常粘贴", seconds: 1.6)
+        handOverToggleRecording()
+    }
+
+    /// 长录音录到一半切模式：切到助手就转成边听边插话，切回输入就把边听收尾、接着按停顿切段粘贴。
+    /// 原来只在起录时看模式，录到一半切到助手走的还是按 1.3 秒切段那条路，边听插话根本没开（2026-10-01 真机）。
+    private func handOverToggleRecording() {
+        guard toggleOwnsRecorder, recorder.isRecording else { return }
+        if assistantMode, !live.isActive {
+            // 切之前那截是输入模式下说的（多半只有按 ⌥, 的那一下），不拿去核对
+            let dropped = (try? recorder.flushSegment())?.durationMs ?? 0
+            segmenter.resetSegment()
+            interject.reset()
+            Log.write("toggle: 录音中切到助手，转成边听插话（丢掉切之前的 \(dropped)ms）")
+            startLive(source: RecorderLiveSource(recorder))
+        } else if !assistantMode, live.isActive {
+            live.stop(finalAudio: try? recorder.flushSegment())
+            segmenter.resetSegment()
+            Log.write("toggle: 录音中切回输入，边听插话收尾")
+        }
     }
 
     /// 历史记录的子菜单：最近 20 条，点一下复制。
