@@ -233,7 +233,12 @@ public enum InterjectionAPI {
     claim is wrong: 木星才是最大的行星, not 地球不是最大的行星), written in the same language as \
     `segment` (Chinese segment → Chinese), with no preamble. At most 20 characters for Chinese or Japanese, at most 12 \
     words otherwise. Example: 苹果是水果
-    - detail: only when wrong — one short sentence of evidence in the speaker's language
+    - detail: only when wrong — WHY the correct fact is true: one piece of everyday knowledge that backs it up, said \
+    plainly the way a friend explains in one breath, in the same language as `segment`. It is read aloud right after \
+    the correction, so it must add something new: never restate the correction or the claim, never just say the claim \
+    is wrong. Write numbers as spoken words, no symbols or unit notation. At most 25 characters for Chinese or Japanese, \
+    at most 15 words otherwise. Examples: correction 蜘蛛不是昆虫 → detail 它有八条腿，昆虫只有六条; \
+    correction 蝙蝠是哺乳动物 → detail 它是胎生的，用奶喂小蝙蝠
     - when not wrong, correction and detail are empty strings
     """
 

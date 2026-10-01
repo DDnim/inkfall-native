@@ -454,6 +454,12 @@ final class BargeInTests: XCTestCase {
         XCTAssertEqual(BargeIn.interruptPhrase(for: "Light is faster"), "Wait, ")
         XCTAssertEqual(BargeIn.followUpPhrase(for: "鲸鱼是哺乳动物"), "还有，")
     }
+
+    func testCorrectionIsReadWithItsReason() {
+        XCTAssertEqual(BargeIn.explained("苹果是水果。", detail: "它是苹果树结的果实"), "苹果是水果，它是苹果树结的果实")
+        XCTAssertEqual(BargeIn.explained("富士山は本州にある", detail: "静岡と山梨の境です"), "富士山は本州にある。静岡と山梨の境です")
+        XCTAssertEqual(BargeIn.explained("苹果是水果", detail: " "), "苹果是水果")
+    }
 }
 
 final class CorrectionQueueTests: XCTestCase {

@@ -41,6 +41,18 @@ public enum BargeIn {
         }
     }
 
+    /// 念出来的整句：纠正 + 理由（2026-10-01 境：「只有否定，没有解释」—— 核对一直有 detail，原来没念）。
+    public static func explained(_ correction: String, detail: String) -> String {
+        let reason = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reason.isEmpty else { return correction }
+        let head = correction.trimmingCharacters(in: CharacterSet(charactersIn: "。．.!！，,、 "))
+        switch interruptPhrase(for: correction) {
+        case "ちょっと待って、": return head + "。" + reason
+        case "等一下，": return head + "，" + reason
+        default: return head + ". " + reason
+        }
+    }
+
     private static func normalize(_ text: String) -> String {
         String(text.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
     }

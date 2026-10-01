@@ -1536,7 +1536,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 // 抢话：不管有没有人在说，马上插
                 if self.live.bargeInEnabled {
-                    self.interruptLive(correction)
+                    self.interruptLive(correction, detail: check.detail)
                     return
                 }
                 guard self.live.isActive, self.live.continuesQuickly(after: finished.spokeUntil) else {
@@ -1559,14 +1559,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 抢话插嘴：正念着上一句就排在后面（念完接「还有，……」），否则马上「等一下，……」。
-    private func interruptLive(_ correction: String) {
+    /// 刘海和念的都带上理由（`detail`）。
+    private func interruptLive(_ correction: String, detail: String) {
+        let full = BargeIn.explained(correction, detail: detail)
         let speaking = liveSim?.mute == true ? CFAbsoluteTimeGetCurrent() < simVoiceUntil : interjectVoice.isSpeaking
         guard !speaking else {
-            liveQueue.push(correction: correction, spoken: BargeIn.followUpPhrase(for: correction) + correction, now: Date())
-            live.trace("queue", ["correction": correction, "queued": liveQueue.count])
+            liveQueue.push(correction: full, spoken: BargeIn.followUpPhrase(for: correction) + full, now: Date())
+            live.trace("queue", ["correction": full, "queued": liveQueue.count])
             return
         }
-        present(correction, prefix: "纠正：", spoken: BargeIn.interruptPhrase(for: correction) + correction)
+        present(full, prefix: "纠正：", spoken: BargeIn.interruptPhrase(for: correction) + full)
     }
 
     /// 一句念完了：排着的接着念。

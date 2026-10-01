@@ -7,7 +7,8 @@ import Foundation
 public struct CorrectionQueue: Sendable {
 
     /// 排队超过这么久就不念了（这时对方多半已经聊到别处）。
-    public static let maxWait: TimeInterval = 8
+    /// 带理由念一句要 4–5 秒，前面排一句就要等这么久（原来 8 秒，只念纠正时够）。
+    public static let maxWait: TimeInterval = 12
     /// 最多排几句（再多就是在念检讨书了）。
     public static let capacity = 3
 
