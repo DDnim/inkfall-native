@@ -385,6 +385,26 @@ final class LiveRouteTests: XCTestCase {
         XCTAssertEqual(InterjectionAPI.Gate(complete: 0.8, claim: 0.2, question: 0.9).liveRoute, .none)
     }
 
+    /// 跟助手说的提问 / 任务照常回答、建卡；对朋友说的只纠错。
+    func testLiveRouteAnswersAndDispatchesWhenAddressed() {
+        typealias G = InterjectionAPI.Gate
+        XCTAssertEqual(G(complete: 0.9, claim: 0.1, task: 0.95, addressed: 0.95).liveRoute, .agent)
+        XCTAssertEqual(G(complete: 0.9, claim: 0.1, task: 0.95, complex: 0.9, addressed: 0.95).liveRoute, .ticket)
+        XCTAssertEqual(G(complete: 0.9, claim: 0.1, question: 0.9, simple: 0.9, addressed: 0.73).liveRoute, .answer)
+        XCTAssertEqual(G(complete: 0.9, claim: 0.1, question: 0.9, simple: 0.9, addressed: 0.05).liveRoute, .none)
+        XCTAssertEqual(G(complete: 0.9, claim: 0.9, question: 0.3, addressed: 0.8).liveRoute, .check)
+        // 跟助手说，提问 / 任务都没过线：哪个高算哪个（要查的 → agent）
+        XCTAssertEqual(G(complete: 0.9, claim: 0.1, task: 0.26, question: 0.31, simple: 0.04, addressed: 0.94).liveRoute,
+                       .agent)
+    }
+
+    func testAddressedIsOnlyAskedLive() throws {
+        let live = try XCTUnwrap(InterjectionAPI.gateBody(previous: [], segment: "x", live: true))
+        let push = try XCTUnwrap(InterjectionAPI.gateBody(previous: [], segment: "x", live: false))
+        XCTAssertTrue(String(decoding: live, as: UTF8.self).contains("\"addressed\""))
+        XCTAssertFalse(String(decoding: push, as: UTF8.self).contains("\"addressed\""))
+    }
+
     /// Whisper 爱在句尾补个逗号（「一年有13个月,」），Jev 就当没说完了。问之前去掉。
     func testTrailingCommaIsNotASignalOfIncompleteness() {
         XCTAssertEqual(InterjectionAPI.dropTrailingComma("一年有13个月,"), "一年有13个月")

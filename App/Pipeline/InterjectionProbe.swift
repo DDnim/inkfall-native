@@ -141,11 +141,10 @@ final class InterjectionProbe {
             guard let route = await checkRoute(settings: settings) else { outcome.stoppedAt = "no-check-route"; break }
             outcome.model = Self.label(route)
             let t0 = CFAbsoluteTimeGetCurrent()
-            let result = await withTimeout(Self.answerTimeout) {
-                await PostProcessor.run(.init(instructions: InterjectionAPI.answerInstructions,
-                                              input: InterjectionAPI.answerInput(previous: previous, question: segment),
-                                              route: route, maxOutputTokens: InterjectionAPI.answerMaxOutputTokens))
-            }
+            let result = await runFallingBack(.init(instructions: InterjectionAPI.answerInstructions,
+                                                    input: InterjectionAPI.answerInput(previous: previous, question: segment),
+                                                    route: route, maxOutputTokens: InterjectionAPI.answerMaxOutputTokens),
+                                              timeout: Self.answerTimeout, outcome: &outcome)
             outcome.checkMs = Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
             switch result {
             case .none: outcome.stoppedAt = "answer-timeout"
@@ -191,17 +190,7 @@ final class InterjectionProbe {
                                             input: InterjectionAPI.checkInput(previous: previous, segment: segment),
                                             route: route, maxOutputTokens: InterjectionAPI.checkMaxOutputTokens,
                                             temperature: InterjectionAPI.checkTemperature(for: route.provider))
-        var result = await withTimeout(Self.checkTimeout) { await PostProcessor.run(request) }
-        // Qwen 限流（429，按天的 token 用完了）：同一个 key 改问另一个模型
-        if case .some(.failure(let failure)) = result, failure.message.contains("429"),
-           case .cloud(let provider, let model, let key) = route, model != InterjectionAPI.fallbackCheckModel {
-            Log.write("interject: \(model) 限流，改问 \(InterjectionAPI.fallbackCheckModel)")
-            var retry = request
-            retry.route = .cloud(provider: provider, model: InterjectionAPI.fallbackCheckModel, key: key)
-            let fallback = retry
-            outcome.model = Self.label(fallback.route)
-            result = await withTimeout(Self.checkTimeout) { await PostProcessor.run(fallback) }
-        }
+        var result = await runFallingBack(request, timeout: Self.checkTimeout, outcome: &outcome)
         // Groq 偶尔回空结果（2026-10-01 真机「苹果是一种蔬菜」一次）：还来得及就再问一次
         if case .some(.failure(let failure)) = result, failure.message.contains("空结果"),
            CFAbsoluteTimeGetCurrent() - started < Self.checkTimeout / 2 {
@@ -264,6 +253,21 @@ final class InterjectionProbe {
             Log.write("interject: Jev 失败 \(error.localizedDescription)")
             return nil
         }
+    }
+
+    /// 跑一次核对 / 回答。Qwen 限流（429，免费档按天的 token 用完了）：同一个 key 改问另一个模型。
+    private func runFallingBack(_ request: PostProcessor.Request, timeout: TimeInterval,
+                                outcome: inout Outcome) async -> Result<PostProcessor.Success, PostProcessor.Failure>? {
+        let result = await withTimeout(timeout) { await PostProcessor.run(request) }
+        guard case .some(.failure(let failure)) = result, failure.message.contains("429"),
+              case .cloud(let provider, let model, let key) = request.route,
+              model != InterjectionAPI.fallbackCheckModel else { return result }
+        Log.write("interject: \(model) 限流，改问 \(InterjectionAPI.fallbackCheckModel)")
+        var retry = request
+        retry.route = .cloud(provider: provider, model: InterjectionAPI.fallbackCheckModel, key: key)
+        let fallback = retry
+        outcome.model = Self.label(fallback.route)
+        return await withTimeout(timeout) { await PostProcessor.run(fallback) }
     }
 
     private func withTimeout<T: Sendable>(_ seconds: TimeInterval,

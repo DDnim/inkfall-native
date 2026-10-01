@@ -70,6 +70,19 @@ public enum InterjectionAPI {
         + "idea, or something that needs decisions about scope or approach — that the user should write up and plan themselves "
         + "before anyone starts, rather than a clear, contained task an AI coding agent could simply go and do now?"
 
+    // verbatim：与 /tmp 手试同一版（2026-10-01 v3，23 句）：问助手的 0.62–0.96（只漏「北极到底有没有企鹅啊？」0.51），
+    // 对朋友说的 ≤ 0.46（「这家店几点关门来着」0.56 两可）。叫一声「落音」0.79 / 0.96。
+    // 边听边插话原来只纠错（提问和任务当成说给对方的）；境：「问他问题的时候能跟我聊天」「长时间录音也能派任务」
+    public static let addressedQuestion =
+        "A voice assistant named 落音 (Inkfall) sits on the table while two friends chat. Either of them may turn to it — by "
+        + "name or not — with a question they want answered (a fact, an explanation, a curiosity like why the sky is blue) or a "
+        + "request to do something (look something up, remind, file a task). Small talk, plans and personal questions are for "
+        + "the other friend. `segment` is what one of them just said (`previous` is earlier conversation). Is `segment` meant "
+        + "for the assistant to answer or act on — rather than said to the other friend?"
+
+    /// 边听边插话：高于它才当作是在跟助手说（回答 / 建卡），否则只纠错。
+    public static let addressedThreshold = 0.6
+
     /// 低于它就不去核对。
     public static let claimThreshold = 0.5
     /// 简单问题 / 大而不清的活的门槛。
@@ -86,14 +99,17 @@ public enum InterjectionAPI {
         public let question: Double
         public let simple: Double
         public let complex: Double
+        /// 边听边插话才问：是不是在跟助手说（`addressedQuestion`）
+        public let addressed: Double
         public init(complete: Double, claim: Double, task: Double = 0, question: Double = 0,
-                    simple: Double = 0, complex: Double = 0) {
+                    simple: Double = 0, complex: Double = 0, addressed: Double = 0) {
             self.complete = complete
             self.claim = claim
             self.task = task
             self.question = question
             self.simple = simple
             self.complex = complex
+            self.addressed = addressed
         }
         public var isComplete: Bool { complete >= completeThreshold }
         public var isCompleteLive: Bool { complete >= liveCompleteThreshold }
@@ -110,9 +126,21 @@ public enum InterjectionAPI {
             return .none
         }
 
-        /// 边听边插话（两个人聊天）的分流：**只纠错**，提问和任务是说给对方的。
-        /// 所以有断言就核对 —— 两个人的话并成一段时里面常带着对方的问句，按 `route` 会被当成「提问」漏掉。
-        public var liveRoute: Route { claim >= claimThreshold ? .check : .none }
+        /// 边听边插话（两个人聊天）的分流：在跟助手说（`addressed`）的提问 / 任务照助手模式分流（回答 / 建卡）；
+        /// 其余的只纠错 —— 两个人之间的问题是问对方的；两个人的话并成一段时里面常带着对方的问句，有断言就核对。
+        public var liveRoute: Route {
+            if addressed >= addressedThreshold {
+                let routed = route(checkComplete: false)
+                if routed == .answer || routed == .agent || routed == .ticket { return routed }
+                // 在跟助手说、又不是断言，但提问 / 任务都没过线（对话里带着前文，「帮我查一下明天东京的天气」
+                // 提问 0.31、任务 0.26，2026-10-01 模拟）：哪个高算哪个
+                if claim < claimThreshold {
+                    if task > question { return complex >= complexThreshold ? .ticket : .agent }
+                    return simple >= simpleThreshold ? .answer : .agent
+                }
+            }
+            return claim >= claimThreshold ? .check : .none
+        }
     }
 
     public enum Route: String, Sendable, Equatable {
@@ -142,7 +170,7 @@ public enum InterjectionAPI {
                 "question": ["type": "noul", "instructions": questionQuestion],
                 "simple": ["type": "noul", "instructions": simpleQuestion],
                 "complex": ["type": "noul", "instructions": complexQuestion],
-            ],
+            ].merging(live ? ["addressed": ["type": "noul", "instructions": addressedQuestion]] : [:]) { a, _ in a },
         ]
         return try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     }
@@ -157,7 +185,7 @@ public enum InterjectionAPI {
             return value
         }
         return Gate(complete: try p("complete"), claim: try p("claim"), task: try p("task"), question: try p("question"),
-                    simple: try p("simple"), complex: try p("complex"))
+                    simple: try p("simple"), complex: try p("complex"), addressed: (try? p("addressed")) ?? 0)
     }
 
     /// Whisper 爱在句尾补个逗号（「一年有13个月,」），Jev 看到就当没说完。问之前去掉（句号问号留着）。
@@ -248,6 +276,10 @@ public enum InterjectionAPI {
     You are a voice assistant. The user just asked `question` aloud (`previous` is what they said just before, context \
     only). Answer it so it can be read aloud: in the same language as the question, one to three short sentences, the \
     answer first, no markdown, no lists, no preamble. If you do not know or it depends on recent events, say so in one sentence.
+    Talk like a friend chatting — warm and casual, not a textbook. If they call you by name (落音), just answer — \
+    do not remark on being called. Write numbers the way they are spoken \
+    (三十万公里每秒, not 3×10^8 m/s), no symbols or formulas. Keep it to about 50 characters for Chinese or Japanese, \
+    30 words otherwise.
     """
 
     public static func answerInput(previous: [String], question: String) -> String {

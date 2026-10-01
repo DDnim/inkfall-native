@@ -75,6 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var liveInterrupted: [(at: CFAbsoluteTime, text: String)] = []
     /// 念着纠正的时候又准备好的纠正（念完接着念）
     private var liveQueue = CorrectionQueue()
+    /// 派任务先等一下（`taskSettleSeconds`）：「落音，帮我建个任务」停一下才说内容，并成一句再建卡
+    private var pendingTask: (text: String, timer: DispatchWorkItem)?
+    private static let taskSettleSeconds = 1.6
 
     /// 切换录音的自动分段：停顿 1.3 秒就切一段送去转写，不等再按一下。
     private var segmenter = SilenceSegmenter()
@@ -1442,6 +1445,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let provider = settings.transcriptionMode.cloudProviderForSelfTest { CloudTranscriber.prewarm(provider) }
         PostProcessor.prewarm(InterjectionAPI.checkProvider)
         liveQueue.removeAll()
+        pendingTask?.timer.cancel()
+        pendingTask = nil
         live.start(source: source)
     }
 
@@ -1489,6 +1494,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                         postProcessingEnabled: false, postProcessingPreset: nil))
             rebuildHistoryMenu()
         }
+        if let pending = pendingTask {
+            // 刚派的任务后面紧跟着的话是任务的内容（「帮我建个任务」……「明天把发票整理一下」）
+            live.trace("task-append", ["text": finished.text])
+            holdTask(pending.text + "，" + finished.text)
+            return
+        }
         let recent = liveInterrupted.filter { CFAbsoluteTimeGetCurrent() - $0.at < 30 }.map(\.text)
         if BargeIn.alreadyInterrupted(finished.text, interrupted: recent) {
             live.trace("act", ["text": finished.text, "route": "already-interrupted"])
@@ -1510,7 +1521,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var fields: [String: Any] = ["text": finished.text, "route": outcome.route.rawValue,
                                          "model": outcome.model, "ms": outcome.checkMs, "since_speech_ms": since,
                                          "claim": finished.gate.claim, "question": finished.gate.question,
-                                         "task": finished.gate.task, "unfinished": !committed]
+                                         "task": finished.gate.task, "unfinished": !committed,
+                                         "addressed": finished.gate.addressed, "simple": finished.gate.simple,
+                                         "complex": finished.gate.complex]
             if let stopped = outcome.stoppedAt { fields["stopped"] = stopped }
             switch outcome.route {
             case .check:
@@ -1552,10 +1565,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         self.present(correction, prefix: "纠正：")
                     }
                 }
-            case .answer, .agent, .ticket, .none, .incomplete:
+            case .answer, .agent, .ticket:
+                // 跟助手说的提问 / 任务（`Gate.liveRoute`）。半句不做，等这句说完收下
+                guard committed else { self.live.trace("act", fields); return }
+                await self.actOnAddressed(outcome, fields: fields)
+            case .none, .incomplete:
                 self.live.trace("act", fields)
             }
         }
+    }
+
+    /// 边听边插话里跟助手说的话：问题当场答（念出来），要查的 / 清楚的任务后台建卡给 agent，大而不清的打开起票面板。
+    private func actOnAddressed(_ outcome: InterjectionProbe.Outcome, fields: [String: Any]) async {
+        var fields = fields
+        let settings = store.settings
+        switch outcome.route {
+        case .answer:
+            guard let answer = outcome.answer else {
+                fields["stopped"] = outcome.stoppedAt ?? "?"
+                live.trace("act", fields)
+                return
+            }
+            fields["answer"] = answer
+            live.trace("act", fields)
+            if liveSim == nil {
+                history.append(HistoryEntry(title: "回答", sourceText: outcome.segment, finalText: answer,
+                                            transcriptionMode: settings.transcriptionMode,
+                                            postProcessingEnabled: false, postProcessingPreset: nil))
+                rebuildHistoryMenu()
+            }
+            sayLive(answer, prefix: "答：", spoken: answer)
+        case .agent, .ticket:
+            live.trace("act", fields)
+            holdTask(outcome.segment)
+        default:
+            live.trace("act", fields)
+        }
+    }
+
+    /// 任务先攒着，`taskSettleSeconds` 内没有接着说的话再派。
+    /// 1.6 秒是静下来之后的：人还在说、或者说的还在转写，就再等（模拟里内容那半句 2 秒才说完，先派了半句）。
+    private func holdTask(_ text: String, since: Date = Date()) {
+        pendingTask?.timer.cancel()
+        let timer = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                guard let self, let pending = self.pendingTask else { return }
+                let busy = self.live.isActive && (self.live.segmenter.isSpeaking || self.live.inFlight > 0)
+                if busy, Date().timeIntervalSince(since) < 10 {
+                    self.holdTask(pending.text, since: since)
+                    return
+                }
+                await self.dispatchTask()
+            }
+        }
+        pendingTask = (text, timer)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.taskSettleSeconds, execute: timer)
+    }
+
+    /// 派出去：并好的整句再问一次 Jev（「帮我建个任务」单独是大而不清，并上内容就是清楚的任务），
+    /// 清楚的后台建卡给 agent，大而不清的打开起票面板。
+    private func dispatchTask() async {
+        guard let pending = pendingTask else { return }
+        pendingTask = nil
+        let gate = await interject.askGate(segment: pending.text, live: true)
+        let route = gate?.route(checkComplete: false)
+        let ticket = route == .ticket
+        guard liveSim == nil else {
+            live.trace("task", ["text": pending.text, "card": ticket ? "sim-ticket" : "sim"])
+            return
+        }
+        if ticket {
+            let opened = await kanban.send(pending.text)
+            live.trace("task", ["text": pending.text, "card": opened ? "ticket-panel" : "failed"])
+            flash(opened ? .success : .error, opened ? "这个比较大，已打开起票面板" : "看板没连上，已记进历史", seconds: 2.4)
+        } else {
+            let path = await kanban.createCard(pending.text)
+            live.trace("task", ["text": pending.text, "card": path ?? "failed"])
+            if path != nil { sayLive("交给 agent 了", prefix: "", spoken: "好，交给 agent 了") }
+            else { flash(.error, "看板没连上，已记进历史", seconds: 2.4) }
+        }
+    }
+
+    /// 边听边插话里说一句：正念着就排在后面，念完接着念。
+    private func sayLive(_ text: String, prefix: String, spoken: String) {
+        let speaking = liveSim?.mute == true ? CFAbsoluteTimeGetCurrent() < simVoiceUntil : interjectVoice.isSpeaking
+        guard !speaking else {
+            liveQueue.push(correction: text, spoken: spoken, now: Date())
+            live.trace("queue", ["text": text, "queued": liveQueue.count])
+            return
+        }
+        present(text, prefix: prefix, spoken: spoken)
     }
 
     /// 抢话插嘴：正念着上一句就排在后面（念完接「还有，……」），否则马上「等一下，……」。
@@ -1563,18 +1662,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func interruptLive(_ correction: String, detail: String) {
         let full = BargeIn.explained(correction, detail: detail)
         let speaking = liveSim?.mute == true ? CFAbsoluteTimeGetCurrent() < simVoiceUntil : interjectVoice.isSpeaking
-        guard !speaking else {
-            liveQueue.push(correction: full, spoken: BargeIn.followUpPhrase(for: correction) + full, now: Date())
-            live.trace("queue", ["correction": full, "queued": liveQueue.count])
-            return
-        }
-        present(full, prefix: "纠正：", spoken: BargeIn.interruptPhrase(for: correction) + full)
+        sayLive(full, prefix: "纠正：",
+                spoken: (speaking ? BargeIn.followUpPhrase(for: correction) : BargeIn.interruptPhrase(for: correction)) + full)
     }
 
     /// 一句念完了：排着的接着念。
     private func speakQueuedLive() {
         guard let next = liveQueue.pop(now: Date()) else { return }
-        present(next.correction, prefix: "纠正：", spoken: next.spoken)
+        present(next.correction, prefix: "", spoken: next.spoken)
     }
 
     /// `--live-sim <wav> [--out <jsonl>] [--mute] [--tail 秒] [--no-smart-turn] [--turn-give-up 秒]`：
