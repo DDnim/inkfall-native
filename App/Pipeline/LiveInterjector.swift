@@ -56,6 +56,13 @@ final class LiveInterjector {
         UserDefaults.standard.object(forKey: "inkfall.liveSmartTurn") as? Bool ?? true
     }
 
+    /// 抢话（见 InkfallCore `BargeIn`）。关掉：`defaults write <bundle> inkfall.liveBargeIn -bool NO`（回到等说完再插）。
+    static var useBargeIn: Bool {
+        UserDefaults.standard.object(forKey: "inkfall.liveBargeIn") as? Bool ?? true
+    }
+    /// `--live-sim --no-barge-in` 用来对比。
+    var bargeInEnabled = LiveInterjector.useBargeIn
+
     struct Finished {
         let text: String
         let gate: InterjectionAPI.Gate
@@ -69,6 +76,8 @@ final class LiveInterjector {
     typealias Transcribe = @MainActor (RecordedAudio) async throws -> String
 
     var onFinished: (Finished) -> Void = { _ in }
+    /// 抢话：这句还没说完，但已经像在说事实（不收下这句，只拿去核对）。
+    var onUnfinishedClaim: (Finished) -> Void = { _ in }
     /// 结构化的过程记录：App 里写日志，`--live-sim` 里写 JSONL。
     var trace: (String, [String: Any]) -> Void = { _, _ in }
 
@@ -128,7 +137,7 @@ final class LiveInterjector {
         speechStarts = []
         wasSpeaking = false
         probe.prewarm()
-        trace("start", ["rpm": Self.whisperRPM, "give_up": turnGiveUp,
+        trace("start", ["rpm": Self.whisperRPM, "give_up": turnGiveUp, "barge_in": bargeInEnabled,
                         "smart_turn": smartTurnEnabled ? (turnModel.isReady ? "ready" : "loading") : "off"])
     }
 
@@ -168,6 +177,13 @@ final class LiveInterjector {
             trace("turn", ["p": (Double(probability) * 100).rounded() / 100, "silence": (silence * 100).rounded() / 100,
                            "done": done, "give_up": givingUp])
             guard done || givingUp else {
+                // 抢话：没说完也转写，好在半句里听到说错的事实就插嘴 —— 但给说完的句子多留额度
+                if bargeInEnabled, budget.allows(reserve: Self.finalReserve + BargeIn.unfinishedReserve, now: Date()) {
+                    watch.stop()
+                    speculate(silence: silence)
+                    return
+                }
+                if bargeInEnabled { trace("pause-skip", ["why": "budget-unfinished", "remaining": budget.remaining(now: Date())]) }
                 tracker.skipPause()
                 return
             }
@@ -312,6 +328,11 @@ final class LiveInterjector {
                     if !source.cut(upTo: mark) { trace("cut-mark-lost", ["ticket": ticket.id]) }
                 }
                 finish(ticket, text: text, gate: gate)
+            case .wait where bargeInEnabled && BargeIn.checksUnfinished(gate):
+                trace("barge-in", ["ticket": ticket.id, "text": text, "claim": gate.claim])
+                onUnfinishedClaim(Finished(text: text, gate: gate, kind: ticket.kind,
+                                           spokeUntil: spokeUntil[ticket.id] ?? CFAbsoluteTimeGetCurrent(),
+                                           durationMs: durations[ticket.id] ?? 0))
             default:
                 break
             }

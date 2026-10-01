@@ -434,3 +434,23 @@ final class TagQuestionIsNotSelfCorrectionTests: XCTestCase {
         XCTAssertTrue(InterjectionPolicy.correctsItself("啊不是，是东京"))
     }
 }
+
+final class BargeInTests: XCTestCase {
+    func testUnfinishedClaimIsCheckedWhenConfident() {
+        XCTAssertTrue(BargeIn.checksUnfinished(InterjectionAPI.Gate(complete: 0.3, claim: 0.8)))
+        XCTAssertFalse(BargeIn.checksUnfinished(InterjectionAPI.Gate(complete: 0.3, claim: 0.55)))
+    }
+
+    func testWholeSentenceAfterInterruptionIsNotCheckedAgain() {
+        let interrupted = ["苹果是一种蔬菜,"]
+        XCTAssertTrue(BargeIn.alreadyInterrupted("苹果是一种蔬菜，我每天都吃", interrupted: interrupted))
+        XCTAssertFalse(BargeIn.alreadyInterrupted("一年有十三个月", interrupted: interrupted))
+        XCTAssertFalse(BargeIn.alreadyInterrupted("随便说说", interrupted: ["，"]))
+    }
+
+    func testInterruptPhraseFollowsTheCorrectionLanguage() {
+        XCTAssertEqual(BargeIn.interruptPhrase(for: "苹果是水果"), "等一下，")
+        XCTAssertEqual(BargeIn.interruptPhrase(for: "富士山は本州にある"), "ちょっと待って、")
+        XCTAssertEqual(BargeIn.interruptPhrase(for: "Light is faster"), "Wait, ")
+    }
+}

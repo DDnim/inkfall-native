@@ -80,6 +80,7 @@ def score(name, events):
         "turn_not_done": sum(1 for k, e in enumerate(events) if e["ev"] == "turn" and not e["done"]
                              and not (k and events[k - 1]["ev"] == "turn")),
         "holds": sum(1 for e in events if e["ev"] == "hold"),
+        "barge_ins": sum(1 for e in events if e["ev"] == "barge-in"),
         "hold_drops": [e["heard"] for e in events if e["ev"] == "hold-drop"],
         "partial_commits": partial,
         "commits": [c["text"] for c in commits],
@@ -99,6 +100,8 @@ def main():
     extra = []
     if "--no-smart-turn" in args:
         extra.append(args.pop(args.index("--no-smart-turn")))
+    if "--no-barge-in" in args:
+        extra.append(args.pop(args.index("--no-barge-in")))
     if "--turn-give-up" in args:
         k = args.index("--turn-give-up")
         extra += args[k:k + 2]

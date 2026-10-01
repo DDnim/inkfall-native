@@ -18,7 +18,10 @@
 - 两边（Smart Turn 和 Jev）都说完才收下；Smart Turn 没好（第一次下载 17 MB 权重、载入 0.7 秒）时只靠 Jev
 - Groq 免费档 Whisper 每分钟 20 次：试探至少给收尾留 4 次（`RequestBudget`），429 按服务端给的秒数停
 - 念纠正前把已经说的话切走，念的期间录到的整段扔掉（那是 AI 自己的声音）
-- 开关：`defaults write <bundle id> inkfall.liveSmartTurn -bool NO`（只靠 Jev）/ `inkfall.liveTurnGiveUp <秒>` / `inkfall.liveWhisperRPM <次>`
+- **抢话（默认开，InkfallCore `BargeIn`）**：Smart Turn 判没说完的停顿也转写（比说完的句子多留 2 次额度）；
+  Jev 判没说完但 claim ≥ 0.6 就先核对；纠正好了马上念「等一下，……」，不等有人接着说的那截。之后这句说完收下时，
+  里面已经纠正过的半句不再核对
+- 开关：`defaults write <bundle id> inkfall.liveBargeIn -bool NO`（回到等说完再插）/ `inkfall.liveSmartTurn -bool NO`（只靠 Jev）/ `inkfall.liveTurnGiveUp <秒>` / `inkfall.liveWhisperRPM <次>`
 
 ## 离线跑
 
@@ -55,6 +58,18 @@ python3 experiments/live/run.py d1 d2 d3 --gap 45 [--no-smart-turn] [--turn-give
 - 合成对话里两种配置分不出高下：句中犹豫少，Smart Turn 省下的转写被「短回话也要单独转写」
   （有 Smart Turn 时停顿门槛从 0.6 秒说话放宽到 0.3 秒）抵掉了。它的用处要看真人说话
 - 各段耗时 p50：Whisper 330–460 ms、Jev ~170 ms、Qwen 核对 240–330 ms、Smart Turn 3 ms
+
+## 抢话（2026-10-01，`results.barge-in.json` / `results.d5.no-barge-in.json`）
+
+境真机试过之后：「整体还是人占主导权，我希望达到他打断我说话的效果」。d5 专测错话在一句中间、说完不停接着说：
+
+| 配置 | d5 三处错话：纠正出现在这句说完之前 / 之后 | d5 转写次数 | d1–d4 命中 | 误插 | 延迟 p50 |
+|---|---|---|---|---|---|
+| 抢话（默认） | 3 处都在说完前 1.8–3.0 秒插进来 | 17 | 8/9 + 弱 1 | 2 | 1.26 s |
+| 不抢话（`--no-barge-in`） | 1 处说完前、2 处说完后 1.1–1.2 秒 | 12 | 8/9 + 弱 1 | 0 | 1.12 s |
+
+- 多出来的 2 次误插都在 d4（「……是大阪。」停 0.4 秒「啊不对」）：抢话就是不等，人停一下再改口时纠正已经念出去了。这是代价
+- 句中停顿要真的静下来（d5 里「一年有十三个月」后 0.4 秒的停顿带着气声，电平没掉到退出门槛，没算停顿；后面一个干净的停顿才插进去）
 
 迭代里修掉的（每条都是模拟里真出过的）：
 - 两个人的话并成一段、里面带问句 → 按「提问」没核对（`Gate.liveRoute`：边听只纠错，有断言就核对）

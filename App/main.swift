@@ -71,6 +71,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var liveActsPending = 0
     /// 边听边插话收下的句子（最近 12 句）：判插不插时看这句之后本人有没有改口。
     private var liveHeard: [(at: CFAbsoluteTime, text: String)] = []
+    /// 抢话已经纠正过的半句（这句说完收下时不再核对一次）
+    private var liveInterrupted: [(at: CFAbsoluteTime, text: String)] = []
 
     /// 切换录音的自动分段：停顿 1.3 秒就切一段送去转写，不等再按一下。
     private var segmenter = SilenceSegmenter()
@@ -1375,10 +1377,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 刘海显示并念出来（纠正 / 回答）。刘海停到念完为止，按字数估。
-    private func present(_ text: String, prefix: String) {
+    /// - `spoken`: 念出来的话（默认就是 `text`）。抢话时前面加一句「等一下」，听起来像在打断。
+    private func present(_ text: String, prefix: String, spoken: String? = nil) {
         if let sim = liveSim {
             live.trace("present", ["text": prefix + text])
-            guard sim.mute else { speakInterjection(text); return }
+            guard sim.mute else { speakInterjection(spoken ?? text); return }
             // 不出声的模拟：和真的一样，念之前收下已经说的，念的期间不切段，念完扔掉录到的
             live.cut(reason: "before-voice")
             simVoiceUntil = CFAbsoluteTimeGetCurrent() + Self.estimatedSpeech(text)
@@ -1388,7 +1391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchHoldUntil = 0
         flash(.error, prefix + text, seconds: seconds)
         notchHoldUntil = CFAbsoluteTimeGetCurrent() + seconds
-        speakInterjection(text)
+        speakInterjection(spoken ?? text)
     }
 
     private func speakInterjection(_ text: String) {
@@ -1420,6 +1423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         live.trace = { [weak self] event, fields in self?.traceLive(event, fields) }
         live.onFinished = { [weak self] finished in self?.handleLive(finished) }
+        live.onUnfinishedClaim = { [weak self] unfinished in self?.checkLive(unfinished, committed: false) }
         return live
     }
 
@@ -1466,8 +1470,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleLive(_ finished: LiveInterjector.Finished) {
         let settings = store.settings
         // 收下的每句都记着：核对回来之前本人可能已经改口了（「……是大阪。」「啊不对，是东京」先收下、核对 2 秒才回来）
-        let committedAt = CFAbsoluteTimeGetCurrent()
-        liveHeard.append((committedAt, finished.text))
+        liveHeard.append((CFAbsoluteTimeGetCurrent(), finished.text))
         if liveHeard.count > 12 { liveHeard.removeFirst() }
         if liveSim == nil {
             history.append(HistoryEntry(sourceText: finished.text, finalText: finished.text,
@@ -1475,6 +1478,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                         postProcessingEnabled: false, postProcessingPreset: nil))
             rebuildHistoryMenu()
         }
+        let recent = liveInterrupted.filter { CFAbsoluteTimeGetCurrent() - $0.at < 30 }.map(\.text)
+        if BargeIn.alreadyInterrupted(finished.text, interrupted: recent) {
+            live.trace("act", ["text": finished.text, "route": "already-interrupted"])
+            return
+        }
+        checkLive(finished, committed: true)
+    }
+
+    /// 核对一句（`committed`：说完收下的；否则是抢话的半句），说错了就插嘴。
+    private func checkLive(_ finished: LiveInterjector.Finished, committed: Bool) {
+        let settings = store.settings
+        let heardAt = CFAbsoluteTimeGetCurrent()
         liveActsPending += 1
         Task { [interject] in
             defer { self.liveActsPending -= 1 }
@@ -1484,13 +1499,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var fields: [String: Any] = ["text": finished.text, "route": outcome.route.rawValue,
                                          "model": outcome.model, "ms": outcome.checkMs, "since_speech_ms": since,
                                          "claim": finished.gate.claim, "question": finished.gate.question,
-                                         "task": finished.gate.task]
+                                         "task": finished.gate.task, "unfinished": !committed]
             if let stopped = outcome.stoppedAt { fields["stopped"] = stopped }
             switch outcome.route {
             case .check:
                 guard let check = outcome.check else { self.live.trace("act", fields); return }
                 let delay = CFAbsoluteTimeGetCurrent() - finished.spokeUntil
-                let later = self.liveHeard.filter { $0.at > committedAt }.map(\.text)
+                let later = self.liveHeard.filter { $0.at > heardAt }.map(\.text)
                 let decision = interject.decide(check, segment: finished.text, delay: delay, laterSegments: later)
                 fields["kind"] = check.kind.rawValue
                 fields["wrong"] = check.wrong
@@ -1502,11 +1517,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 self.live.trace("act", fields)
                 guard case .show(let correction) = decision else { return }
-                // 停顿后紧接着有人在说（多半是本人没说完）：先把接着说的转写了，是在改口就不插
+                if !committed {
+                    self.liveInterrupted.append((CFAbsoluteTimeGetCurrent(), finished.text))
+                    if self.liveInterrupted.count > 8 { self.liveInterrupted.removeFirst() }
+                }
+                // 抢话：不管有没有人在说，马上插
+                if self.live.bargeInEnabled {
+                    self.present(correction, prefix: "纠正：", spoken: BargeIn.interruptPhrase(for: correction) + correction)
+                    return
+                }
                 guard self.live.isActive, self.live.continuesQuickly(after: finished.spokeUntil) else {
                     self.present(correction, prefix: "纠正：")
                     return
                 }
+                // 不抢话：停顿后紧接着有人在说（多半是本人没说完），先把接着说的转写了，是在改口就不插
                 self.live.trace("hold", ["correction": correction])
                 self.live.cut(reason: "hear-continuation") { heard in
                     if let heard, InterjectionPolicy.correctsItself(heard) {
@@ -1538,6 +1562,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         simTail = arguments.firstIndex(of: "--tail").flatMap { arguments[safe: $0 + 1] }.flatMap(Double.init) ?? 4
         live.smartTurnEnabled = !arguments.contains("--no-smart-turn")
+        live.bargeInEnabled = !arguments.contains("--no-barge-in")
         if let giveUp = arguments.firstIndex(of: "--turn-give-up").flatMap({ arguments[safe: $0 + 1] }).flatMap(Double.init) {
             live.turnGiveUp = giveUp
         }

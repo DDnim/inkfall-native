@@ -1,0 +1,59 @@
+[
+ {
+  "dialogue": "d5",
+  "hits": 3,
+  "weak": 0,
+  "expected": 3,
+  "false": [],
+  "latency": [
+   -2.89,
+   1.13,
+   1.2
+  ],
+  "rows": [
+   {
+    "text": "我跟你说鲸鱼其实是一种鱼所以它们一直待在水里用腮呼吸，跟金鱼差不多",
+    "hit": true,
+    "weak": false,
+    "latency": -2.89,
+    "correction": "纠正：鲸鱼是哺乳动物"
+   },
+   {
+    "text": "还有啊一年有十三个月多出来的那个月就是专门用来放假的",
+    "hit": true,
+    "weak": false,
+    "latency": 1.13,
+    "correction": "纠正：一年只有12个月"
+   },
+   {
+    "text": "对了光比声音慢所以打雷的时候先听到雷声再看到闪电",
+    "hit": true,
+    "weak": false,
+    "latency": 1.2,
+    "correction": "纠正：光比声音快，先看到闪电再听到雷声"
+   }
+  ],
+  "whisper_calls": 12,
+  "whisper_ms_p50": 406.5,
+  "jev_ms_p50": 178,
+  "check_ms_p50": 307.0,
+  "budget_skips": 0,
+  "turn_not_done": 4,
+  "holds": 1,
+  "barge_ins": 0,
+  "hold_drops": [],
+  "partial_commits": [],
+  "commits": [
+   "我跟你说,鲸鱼其实是一种鱼",
+   "所以他們一直在",
+   "跟金鱼差不多",
+   "还有啊,一年有13个月,多出来的那个月就是专门用来放假的",
+   "你今天",
+   "我觉得周末去海边挺好的,你觉得呢?",
+   "好啊,海边的话,我们开车去吧",
+   "对了,光比声音慢,所以打雷的时候先听到雷声,再看到闪电。",
+   "真的嗎?",
+   "我们下周末一起去吧"
+  ]
+ }
+]
