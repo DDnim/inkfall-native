@@ -13,7 +13,8 @@ public struct InterjectionPolicy: Sendable {
     public static let cooldown: TimeInterval = 4
     /// 同一句纠正这么久之内不再出（挡的是同一句话被转写两次、并段里又带上）。
     /// 过了就照样纠正：原来整个 App 生命期都挡，真机上同一句错话只有第一次有反应（2026-10-01）。
-    public static let duplicateWindow: TimeInterval = 20
+    /// 20 秒太长：一串错话里把刚说过的再说一遍（「苹果是蔬菜……我说苹果就是蔬菜」）也该再纠正（2026-10-01 真机）。
+    public static let duplicateWindow: TimeInterval = 10
     /// 从这一段转写好到核对回来，超过这么久话题已经过去了，只进日志。
     public static let maxDelay: TimeInterval = 5
     /// 后面的话里出现这些就当本人已经改口。Whisper 时不时吐繁体（「啊不對」，2026-10-01 模拟里因此照样插了），繁体也写上。
@@ -76,8 +77,9 @@ public struct InterjectionPolicy: Sendable {
     /// - `delay`: 这一段转写好到现在过了多久
     /// - `laterSegments`: 这一段之后已经转写出来的话（看本人有没有改口）
     /// - `segment`: 被核对的这一段本身（看有没有当场改口）
+    /// - `cooldown`: 边听边插话排队念（`CorrectionQueue`），传 0
     public mutating func decide(_ check: InterjectionAPI.Check, segment: String = "", delay: TimeInterval,
-                                laterSegments: [String], now: Date) -> Decision {
+                                laterSegments: [String], now: Date, cooldown: TimeInterval = Self.cooldown) -> Decision {
         guard check.wrong else { return .drop(.notWrong) }
         guard check.kind == .clearError else { return .drop(.notClearError) }
         guard check.confidence >= Self.minConfidence else { return .drop(.lowConfidence) }
@@ -89,7 +91,7 @@ public struct InterjectionPolicy: Sendable {
               !Self.inSegmentCorrectionMarkers.contains(where: segment.lowercased().contains)
         else { return .drop(.selfCorrected) }
         if let last = shownAt[correction], now.timeIntervalSince(last) < Self.duplicateWindow { return .drop(.duplicate) }
-        if let last = lastShownAt, now.timeIntervalSince(last) < Self.cooldown { return .drop(.cooldown) }
+        if let last = lastShownAt, now.timeIntervalSince(last) < cooldown { return .drop(.cooldown) }
         lastShownAt = now
         shownAt[correction] = now
         return .show(correction: correction)

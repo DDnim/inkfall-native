@@ -196,6 +196,8 @@ public enum InterjectionAPI {
     /// 核对和回答用 Groq 的 Qwen（2026-09-30 境「让 groq 的 qwen 迅速作出指正」）。没配 Groq key 才回落加工那家。
     public static let checkProvider = CloudProvider.groq
     public static let checkModel = "qwen/qwen3.8-27b"
+    /// Qwen 被限流（免费档每天 20 万 token，2026-10-01 一天的评测加真机就用完了）时改问这个：同一个 Groq key、额度另算
+    public static let fallbackCheckModel = "openai/gpt-oss-20b"
     /// 核对的回答是一行 JSON（~70 token）。**必须写上限**：Groq 免费档按预计输出 token 卡每分钟 1000，
     /// 不写就按模型上限估，一次请求就超，直接 429（2026-09-30 实测）。
     public static let checkMaxOutputTokens = 160
@@ -218,7 +220,9 @@ public enum InterjectionAPI {
     claim, like 「我还是坚持苹果是蔬菜」 — that is still the speaker's own claim)
     - words the speaker attributes to someone else ("他说…", "some people think…")
     - a claim the speaker corrects themselves within the segment
-    - claims whose truth depends on definition or context (e.g. whether a tomato is a vegetable, whether Pluto is a planet)
+    - claims whose truth depends on definition or context (e.g. whether a tomato is a vegetable, whether Pluto is a planet); \
+    everyday categories with one clear answer are not like that — an apple is a fruit, a whale is a mammal, so \
+    「苹果是蔬菜」「鲸鱼是鱼」 are clear errors, even said bluntly or repeated
     - recent or time-sensitive facts, niche facts, or anything you are not sure about
     - text that is probably a speech-recognition error rather than what the speaker meant
 

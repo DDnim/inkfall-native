@@ -45,7 +45,8 @@ def score(name, events):
         if not turn["expect"]:
             continue
         # 这句开始之后、后面第二句开始之前的纠正
-        horizon = truth[i + 2]["start"] if i + 2 < len(truth) else 1e9
+        # 抢话时纠正会排队（念完上一句才念，最多等 8 秒）：一口气一串错话时，纠正可能落在两句之后
+        horizon = max(truth[i + 2]["start"] if i + 2 < len(truth) else 1e9, turn["end"] + 8)
         window = [(k, p) for k, p in enumerate(presents) if k not in used and turn["start"] < p["t"] < horizon]
         # 纠正里有期望的词 = 命中；在这句的时间窗里纠正了、但没说出答案（「地球不是最大的行星」）或听错了 = 弱命中
         hit = next(((k, p) for k, p in window if any(w in p["text"].translate(TRAD) for w in turn["expect"])), None)

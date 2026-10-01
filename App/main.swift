@@ -73,6 +73,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var liveHeard: [(at: CFAbsoluteTime, text: String)] = []
     /// 抢话已经纠正过的半句（这句说完收下时不再核对一次）
     private var liveInterrupted: [(at: CFAbsoluteTime, text: String)] = []
+    /// 念着纠正的时候又准备好的纠正（念完接着念）
+    private var liveQueue = CorrectionQueue()
 
     /// 切换录音的自动分段：停顿 1.3 秒就切一段送去转写，不等再按一下。
     private var segmenter = SilenceSegmenter()
@@ -1382,8 +1384,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let sim = liveSim {
             live.trace("present", ["text": prefix + text])
             guard sim.mute else { speakInterjection(spoken ?? text); return }
-            // 不出声的模拟：和真的一样，念之前收下已经说的，念的期间不切段，念完扔掉录到的
-            live.cut(reason: "before-voice")
+            // 不出声的模拟：和真的一样，念之前收下已经说的，念的期间不切段，念完扔掉录到的（抢话时照常听，不切）
+            if !live.bargeInEnabled { live.cut(reason: "before-voice") }
             simVoiceUntil = CFAbsoluteTimeGetCurrent() + Self.estimatedSpeech(text)
             return
         }
@@ -1398,12 +1400,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         interjectVoice.speak(text, onStart: { [weak self] in
             // 念之前把已经说的话先切出去（照常转写），念的这段之后整段扔掉。
             guard let self else { return }
-            if self.live.isActive { self.live.cut(reason: "before-voice"); return }
+            // 抢话时不切：人多半还在说，切了会把半个词切成两段（「企鹅」→「曲名是」+「生活在北极」）
+            if self.live.isActive {
+                if !self.live.bargeInEnabled { self.live.cut(reason: "before-voice") }
+                return
+            }
             guard self.toggleOwnsRecorder, self.recorder.isRecording else { return }
             self.cutToggleSegment(reason: "插话前")
         }, onFinish: { [weak self] in
             guard let self else { return }
-            if self.live.isActive { self.live.discardVoice(); return }
+            if self.live.isActive {
+                if !self.live.bargeInEnabled { self.live.discardVoice() }
+                self.speakQueuedLive()
+                return
+            }
             guard self.toggleOwnsRecorder, self.recorder.isRecording else { return }
             let dropped = (try? self.recorder.flushSegment(retainingTailMs: 0))?.durationMs ?? 0
             self.segmenter.resetSegment()
@@ -1431,6 +1441,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settings = store.settings
         if let provider = settings.transcriptionMode.cloudProviderForSelfTest { CloudTranscriber.prewarm(provider) }
         PostProcessor.prewarm(InterjectionAPI.checkProvider)
+        liveQueue.removeAll()
         live.start(source: source)
     }
 
@@ -1506,7 +1517,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let check = outcome.check else { self.live.trace("act", fields); return }
                 let delay = CFAbsoluteTimeGetCurrent() - finished.spokeUntil
                 let later = self.liveHeard.filter { $0.at > heardAt }.map(\.text)
-                let decision = interject.decide(check, segment: finished.text, delay: delay, laterSegments: later)
+                // 抢话时不靠冷却挡第二句：念着的时候来的排队（`CorrectionQueue`）
+                let decision = interject.decide(check, segment: finished.text, delay: delay, laterSegments: later,
+                                                cooldown: self.live.bargeInEnabled ? 0 : InterjectionPolicy.cooldown)
                 fields["kind"] = check.kind.rawValue
                 fields["wrong"] = check.wrong
                 fields["confidence"] = check.confidence
@@ -1523,7 +1536,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 // 抢话：不管有没有人在说，马上插
                 if self.live.bargeInEnabled {
-                    self.present(correction, prefix: "纠正：", spoken: BargeIn.interruptPhrase(for: correction) + correction)
+                    self.interruptLive(correction)
                     return
                 }
                 guard self.live.isActive, self.live.continuesQuickly(after: finished.spokeUntil) else {
@@ -1543,6 +1556,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.live.trace("act", fields)
             }
         }
+    }
+
+    /// 抢话插嘴：正念着上一句就排在后面（念完接「还有，……」），否则马上「等一下，……」。
+    private func interruptLive(_ correction: String) {
+        let speaking = liveSim?.mute == true ? CFAbsoluteTimeGetCurrent() < simVoiceUntil : interjectVoice.isSpeaking
+        guard !speaking else {
+            liveQueue.push(correction: correction, spoken: BargeIn.followUpPhrase(for: correction) + correction, now: Date())
+            live.trace("queue", ["correction": correction, "queued": liveQueue.count])
+            return
+        }
+        present(correction, prefix: "纠正：", spoken: BargeIn.interruptPhrase(for: correction) + correction)
+    }
+
+    /// 一句念完了：排着的接着念。
+    private func speakQueuedLive() {
+        guard let next = liveQueue.pop(now: Date()) else { return }
+        present(next.correction, prefix: "纠正：", spoken: next.spoken)
     }
 
     /// `--live-sim <wav> [--out <jsonl>] [--mute] [--tail 秒] [--no-smart-turn] [--turn-give-up 秒]`：
@@ -1605,9 +1635,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let speaking = sim.mute ? now < simVoiceUntil : interjectVoice.isSpeaking
         if speaking {
             simVoiceActive = true
+            if live.bargeInEnabled { live.tick(level: sim.source.level, delta: delta) }
         } else if simVoiceActive {
             simVoiceActive = false
-            live.discardVoice()
+            if !live.bargeInEnabled { live.discardVoice() }
+            speakQueuedLive()
         } else {
             live.tick(level: sim.source.level, delta: delta)
         }
@@ -2030,7 +2062,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if live.isActive {
                 if recorder.takeDurationSeconds >= Self.hardCutSeconds {
                     live.cut(reason: "hard-limit")
-                } else if !interjectVoice.isSpeaking {
+                } else if !interjectVoice.isSpeaking || live.bargeInEnabled {
+                    // 抢话时念的期间也接着听：一串错话不能因为 AI 在念就漏掉（念的那句是对的事实，录进去 Qwen 也不会纠正）
                     live.tick(level: recorder.level, delta: delta)
                 }
             } else if recorder.takeDurationSeconds >= Self.hardCutSeconds {

@@ -32,6 +32,15 @@ public enum BargeIn {
         return "Wait, "
     }
 
+    /// 排队念的下一句前面那句「还有」。
+    public static func followUpPhrase(for correction: String) -> String {
+        switch interruptPhrase(for: correction) {
+        case "ちょっと待って、": return "それと、"
+        case "等一下，": return "还有，"
+        default: return "Also, "
+        }
+    }
+
     private static func normalize(_ text: String) -> String {
         String(text.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) })
     }

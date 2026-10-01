@@ -452,5 +452,35 @@ final class BargeInTests: XCTestCase {
         XCTAssertEqual(BargeIn.interruptPhrase(for: "苹果是水果"), "等一下，")
         XCTAssertEqual(BargeIn.interruptPhrase(for: "富士山は本州にある"), "ちょっと待って、")
         XCTAssertEqual(BargeIn.interruptPhrase(for: "Light is faster"), "Wait, ")
+        XCTAssertEqual(BargeIn.followUpPhrase(for: "鲸鱼是哺乳动物"), "还有，")
+    }
+}
+
+final class CorrectionQueueTests: XCTestCase {
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+
+    func testCorrectionsInARowAreSpokenInOrder() {
+        var queue = CorrectionQueue()
+        queue.push(correction: "地球绕着太阳转", spoken: "地球绕着太阳转", now: t0)
+        queue.push(correction: "鲸鱼是哺乳动物", spoken: "鲸鱼是哺乳动物", now: t0.addingTimeInterval(1))
+        XCTAssertEqual(queue.pop(now: t0.addingTimeInterval(2))?.correction, "地球绕着太阳转")
+        XCTAssertEqual(queue.pop(now: t0.addingTimeInterval(4))?.correction, "鲸鱼是哺乳动物")
+        XCTAssertNil(queue.pop(now: t0.addingTimeInterval(5)))
+    }
+
+    func testStaleCorrectionsAreDropped() {
+        var queue = CorrectionQueue()
+        queue.push(correction: "旧的", spoken: "旧的", now: t0)
+        queue.push(correction: "新的", spoken: "新的", now: t0.addingTimeInterval(5))
+        XCTAssertEqual(queue.pop(now: t0.addingTimeInterval(CorrectionQueue.maxWait + 1))?.correction, "新的")
+    }
+
+    func testNoCooldownWhenQueued() {
+        var policy = InterjectionPolicy()
+        let check = InterjectionAPI.Check(wrong: true, kind: .clearError, confidence: 1, correction: "苹果是水果", detail: "")
+        let other = InterjectionAPI.Check(wrong: true, kind: .clearError, confidence: 1, correction: "一年有12个月", detail: "")
+        XCTAssertEqual(policy.decide(check, delay: 1, laterSegments: [], now: t0, cooldown: 0), .show(correction: "苹果是水果"))
+        XCTAssertEqual(policy.decide(other, delay: 1, laterSegments: [], now: t0.addingTimeInterval(1), cooldown: 0),
+                       .show(correction: "一年有12个月"))
     }
 }

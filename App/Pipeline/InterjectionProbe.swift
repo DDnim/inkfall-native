@@ -187,11 +187,26 @@ final class InterjectionProbe {
         outcome.model = Self.label(route)
         let segment = outcome.segment
         let started = CFAbsoluteTimeGetCurrent()
-        let result = await withTimeout(Self.checkTimeout) {
-            await PostProcessor.run(.init(instructions: InterjectionAPI.checkInstructions,
-                                          input: InterjectionAPI.checkInput(previous: previous, segment: segment),
-                                          route: route, maxOutputTokens: InterjectionAPI.checkMaxOutputTokens,
-                                          temperature: InterjectionAPI.checkTemperature(for: route.provider)))
+        let request = PostProcessor.Request(instructions: InterjectionAPI.checkInstructions,
+                                            input: InterjectionAPI.checkInput(previous: previous, segment: segment),
+                                            route: route, maxOutputTokens: InterjectionAPI.checkMaxOutputTokens,
+                                            temperature: InterjectionAPI.checkTemperature(for: route.provider))
+        var result = await withTimeout(Self.checkTimeout) { await PostProcessor.run(request) }
+        // Qwen 限流（429，按天的 token 用完了）：同一个 key 改问另一个模型
+        if case .some(.failure(let failure)) = result, failure.message.contains("429"),
+           case .cloud(let provider, let model, let key) = route, model != InterjectionAPI.fallbackCheckModel {
+            Log.write("interject: \(model) 限流，改问 \(InterjectionAPI.fallbackCheckModel)")
+            var retry = request
+            retry.route = .cloud(provider: provider, model: InterjectionAPI.fallbackCheckModel, key: key)
+            let fallback = retry
+            outcome.model = Self.label(fallback.route)
+            result = await withTimeout(Self.checkTimeout) { await PostProcessor.run(fallback) }
+        }
+        // Groq 偶尔回空结果（2026-10-01 真机「苹果是一种蔬菜」一次）：还来得及就再问一次
+        if case .some(.failure(let failure)) = result, failure.message.contains("空结果"),
+           CFAbsoluteTimeGetCurrent() - started < Self.checkTimeout / 2 {
+            Log.write("interject: 核对回了空结果，重问一次")
+            result = await withTimeout(Self.checkTimeout) { await PostProcessor.run(request) }
         }
         outcome.checkMs = Int((CFAbsoluteTimeGetCurrent() - started) * 1000)
         switch result {
@@ -217,8 +232,8 @@ final class InterjectionProbe {
 
     /// 策略裁决（有状态：冷却、去重）。
     func decide(_ check: InterjectionAPI.Check, segment: String, delay: TimeInterval,
-                laterSegments: [String]) -> InterjectionPolicy.Decision {
-        policy.decide(check, segment: segment, delay: delay, laterSegments: laterSegments, now: Date())
+                laterSegments: [String], cooldown: TimeInterval = InterjectionPolicy.cooldown) -> InterjectionPolicy.Decision {
+        policy.decide(check, segment: segment, delay: delay, laterSegments: laterSegments, now: Date(), cooldown: cooldown)
     }
 
     /// 先把到 Jev 的连接握好（边听边插话开录时调）。

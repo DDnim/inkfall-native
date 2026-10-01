@@ -125,8 +125,8 @@ final class InterjectionPolicyTests: XCTestCase {
         var policy = InterjectionPolicy()
         XCTAssertEqual(policy.decide(wrong(), delay: 1, laterSegments: [], now: t0), .show(correction: "苹果是水果"))
         XCTAssertEqual(policy.decide(wrong("水100度沸腾"), delay: 1, laterSegments: [], now: t0.addingTimeInterval(3)), .drop(.cooldown))
-        XCTAssertEqual(policy.decide(wrong(), delay: 1, laterSegments: [], now: t0.addingTimeInterval(10)), .drop(.duplicate))
-        XCTAssertEqual(policy.decide(wrong("水100度沸腾"), delay: 1, laterSegments: [], now: t0.addingTimeInterval(10)),
+        XCTAssertEqual(policy.decide(wrong(), delay: 1, laterSegments: [], now: t0.addingTimeInterval(8)), .drop(.duplicate))
+        XCTAssertEqual(policy.decide(wrong("水100度沸腾"), delay: 1, laterSegments: [], now: t0.addingTimeInterval(8)),
                        .show(correction: "水100度沸腾"))
     }
 
